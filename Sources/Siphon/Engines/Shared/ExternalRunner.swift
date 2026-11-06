@@ -1,0 +1,114 @@
+import Foundation
+
+/// Runs one external transfer process (curl / scp / rsync / mount helpers).
+///
+/// stdout and stderr are redirected to temporary *files*, not pipes: curl's
+/// progress meter can otherwise fill a pipe buffer and deadlock the child while
+/// we await its termination. Progress is measured by polling the destination
+/// file size, which works uniformly for every tool.
+public final class ExternalRunner {
+    public struct Outcome: Sendable {
+        public let exitCode: Int32
+        public let stdout: String
+        public let stderr: String
+        public let wasCancelled: Bool
+    }
+
+    private let executable: URL
+    private let arguments: [String]
+    private let destination: URL?
+    private let onBytes: (@Sendable (Int64) -> Void)?
+    private let process = Process()
+    private let outURL: URL
+    private let errURL: URL
+    private var cancelled = false
+    private var outHandle: FileHandle?
+    private var errHandle: FileHandle?
+
+    public init(executable: URL, arguments: [String], destination: URL?,
+                onBytes: (@Sendable (Int64) -> Void)? = nil) {
+        self.executable = executable
+        self.arguments = arguments
+        self.destination = destination
+        self.onBytes = onBytes
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Siphon-External-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        self.outURL = tmp.appendingPathComponent("stdout.log")
+        self.errURL = tmp.appendingPathComponent("stderr.log")
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: outURL.deletingLastPathComponent())
+    }
+
+    public func start() throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: executable.path) else {
+            throw ExternalRunnerError.binaryNotFound(executable.path)
+        }
+        fm.createFile(atPath: outURL.path, contents: nil)
+        fm.createFile(atPath: errURL.path, contents: nil)
+        outHandle = try FileHandle(forWritingTo: outURL)
+        errHandle = try FileHandle(forWritingTo: errURL)
+
+        process.executableURL = executable
+        process.arguments = arguments
+        process.standardOutput = outHandle
+        process.standardError = errHandle
+        try process.run()
+    }
+
+    /// Wait for exit, reporting destination size every 250 ms.
+    public func wait() async -> Outcome {
+        while process.isRunning {
+            if cancelled { process.terminate(); break }
+            reportBytes()
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        // Let the kernel flush the child's file descriptors before reading.
+        try? outHandle?.synchronize()
+        try? errHandle?.synchronize()
+        try? outHandle?.close()
+        try? errHandle?.close()
+        reportBytes()
+
+        let out = (try? String(contentsOf: outURL, encoding: .utf8)) ?? ""
+        let err = (try? String(contentsOf: errURL, encoding: .utf8)) ?? ""
+        try? FileManager.default.removeItem(at: outURL.deletingLastPathComponent())
+        return Outcome(exitCode: process.terminationStatus,
+                       stdout: out.trimmingCharacters(in: .whitespacesAndNewlines),
+                       stderr: err.trimmingCharacters(in: .whitespacesAndNewlines),
+                       wasCancelled: cancelled)
+    }
+
+    public func cancel() {
+        cancelled = true
+        if process.isRunning { process.terminate() }
+    }
+
+    public var isCancelled: Bool { cancelled }
+
+    private func reportBytes() {
+        guard let destination,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
+              let n = attrs[.size] as? NSNumber else { return }
+        onBytes?(n.int64Value)
+    }
+}
+
+public enum ExternalRunnerError: Error, LocalizedError {
+    case binaryNotFound(String)
+    case transferFailed(String)
+    case invalidURL(String)
+    case unsupported(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .binaryNotFound(let p): return "未找到系统工具：\(p)"
+        case .transferFailed(let m): return "传输失败：\(m)"
+        case .invalidURL(let s): return "无效的链接：\(s)"
+        case .unsupported(let s): return "当前环境不支持：\(s)"
+        }
+    }
+}

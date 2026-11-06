@@ -8,14 +8,14 @@
   <img src="Resources/UI-Preview.png" width="720" alt="Siphon Liquid Glass interface on macOS 27">
 </p>
 
-面向 macOS 的原生全协议下载管理器。核心思路：**用 aria2 做久经考验的下载内核，用 Swift 补齐 aria2 不擅长的协议，用 SwiftUI/AppKit 做符合 macOS HIG、macOS 26+ 液态玻璃（Liquid Glass）的原生界面。**
+面向 macOS 的原生全协议下载管理器。核心思路：**用 aria2 做久经考验的下载内核，用一层 Swift 协议适配把专用链 / 网关 / 系统工具统一成可下载请求，用 SwiftUI/AppKit 做符合 macOS HIG、macOS 26+ 液态玻璃（Liquid Glass）的原生界面。**
 
 > **为什么叫虹吸**：虹吸跨过落差，靠一根连续管道把远端的流体自发引到本处。aria2 是自持内核，多协议与多分段是入流，落盘的单一文件是出流。
 
 - 语言：Swift 6.4（Swift 5.10 工具链兼容模式）
 - 最低系统：macOS 14 (Sonoma)；**macOS 26+ 启用完整液态玻璃外观**，14/15 自动降级为材质外观（同一二进制）
-- 依赖：零第三方 Swift 包。仅系统框架（Foundation / SwiftUI / AppKit / Network / CommonCrypto）
-- 外部二进制：`aria2c`（捆绑，运行必需）；`ffmpeg`（可选，用于 fMP4 重封装）
+- 依赖：零第三方 Swift 包。仅系统框架（Foundation / SwiftUI / AppKit / Network / CommonCrypto / Security）
+- 外部二进制：`aria2c`（捆绑，运行必需）；系统 `/usr/bin/curl`、`scp`、`rsync`、`mount_*`（按需调用，不捆绑）；`ffmpeg`（可选，用于 fMP4 重封装）
 - 许可证：MIT（详见 [LICENSE](LICENSE)）；aria2 以独立进程调用，见 §11
 
 ---
@@ -28,7 +28,7 @@
 |---|---|
 | 稳定 + 性能 | aria2（C++，20 年验证）承担主流协议，Swift 只做编排 |
 | 小体积 | Swift 原生编译，无 Electron / Flutter / JVM 运行时；aria2c 单文件约 3–5 MB |
-| 全协议 | aria2 覆盖 HTTP(S)/FTP/SFTP/BT/Metalink/磁力；原生引擎补 HLS / DASH / eD2K |
+| 全协议 | aria2 覆盖 HTTP(S)/FTP/SFTP/BT/Metalink/磁力；原生引擎补 HLS / DASH / eD2K 哈希；适配层补专用链、WebDAV、S3、IPFS、SMB、SCP/rsync、本地文件与批量列表（§2） |
 | 真原生 | SwiftUI + AppKit，`.app` bundle，非 WebView 外壳 |
 | 集各家所长 | 队列与调度（AB DM / HyperDM）、限速（Motrix / HyperDM）、剪贴板监听（HyperDM）、浏览器/REST 集成（Gopeed / AB DM）、aria2 JSON-RPC（Motrix / Persepolis） |
 
@@ -38,16 +38,66 @@
 
 ## 2. 协议矩阵
 
+所有输入先经过 `URINormalizer`：专用链解码、网关重写、播放列表展开，产出「URL + 请求头 + 原始协议徽章」。任务层与传输层因此完全解耦 —— 新增一个前端协议只需在适配层加一个 case。
+
+### A. aria2 内核（真实传输）
+
+| 协议 | URI | 说明 |
+|---|---|---|
+| HTTP / HTTPS | `http:` `https:` | 多连接分段、断点续传、Cookie / 自定义头 |
+| FTP | `ftp:` | 被动模式、ASCII/二进制 |
+| SFTP | `sftp:` | 本机 aria2 1.37.0 以 libssh2 编译（`Enabled Features: … SFTP`） |
+| BitTorrent | `.torrent` / `file://…torrent` | DHT / PEX / WebSeed / 选择性下载；本地种子走 `aria2.addTorrent` |
+| Magnet | `magnet:` | `dn=` 推导任务名 |
+| Metalink v3 / v4 | `.metalink` `.meta4` | 本地文档走 `aria2.addMetalink` |
+
+### B. Swift 原生引擎
+
 | 协议 | 实现 | 状态 |
 |---|---|---|
-| HTTP / HTTPS | aria2（多连接分段、断点续传） | ✅ 完整 |
-| FTP / SFTP | aria2 | ✅ 完整 |
-| BitTorrent / 磁力 / Metalink | aria2（DHT / PEX / WebSeed / 选择性下载） | ✅ 完整 |
-| HLS (`.m3u8`) | Swift 原生：master/media 播放列表、`EXT-X-KEY` AES-128、`EXT-X-BYTERANGE` | ✅ 可用（TS 流） |
-| DASH (`.mpd`) | Swift 原生：SegmentTemplate（`$Number$`/`$RepresentationID$`）、SegmentTimeline、SegmentList | ✅ 可用（fMP4 字节流） |
-| eD2K (`ed2k://`) | MD4、eD2K 哈希、`ed2k://` 链接解析、哈希校验 + 后端抽象 | ⚠️ 传输后端待接入，见 §5 |
+| HLS `.m3u8` | master/media 播放列表、`EXT-X-KEY` AES-128、`EXT-X-BYTERANGE`、**`EXT-X-MAP` fMP4/CMAF 初始化段** | ✅ TS 与 fMP4 字节流 |
+| DASH `.mpd` | SegmentTemplate（`$Number$` / `$RepresentationID$`）、SegmentTimeline、SegmentList，init + segments 有序拼接 | ✅ fMP4 字节流 |
+| eD2K `ed2k://` | MD4（RFC 1320 官方向量）、分块哈希、链接解析、下载后校验、`ED2KBackend` 抽象 | ⚠️ P2P 传输后端未接入，见 §5 |
 
-原生 HLS/DASH 共用 `SegmentAssembler`：有界并发、严格有序落盘、按段断点续传、令牌桶限速。
+HLS / DASH 共用 `SegmentAssembler`：有界并发、严格有序落盘、按段断点续传、令牌桶限速。
+
+### C. URI 前端（规范化后交给 aria2）
+
+| 协议 | 转换 | 说明 |
+|---|---|---|
+| 迅雷 / 快车 / QQ旋风 | `thunder://` `flashget://` `qqdl://` → base64 解码出真实 URL | 容忍缺失 padding、`&port` 尾缀、大小写 |
+| WebDAV / WebDAVS | `webdav(s)://user:pass@host/path` → `http(s)://…` | 凭据内嵌，由 aria2 做 Basic/Digest |
+| IPFS / IPNS | `ipfs://CID/path` → `<网关>/ipfs/CID/path` | 网关可在「设置 → 协议网关」配置；也支持系统 curl 的 `--ipfs-gateway` |
+| S3 兼容对象存储 | `s3://bucket/key` → AWS SigV4 预签名 HTTPS URL | AWS S3 / MinIO / R2 / Wasabi / B2；密钥存钥匙串，签名有独立参考向量测试 |
+
+### D. 系统工具桥接（自持、零新增依赖）
+
+| 协议 | 工具 | 说明 |
+|---|---|---|
+| FTPS / SMB / SMBS | `/usr/bin/curl` | 系统 libcurl 8.7.1 原生支持；`--continue-at -` 续传、`--limit-rate` 限速 |
+| TFTP / Gopher / RTSP / DICT / IMAP·POP3·SMTP·LDAP / MQTT | 同上 | 统一归入 `DownloadProtocol.curl` 直通 |
+| SCP / rsync | `/usr/bin/scp`、`/usr/bin/rsync` | BatchMode、断点续传、带宽限制 |
+| NFS / AFP | `mount_nfs` / `mount_afp` + 复制 + `umount` | 需要本机挂载权限；失败时明确报错而非静默跳过 |
+
+### E. 本地与批量
+
+| 输入 | 实现 | 说明 |
+|---|---|---|
+| `file://` | Swift 分块复制 | 带进度与限速；aria2 不接受 `file://` 作为下载源 |
+| `data:` | RFC 2397 解码 | base64 与百分号编码两种形式 |
+| M3U / PLS / ASX / WPL / JSON 数组 / 多行 URL | `PlaylistImporter` 展开为多任务 | 支持 `#EXTINF` 标题、相对路径解析、单次上限 500 条 |
+
+### 未纳入及原因
+
+| 项目 | 原因 |
+|---|---|
+| eD2K / Kad P2P 传输 | 需要独立内核（服务器登录、源交换、180 KiB 分片、信用系统、Kad DHT）。已留 `ED2KBackend` 接口，见 §5 |
+| Usenet / NNTP + NZB + yEnc + PAR2 | 需要 NNTP 订阅账号与 Reed–Solomon 修复实现，属独立子系统 |
+| DRM（Widevine / FairPlay / SAMPLE-AES / ClearKey） | 需要许可证服务器与密钥协商，不在通用下载器范围 |
+| 网盘私有协议（百度网盘 / 阿里云盘等） | 需账号登录与不断变化的私有签名 API，且不属于公开传输协议 |
+| HLS / DASH 直播录制、BT v2 / WebTorrent、HTTP/3 | 需要持续刷新播放列表 / 新版 BT 栈 / QUIC 内核；见 §9 |
+
+> 本机 `aria2c --version` 实测启用 `HTTPS, SFTP, BitTorrent, Metalink`；`curl -V` 实测协议表含 `ftps smb smbs ipfs ipns tftp gopher rtsp …`（不含 sftp/scp，那两者分别由 aria2 与 OpenSSH 承担）。协议声明与实测能力一致。
 
 ---
 
@@ -56,7 +106,7 @@
 ```bash
 cd Siphon
 
-# 1) 验证：编译 + MD4 官方向量 + HLS/DASH 解析 + 并发有序落盘端到端测试
+# 1) 验证：编译 + 官方向量 + 解析 + 分段装配 + 真实 aria2 RPC + 全协议矩阵端到端
 ./scripts/verify.sh
 
 # 2) 仅编译
@@ -76,7 +126,7 @@ open build/Siphon.app
 
 `build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-0.1.0.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
 
-`verify.sh` 共 5 组：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、以及**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（未安装 aria2c 时自动跳过）。
+`verify.sh` 共 6 组：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（未安装 aria2c 时自动跳过），以及**协议矩阵 99 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端，以及**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路。其中还包含一条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效，现已修正。
 
 也可直接调试运行（需已在 `Resources/` 或 `~/Library/Application Support/Siphon/` 放置 `aria2c`）：
 
@@ -105,9 +155,19 @@ Sources/Siphon/
     Engine.swift                  统一引擎协议 + 主线程回调协议
     Aria2/                       进程引导、JSON-RPC 客户端、GID 映射与轮询
     Shared/SegmentAssembler.swift  HLS/DASH 共用的并发分段装配器
-    HLS/                         m3u8 解析 + AES-128 解密 + TS 输出
+    Shared/ExternalRunner.swift    外部进程执行器（stdout/stderr 重定向到文件，避免管道死锁）
+    HLS/                         m3u8 解析 + AES-128 解密 + TS/fMP4 输出
     DASH/                        MPD 解析 + 初始化段/媒体段
     ED2K/                        MD4、eD2K 哈希、链接解析、传输后端抽象
+    External/CurlEngine.swift      libcurl 协议族（FTPS/SMB/TFTP/Gopher/RTSP…）
+    External/SystemTransferEngine.swift  SCP/rsync + NFS/AFP 挂载桥接
+    Local/LocalEngine.swift        file:// 复制、RFC 2397 data: URI
+  Protocols/                      协议适配层
+    URINormalizer.swift           统一入口：解码、网关重写、批量展开
+    SpecialLinks.swift            迅雷 / 快车 / QQ旋风 专用链
+    PlaylistImporter.swift        M3U/PLS/ASX/WPL/JSON/多行列表
+    S3Signer.swift                AWS SigV4 预签名（CommonCrypto）
+    ProtocolSettings.swift        网关配置 + S3 密钥存钥匙串
   Managers/
     DownloadStore.swift          任务路由、状态聚合、持久化（主数据源）
     QueueManager.swift           命名队列、并发/顺序模式、下载时段窗口
@@ -124,14 +184,15 @@ Resources/
   AppIcon-Preview.png            圆角 + 阴影的访达效果预览
   AppIcon.iconset/               10 个按原生分辨率渲染的 PNG
   Assets.xcassets/AppIcon.appiconset/   Xcode 可直接使用的 asset catalog
-  Info.plist                     URL scheme (magnet/ed2k)、文档类型、最低系统版本
+  Info.plist                     18 种 URL scheme、文档类型、最低系统版本
   BrowserExtension/              Manifest V3 扩展示例
 scripts/
   build-app.sh                   release 编译 + .app 组装 + dylib 重链接 + 重签名
   make-dmg.sh                    可拖拽安装的 DMG（含挂载后签名校验）
   make-icon.sh / MakeIcon.swift  矢量图标生成器
-  verify.sh                      5 组可复现验证
-Tests/                           向量、解析与端到端测试
+  verify.sh                      6 组可复现验证
+Tests/                           向量、解析、协议矩阵与端到端测试
+  ProtocolTests/                 协议适配与 file/data/libcurl 真实落盘
 ```
 
 ---
@@ -154,7 +215,7 @@ Tests/                           向量、解析与端到端测试
 
 ## 6. HLS / DASH 的已知边界
 
-- **HLS**：输出为按序拼接的 MPEG-TS，覆盖绝大多数场景。fMP4 分片（`EXT-X-MAP`）与 CMAF 需要重封装。
+- **HLS**：TS 播放列表输出按序拼接的 MPEG-TS；带 `EXT-X-MAP` 的 fMP4/CMAF 播放列表会先写入初始化段再按序写入 moof/mdat 分片（初始化段不参与 AES 解密，IV 序号相应偏移）。输出是有效 fragmented-MP4 字节流，不是带扁平 `moov` 的通用单文件 MP4。
 - **DASH**：输出为 `init + segments` 的 fMP4 字节流，可被支持 fragmented MP4 的播放器读取；生成通用单文件 MP4 需 `ffmpeg -i in.mp4 -c copy out.mp4`。
 - **DRM**（Widevine / FairPlay / ClearKey 等）不在范围内。
 - **直播流**（无 `EXT-X-ENDLIST` / 动态 MPD）目前按快照处理；持续录制需扩展为轮询播放列表。
@@ -206,12 +267,15 @@ curl http://127.0.0.1:17801/ping
 
 ## 9. 后续路线建议
 
-1. 接入 `ED2KBackend`（libed2k）以完成 eD2K 传输闭环
-2. 增加 `ffmpeg` 重封装管线，统一 HLS/DASH 输出为标准 MP4
-3. aria2 由 HTTP 轮询改为 WebSocket 通知，降低延迟
-4. 任务持久化从 UserDefaults 迁到 SQLite（WAL），支持崩溃恢复与段级续传记录
-5. 沙盒 + Hardened Runtime + Developer ID 签名与公证
-6. 增加 BT 文件选择、Tracker 管理、RSS 订阅与下载完成脚本
+1. 接入 `ED2KBackend`（libed2k / aMule）以完成 eD2K 传输闭环
+2. 增加 `ffmpeg` 重封装管线，统一 HLS/DASH 输出为标准单文件 MP4
+3. Usenet：NNTP over TLS + NZB + yEnc + PAR2 修复
+4. HLS/DASH 直播录制（播放列表轮询）、BT v2 / WebTorrent、HTTP/3
+5. WebDAV 目录浏览与上传（PROPFIND 递归）；当前支持单文件下载
+6. aria2 由 HTTP 轮询改为 WebSocket 通知，降低延迟
+7. 任务持久化从 UserDefaults 迁到 SQLite（WAL），支持崩溃恢复与段级续传记录
+8. 沙盒 + Hardened Runtime + Developer ID 签名与公证
+9. 增加 BT 文件选择、Tracker 管理、RSS 订阅与下载完成脚本
 
 ---
 

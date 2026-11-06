@@ -18,18 +18,18 @@ SHARED=(Sources/Siphon/Engines/Engine.swift
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"; kill "${SERVER_PID:-}" 2>/dev/null || true' EXIT
 
-echo "== 1/4 swift build =="
+echo "== 1/6 swift build =="
 swift build
 
-echo "== 2/4 MD4 / eD2K / link vectors =="
+echo "== 2/6 MD4 / eD2K / link vectors =="
 swiftc -o "$TMP/vectors" Tests/VectorTests/main.swift "${MODELS[@]}" "${ED2K[@]}"
 "$TMP/vectors"
 
-echo "== 3/4 HLS / DASH parsers =="
+echo "== 3/6 HLS / DASH parsers =="
 swiftc -o "$TMP/parsers" Tests/ParserTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/parsers"
 
-echo "== 4/5 concurrent ordered segment assembly =="
+echo "== 4/6 concurrent ordered segment assembly =="
 ( cd Tests/fixtures && exec python3 -m http.server 18765 --bind 127.0.0.1 ) \
     > "$TMP/server.log" 2>&1 &
 SERVER_PID=$!
@@ -41,7 +41,7 @@ done
 swiftc -o "$TMP/segments" Tests/SegmentTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/segments"
 
-echo "== 5/5 real aria2 JSON-RPC download (skipped if aria2c absent) =="
+echo "== 5/6 real aria2 JSON-RPC download (skipped if aria2c absent) =="
 if command -v aria2c >/dev/null 2>&1; then
     ( cd Tests/fixtures-aria2 && exec python3 -m http.server 18766 --bind 127.0.0.1 ) \
         > "$TMP/server2.log" 2>&1 &
@@ -59,6 +59,28 @@ if command -v aria2c >/dev/null 2>&1; then
 else
     echo "SKIP  aria2c not installed (brew install aria2 to enable)"
 fi
+
+echo "== 6/6 protocol matrix: detection, vendor links, playlists, SigV4, normalization, engine E2E =="
+# Fixture server on :18765 is still running from step 4 and serves seg0.ts.
+PROTOCOL_SOURCES=(
+    Sources/Siphon/Engines/Engine.swift
+    "${MODELS[@]}"
+    Sources/Siphon/Protocols/SpecialLinks.swift
+    Sources/Siphon/Protocols/PlaylistImporter.swift
+    Sources/Siphon/Protocols/S3Signer.swift
+    Sources/Siphon/Protocols/ProtocolSettings.swift
+    Sources/Siphon/Protocols/URINormalizer.swift
+    Sources/Siphon/Engines/HLS/HLSParser.swift
+    Sources/Siphon/Engines/Shared/ExternalRunner.swift
+    Sources/Siphon/Managers/SpeedLimitController.swift
+    Sources/Siphon/Engines/Local/LocalEngine.swift
+    Sources/Siphon/Engines/External/CurlEngine.swift
+    Sources/Siphon/Engines/Aria2/Aria2Bootstrap.swift
+    Sources/Siphon/Engines/Aria2/Aria2RPC.swift
+    Sources/Siphon/Engines/Aria2/Aria2Engine.swift
+)
+swiftc -o "$TMP/protocols" Tests/ProtocolTests/main.swift "${PROTOCOL_SOURCES[@]}"
+"$TMP/protocols"
 
 echo
 echo "ALL CHECKS PASSED"

@@ -21,7 +21,8 @@ public enum Aria2Error: Error, LocalizedError {
 public final class Aria2Bootstrap {
     public static let shared = Aria2Bootstrap()
 
-    public let port: UInt16 = 6800
+    /// Overridable so tests / secondary instances never collide with a running app.
+    public var port: UInt16 = 6800
     private var process: Process?
     public private(set) var isRunning = false
 

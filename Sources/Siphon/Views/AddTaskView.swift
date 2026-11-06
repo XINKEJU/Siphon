@@ -26,7 +26,7 @@ struct AddTaskView: View {
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("新建下载").font(.title3.weight(.semibold))
-                    Text("粘贴链接、磁力、eD2K 或流媒体播放列表地址")
+                    Text("链接、专用链、网关地址，或多行批量列表")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 6)
@@ -41,12 +41,16 @@ struct AddTaskView: View {
 
             Form {
                 Section {
-                    TextField("链接", text: $urlString, prompt: Text("https://… 或 magnet: / ed2k:// / .m3u8 / .mpd"))
+                    TextField("链接", text: $urlString, prompt: Text("https://… / thunder:// / ipfs:// / s3:// / .m3u8"))
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: urlString) { _, v in updateDetection(v) }
 
-                    LabeledContent("下载引擎",
-                                   value: detected.requiresAria2 ? "aria2 (JSON-RPC)" : "Swift 原生引擎")
+                    LabeledContent("下载引擎", value: detected.transport.displayName)
+
+                    Text(URINormalizer.capabilitySummary)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     TextField("文件名（可选）", text: $name)
                         .textFieldStyle(.roundedBorder)
@@ -75,7 +79,7 @@ struct AddTaskView: View {
                         .textFieldStyle(.roundedBorder)
                     TextField("Referer", text: $referer)
                         .textFieldStyle(.roundedBorder)
-                    Text("自定义请求头会同时传给 aria2 与原生 HLS/DASH 引擎。")
+                    Text("自定义请求头会传给 aria2、libcurl 与原生 HLS/DASH 引擎。")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -89,7 +93,7 @@ struct AddTaskView: View {
             // buttons merge rather than stacking separate blurs.
             GlassGroup(spacing: 10) {
                 if let clip = NSPasteboard.general.string(forType: .string),
-                   clip.hasPrefix("http") || clip.hasPrefix("magnet") || clip.hasPrefix("ed2k") {
+                   clip.trimmingCharacters(in: .whitespacesAndNewlines).contains("://") {
                     Button("粘贴剪贴板链接") {
                         urlString = clip.trimmingCharacters(in: .whitespacesAndNewlines)
                         updateDetection(urlString)
@@ -112,12 +116,16 @@ struct AddTaskView: View {
     }
 
     private var isValid: Bool {
-        URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
-            && !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let t = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+        if t.contains("\n") { return !PlaylistImporter.parse(t).isEmpty }
+        return URL(string: t)?.scheme != nil
     }
 
     private func updateDetection(_ v: String) {
-        guard let u = URL(string: v.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.contains("\n") { detected = .playlist; return }
+        guard let u = URL(string: t) else { return }
         detected = DownloadProtocol.detect(from: u)
     }
 

@@ -38,15 +38,42 @@
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>Magnet Link</string>
+            <string>P2P and Vendor Download Links</string>
             <key>CFBundleURLSchemes</key>
-            <array><string>magnet</string></array>
+            <array>
+                <string>magnet</string>
+                <string>ed2k</string>
+                <string>thunder</string>
+                <string>flashget</string>
+                <string>qqdl</string>
+            </array>
         </dict>
         <dict>
             <key>CFBundleURLName</key>
-            <string>eD2K Link</string>
+            <string>Network File Transfer Links</string>
             <key>CFBundleURLSchemes</key>
-            <array><string>ed2k</string></array>
+            <array>
+                <string>sftp</string>
+                <string>scp</string>
+                <string>rsync</string>
+                <string>ftps</string>
+                <string>smb</string>
+                <string>smbs</string>
+                <string>nfs</string>
+                <string>afp</string>
+                <string>webdav</string>
+                <string>webdavs</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Gateway Links</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>ipfs</string>
+                <string>ipns</string>
+                <string>s3</string>
+            </array>
         </dict>
     </array>
     <key>CFBundleDocumentTypes</key>
@@ -64,6 +91,22 @@
             <string>Metalink File</string>
             <key>CFBundleTypeExtensions</key>
             <array><string>metalink</string><string>meta4</string></array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Stream Playlist</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>m3u8</string><string>mpd</string></array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Batch Link List</string>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>m3u</string><string>pls</string><string>asx</string><string>wpl</string><string>lst</string><string>txt</string></array>
             <key>CFBundleTypeRole</key>
             <string>Viewer</string>
         </dict>

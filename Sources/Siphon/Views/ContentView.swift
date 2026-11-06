@@ -42,6 +42,14 @@ struct ContentView: View {
         .toolbar { toolbarContent }
         .sheet(isPresented: $showingAdd) { AddTaskView() }
         .task { store.start() }
+        .alert("无法添加任务", isPresented: Binding(
+            get: { store.lastError != nil },
+            set: { if !$0 { store.lastError = nil } }
+        )) {
+            Button("好", role: .cancel) { }
+        } message: {
+            Text(store.lastError ?? "")
+        }
         .frame(minWidth: 900, minHeight: 560)
     }
 
@@ -53,7 +61,7 @@ struct ContentView: View {
             } label: {
                 Label("新建下载", systemImage: "plus")
             }
-            .help("添加 HTTP / FTP / BT / 磁力 / eD2K / HLS / DASH 任务 (⌘N)")
+            .help("添加链接、专用链、网关地址或批量列表 (⌘N)")
             .keyboardShortcut("n", modifiers: .command)
         }
 
@@ -91,7 +99,7 @@ private struct EmptyDetailView: View {
             Text("选择一个任务查看详情")
                 .font(.headline)
                 .foregroundStyle(.primary)
-            Text("支持 HTTP / HTTPS / FTP / SFTP / BitTorrent / Metalink / 磁力 / eD2K / HLS / DASH")
+            Text("HTTP(S) · FTP/FTPS · SFTP/SCP · WebDAV · SMB · BT/磁力/Metalink · eD2K · HLS · DASH · 迅雷/快车/QQ旋风 · IPFS · S3")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

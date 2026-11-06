@@ -15,6 +15,9 @@ public struct DownloadTask: Identifiable, Sendable {
     public var errorDescription: String?
     /// Engine-specific options: custom headers, user-agent, referer, etc.
     public var options: [String: String]
+    /// The exact string the user supplied, before `URINormalizer` rewrote it.
+    /// Kept so a vendor link / gateway URI can be re-opened or retried verbatim.
+    public var origin: String?
 
     public init(
         id: UUID = UUID(),
@@ -22,20 +25,23 @@ public struct DownloadTask: Identifiable, Sendable {
         source: URL,
         destination: URL,
         queueName: String = "Default",
-        options: [String: String] = [:]
+        options: [String: String] = [:],
+        origin: String? = nil,
+        protoOverride: DownloadProtocol? = nil
     ) {
         let proto = DownloadProtocol.detect(from: source)
         self.id = id
         self.name = name ?? Self.inferredName(for: source)
         self.source = source
         self.destination = destination
-        self.protocol = proto
+        self.protocol = protoOverride ?? proto
         self.state = .pending
         self.progress = DownloadProgress()
         self.queueName = queueName
         self.createdAt = Date()
         self.errorDescription = nil
         self.options = options
+        self.origin = origin
     }
 
     /// Human-readable fallback name. Custom schemes carry their filename in

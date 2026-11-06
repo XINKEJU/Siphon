@@ -35,11 +35,12 @@ public final class ClipboardMonitor: ObservableObject {
         guard let raw = pb.string(forType: .string) else { return }
 
         // Only act on a single plausible download URL, not arbitrary copied text.
+        // Multi-line pastes are handled by the "New Download" sheet, not here.
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.contains(" "),
               let url = URL(string: trimmed),
               let scheme = url.scheme?.lowercased(),
-              ["http", "https", "ftp", "sftp", "magnet", "ed2k"].contains(scheme)
+              URISchemes.all.contains(scheme)
                 || trimmed.contains(".m3u8") || trimmed.contains(".mpd") else { return }
         guard !seen.contains(trimmed) else { return }
         seen.insert(trimmed)

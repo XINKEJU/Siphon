@@ -31,15 +31,25 @@ struct TaskDetailView: View {
 
                 Section("任务信息") {
                     LabeledContent("队列", value: task.queueName)
-                    LabeledContent("引擎", value: task.protocol.requiresAria2 ? "aria2 (JSON-RPC)" : "Swift 原生引擎")
+                    LabeledContent("引擎", value: task.protocol.transport.displayName)
                     LabeledContent("创建时间", value: task.createdAt.formatted(date: .abbreviated, time: .shortened))
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("来源").font(.caption).foregroundStyle(.secondary)
+                        Text("来源（规范化后）").font(.caption).foregroundStyle(.secondary)
                         Text(task.source.absoluteString)
                             .font(.caption.monospaced())
                             .textSelection(.enabled)
                             .lineLimit(3)
                             .truncationMode(.middle)
+                    }
+                    if let origin = task.origin, origin != task.source.absoluteString {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("原始链接").font(.caption).foregroundStyle(.secondary)
+                            Text(origin)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .lineLimit(3)
+                                .truncationMode(.middle)
+                        }
                     }
                     VStack(alignment: .leading, spacing: 4) {
                         Text("目标").font(.caption).foregroundStyle(.secondary)

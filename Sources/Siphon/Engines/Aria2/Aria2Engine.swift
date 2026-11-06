@@ -1,10 +1,13 @@
 import Foundation
 
-/// Drives aria2 for HTTP/HTTPS/FTP/SFTP/BitTorrent/Metalink/magnet. Tasks are mapped to aria2
-/// GIDs; progress and state are polled every second and forwarded to the main-actor delegate.
+/// Drives aria2 for HTTP/HTTPS/FTP/SFTP/BitTorrent/Metalink/magnet and for every
+/// URI front-end that `URINormalizer` rewrites onto those protocols (thunder,
+/// WebDAV, IPFS, S3…). Tasks are mapped to aria2 GIDs; progress and state are
+/// polled every second and forwarded to the main-actor delegate.
 public final class Aria2Engine: DownloadEngine {
     public let name = "aria2"
-    public let supportedProtocols: Set<DownloadProtocol> = [.http, .https, .ftp, .sftp, .bittorrent, .metalink, .magnet]
+    public let supportedProtocols: Set<DownloadProtocol> =
+        Set(DownloadProtocol.allCases.filter { $0.transport == .aria2 })
     public weak var delegate: (any EngineDelegate)?
 
     private let rpc: Aria2RPC
@@ -33,14 +36,42 @@ public final class Aria2Engine: DownloadEngine {
     }
 
     public func submit(_ task: DownloadTask) async throws {
+        let opts = Self.makeOptions(task)
+        let gid: String
+        if task.source.isFileURL {
+            // Local .torrent / .metalink documents must go through their dedicated
+            // RPC methods; aria2.addUri does not accept a file:// pointer to them.
+            switch task.source.pathExtension.lowercased() {
+            case "torrent":
+                gid = try await rpc.addTorrent(Data(contentsOf: task.source), options: opts)
+            case "metalink", "meta4":
+                gid = try await rpc.addMetalink(Data(contentsOf: task.source), options: opts)
+            default:
+                gid = try await rpc.addUri(task.source.absoluteString, options: opts)
+            }
+        } else {
+            gid = try await rpc.addUri(task.source.absoluteString, options: opts)
+        }
+        taskToGid[task.id] = gid
+        gidToTask[gid] = task.id
+    }
+
+    /// Translate UI-style header keys into aria2's documented option names.
+    /// Pure function so the mapping is unit-testable without a running daemon.
+    public static func makeOptions(_ task: DownloadTask) -> [String: String] {
         var opts = task.options
+        for (k, v) in task.options {
+            let lower = k.lowercased()
+            if ["user-agent", "referer", "cookie"].contains(lower) {
+                opts.removeValue(forKey: k)
+                opts[lower] = v
+            }
+        }
         opts["dir"] = task.destination.deletingLastPathComponent().path
         if !task.destination.lastPathComponent.isEmpty {
             opts["out"] = task.destination.lastPathComponent
         }
-        let gid = try await rpc.addUri(task.source.absoluteString, options: opts)
-        taskToGid[task.id] = gid
-        gidToTask[gid] = task.id
+        return opts
     }
 
     public func pause(_ id: UUID) async {

@@ -11,6 +11,8 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     @Published public var filter: TaskFilter = .all
     @Published public var aria2Status: String = "未启动"
     @Published public var startupError: String?
+    /// Last link-normalization failure (bad vendor link, missing S3 credentials, …).
+    @Published public var lastError: String?
     @Published public var speedLimitText: String = ""
     @Published public var clipboardEnabled = false
     @Published public var browserCaptureEnabled = false
@@ -61,7 +63,10 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         guard !didStart else { return }
         didStart = true
 
-        let nativeEngines: [any DownloadEngine] = [HLSEngine(), DASHEngine(), ED2KEngine()]
+        let nativeEngines: [any DownloadEngine] = [
+            HLSEngine(), DASHEngine(), ED2KEngine(),
+            CurlEngine(), SystemTransferEngine(), LocalEngine()
+        ]
         for engine in nativeEngines {
             engine.delegate = self
             for p in engine.supportedProtocols { engines[p] = engine }
@@ -81,10 +86,9 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
             engine.delegate = self
             engine.startPolling()
             aria2 = engine
-            for p: DownloadProtocol in [.http, .https, .ftp, .sftp,
-                                        .bittorrent, .metalink, .magnet] {
-                engines[p] = engine
-            }
+            // Includes every URI front-end URINormalizer rewrites onto aria2's
+            // native protocols (thunder, WebDAV, IPFS, S3, …).
+            for p in engine.supportedProtocols { engines[p] = engine }
             aria2Status = "已连接 (127.0.0.1:6800)"
             startupError = nil
         } catch {
@@ -103,15 +107,44 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     // MARK: - CRUD
     public func add(urlString: String, name: String? = nil, queueName: String = "Default",
                     options: [String: String] = [:]) {
-        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let url = URL(string: trimmed) else { return }
-        let destination = downloadDirectory.appendingPathComponent(
-            name ?? (url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent))
-        let task = DownloadTask(name: name, source: url, destination: destination,
+        Task {
+            await addNormalized(urlString: urlString, name: name,
                                 queueName: queueName, options: options)
-        tasks.append(task)
-        save()
-        Task { await schedule() }
+        }
+    }
+
+    /// Resolve vendor links / gateways / playlists, then enqueue one task per URL.
+    /// Kept `async` because a playlist or gateway may require a network read.
+    public func addNormalized(urlString: String, name: String? = nil,
+                              queueName: String = "Default",
+                              options: [String: String] = [:]) async {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            let reqs = try await URINormalizer.normalize(trimmed, options: options)
+            for req in reqs {
+                // A custom name only makes sense for a single-file submission.
+                let fileName: String
+                if reqs.count == 1, let name, !name.isEmpty { fileName = name }
+                else if let n = req.suggestedName, !n.isEmpty { fileName = n }
+                else if req.proto == .data { fileName = "data.bin" }
+                else {
+                    let probe = DownloadTask(source: req.url,
+                                             destination: downloadDirectory,
+                                             protoOverride: req.proto)
+                    fileName = probe.name
+                }
+                let destination = downloadDirectory.appendingPathComponent(fileName)
+                let task = DownloadTask(name: fileName, source: req.url,
+                                        destination: destination,
+                                        queueName: queueName, options: req.options,
+                                        origin: req.origin, protoOverride: req.proto)
+                add(task)
+            }
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 
     public func add(_ task: DownloadTask) {
@@ -209,8 +242,14 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         let bytesPerSec: Int64? = trimmed.isEmpty ? nil : Int64(trimmed)
         SpeedLimitController.shared.setLimit(bytesPerSec)
         Task {
-            await engines.values.first { $0.name == "aria2" }?
-                .setGlobalSpeedLimit(bytesPerSec)
+            // One engine instance is registered under many protocols; dedupe so
+            // we don't send the same RPC 20 times.
+            var seen = Set<ObjectIdentifier>()
+            for engine in engines.values {
+                if seen.insert(ObjectIdentifier(engine)).inserted {
+                    await engine.setGlobalSpeedLimit(bytesPerSec)
+                }
+            }
         }
     }
 
@@ -275,12 +314,13 @@ private struct TaskRecord: Codable {
     var id: UUID, name: String, source: URL, destination: URL
     var proto: String, state: String, queueName: String
     var downloaded: Int64, total: Int64, error: String?
+    var origin: String?
 
     init(_ t: DownloadTask) {
         id = t.id; name = t.name; source = t.source; destination = t.destination
         proto = t.protocol.rawValue; state = t.state.rawValue; queueName = t.queueName
         downloaded = t.progress.downloadedBytes; total = t.progress.totalBytes
-        error = t.errorDescription
+        error = t.errorDescription; origin = t.origin
     }
 
     var task: DownloadTask {
@@ -294,6 +334,7 @@ private struct TaskRecord: Codable {
         t.progress.downloadedBytes = downloaded
         t.progress.totalBytes = total
         t.errorDescription = error
+        t.origin = origin
         return t
     }
 }

@@ -5,10 +5,11 @@ import CommonCrypto
 ///
 /// Responsibilities kept here: playlist resolution (master → best variant), AES-128 key
 /// handling, and IV derivation. Segment fetching / ordered assembly / resume is delegated
-/// to `SegmentAssembler`. Output is a concatenated MPEG-TS stream.
+/// to `SegmentAssembler`. Output is a concatenated MPEG-TS stream, or an fMP4
+/// byte stream for CMAF playlists carrying `EXT-X-MAP` (init segment written first).
 ///
-/// fMP4-based HLS still needs `ffmpeg` remux; this engine covers the common TS case with
-/// zero external dependencies.
+/// Both are produced with zero external dependencies. Converting an fMP4 byte
+/// stream into a single-file MP4 with a flat `moov` still needs ffmpeg remux.
 public final class HLSEngine: DownloadEngine {
     public let name = "hls"
     public let supportedProtocols: Set<DownloadProtocol> = [.hls]
@@ -35,7 +36,8 @@ public final class HLSEngine: DownloadEngine {
 
         var out = task.destination
         if out.pathExtension.isEmpty {
-            out = out.deletingPathExtension().appendingPathExtension("ts")
+            out = out.deletingPathExtension()
+                .appendingPathExtension(pl.isFMP4 ? "mp4" : "ts")
         }
         outputs[task.id] = out
 
@@ -46,16 +48,25 @@ public final class HLSEngine: DownloadEngine {
         }
         let baseIV = pl.keyIV
         let mediaSequence = pl.mediaSequence
+        // With EXT-X-MAP the first request is the (unencrypted) fMP4 init segment,
+        // so media segments start at order 1 and their IV sequence must shift too.
+        let hasMap = pl.isFMP4
         let transform: (@Sendable (Data, Int) -> Data)? = key.map { k in
             { @Sendable data, order in
-                let iv = baseIV ?? Self.defaultIV(mediaSequence: mediaSequence, order: order)
+                if hasMap, order == 0 { return data }
+                let mediaOrder = hasMap ? order - 1 : order
+                let iv = baseIV ?? Self.defaultIV(mediaSequence: mediaSequence, order: mediaOrder)
                 return Self.decryptAES128(data, key: k, iv: iv) ?? data
             }
         }
 
-        let requests = pl.segments.map {
-            SegmentRequest(url: $0.url, byteRange: $0.byteRange)
+        var requests: [SegmentRequest] = []
+        if let map = pl.mapURL {
+            requests.append(SegmentRequest(url: map, byteRange: pl.mapByteRange))
         }
+        requests.append(contentsOf: pl.segments.map {
+            SegmentRequest(url: $0.url, byteRange: $0.byteRange)
+        })
         try assembler.start(taskID: task.id, destination: out, requests: requests,
                             headers: task.options, transform: transform)
         await delegate?.engineDidChangeState(taskID: task.id, state: .active, error: nil)

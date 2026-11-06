@@ -15,6 +15,12 @@ public struct HLSPlaylist: Sendable {
     public var keyURL: URL?
     public var keyIV: Data?   // 16 bytes when explicitly set in #EXT-X-KEY
     public var mediaSequence: Int64
+    /// `EXT-X-MAP` initialization segment. Its presence means the playlist carries
+    /// fMP4/CMAF fragments rather than MPEG-TS; the init segment must be written first.
+    public var mapURL: URL? = nil
+    public var mapByteRange: (length: Int, offset: Int)? = nil
+
+    public var isFMP4: Bool { mapURL != nil }
 }
 
 public enum HLSParser {
@@ -60,12 +66,15 @@ public enum HLSParser {
             }
             if line.hasPrefix("#EXT-X-BYTERANGE") {
                 let body = String(line.dropFirst("#EXT-X-BYTERANGE:".count))
-                let parts = body.components(separatedBy: "@")
-                if parts.count == 2, let l = Int(parts[0]), let o = Int(parts[1]) {
-                    pendingByteRange = (l, o)
-                } else if let l = Int(parts[0]) {
-                    pendingByteRange = (l, 0)
+                pendingByteRange = parseByteRange(body)
+                continue
+            }
+            if line.hasPrefix("#EXT-X-MAP") {
+                let attrs = parseAttributes(attributeBody(line, prefix: "#EXT-X-MAP"))
+                if let uri = attrs["URI"]?.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) {
+                    pl.mapURL = resolve(uri, base: baseURL)
                 }
+                if let br = attrs["BYTERANGE"] { pl.mapByteRange = parseByteRange(br) }
                 continue
             }
             if line.hasPrefix("#") { continue }   // any other tag: ignore
@@ -99,6 +108,15 @@ public enum HLSParser {
     }
 
     // MARK: - helpers
+    /// `"<length>@<offset>"`, with offset defaulting to 0.
+    private static func parseByteRange(_ body: String) -> (Int, Int)? {
+        let parts = body.trimmingCharacters(in: CharacterSet(charactersIn: "\" "))
+            .components(separatedBy: "@")
+        guard let l = Int(parts[0]) else { return nil }
+        if parts.count == 2, let o = Int(parts[1]) { return (l, o) }
+        return (l, 0)
+    }
+
     private static func resolve(_ uri: String, base: URL) -> URL {
         if let u = URL(string: uri, relativeTo: base) { return u }
         return URL(string: uri) ?? base

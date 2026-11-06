@@ -48,6 +48,15 @@ public final class Aria2RPC {
         return res as? String ?? ""
     }
 
+    /// A Metalink document may describe several files, so `aria2.addMetalink`
+    /// returns an array of GIDs. Siphon tracks the first one.
+    @discardableResult
+    public func addMetalink(_ data: Data, options: [String: String] = [:]) async throws -> String {
+        let res = try await call(method: "aria2.addMetalink",
+                                 params: [data.base64EncodedString(), options])
+        return (res as? [String])?.first ?? ""
+    }
+
     // MARK: - control
     public func pause(_ gid: String) async throws { _ = try await call(method: "aria2.pause", params: [gid]) }
     public func unpause(_ gid: String) async throws { _ = try await call(method: "aria2.unpause", params: [gid]) }
@@ -60,7 +69,16 @@ public final class Aria2RPC {
         return res
     }
 
-    public func tellActive() async throws -> [[String: Any]] { try await query(method: "aria2.tellActive") }
+    /// `aria2.tellActive` takes an OPTIONAL array of keys — NOT (offset, num).
+    /// Passing numbers makes aria2 answer "The parameter at 0 has wrong type",
+    /// which used to be swallowed by `Aria2Engine.poll()` and silently disabled
+    /// all progress/state polling.
+    public func tellActive() async throws -> [[String: Any]] {
+        guard let res = try await call(method: "aria2.tellActive", params: []) as? [[String: Any]] else {
+            return []
+        }
+        return res
+    }
     public func tellWaiting() async throws -> [[String: Any]] { try await query(method: "aria2.tellWaiting") }
     public func tellStopped() async throws -> [[String: Any]] { try await query(method: "aria2.tellStopped") }
 
