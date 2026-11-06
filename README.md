@@ -65,9 +65,12 @@ open build/Siphon.app
 
 # 4) 从矢量源重新生成应用图标（改了 scripts/MakeIcon.swift 后执行）
 ./scripts/make-icon.sh
+
+# 5) 生成可拖拽安装的 DMG（自动挂载校验签名后卸载）
+./scripts/make-dmg.sh
 ```
 
-`build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。
+`build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-0.1.0.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
 
 `verify.sh` 共 5 组：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、以及**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（未安装 aria2c 时自动跳过）。
 
@@ -118,6 +121,7 @@ Resources/
   BrowserExtension/              Manifest V3 扩展示例
 scripts/
   build-app.sh                   release 编译 + .app 组装 + dylib 重链接 + 重签名
+  make-dmg.sh                    可拖拽安装的 DMG（含挂载后签名校验）
   make-icon.sh / MakeIcon.swift  矢量图标生成器
   verify.sh                      5 组可复现验证
 Tests/                           向量、解析与端到端测试
