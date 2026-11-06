@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 /// Native MPEG-DASH downloader.
 ///
@@ -6,13 +7,15 @@ import Foundation
 /// Segment fetching / ordered assembly / resume is delegated to `SegmentAssembler`.
 ///
 /// Output is the initialization segment followed by media segments in order, which is a
-/// valid fragmented-MP4 byte stream. For a single-file, universally-compatible MP4,
-/// pipe the result through `ffmpeg -c copy`.
-public final class DASHEngine: DownloadEngine {
+/// valid fragmented-MP4 byte stream. To turn that into a single, self-contained MP4 we
+/// formerly shelled out to `ffmpeg -c copy`; now we do a dependency-free AVFoundation
+/// passthrough remux (`flatten`), so no external binary is required for DASH either.
+@MainActor
+public final class DASHEngine: @preconcurrency DownloadEngine {
     public let name = "dash"
     public let supportedProtocols: Set<DownloadProtocol> = [.dash]
     public weak var delegate: (any EngineDelegate)? {
-        didSet { assembler.delegate = delegate }
+        didSet { assembler.delegate = self }
     }
 
     private let assembler = SegmentAssembler(concurrency: 6)
@@ -25,7 +28,7 @@ public final class DASHEngine: DownloadEngine {
     public func submit(_ task: DownloadTask) async throws {
         if outputs[task.id] != nil {
             do { try assembler.resume(task.id) } catch {
-                await delegate?.engineDidChangeState(taskID: task.id, state: .error, error: error)
+                delegate?.engineDidChangeState(taskID: task.id, state: .error, error: error)
             }
             return
         }
@@ -34,8 +37,8 @@ public final class DASHEngine: DownloadEngine {
         guard let xml = String(data: data, encoding: .utf8),
               let best = DASHMPDParser.parse(xml, baseURL: task.source)
                 .max(by: { $0.bandwidth < $1.bandwidth }) else {
-            await delegate?.engineDidChangeState(taskID: task.id, state: .error,
-                                                 error: URLError(.cannotParseResponse))
+            delegate?.engineDidChangeState(taskID: task.id, state: .error,
+                                             error: URLError(.cannotParseResponse))
             return
         }
 
@@ -51,14 +54,14 @@ public final class DASHEngine: DownloadEngine {
 
         try assembler.start(taskID: task.id, destination: out, requests: requests,
                             headers: task.options)
-        await delegate?.engineDidChangeState(taskID: task.id, state: .active, error: nil)
+        delegate?.engineDidChangeState(taskID: task.id, state: .active, error: nil)
     }
 
     public func pause(_ id: UUID) async { assembler.pause(id) }
 
     public func resume(_ id: UUID) async {
         do { try assembler.resume(id) } catch {
-            await delegate?.engineDidChangeState(taskID: id, state: .error, error: error)
+            delegate?.engineDidChangeState(taskID: id, state: .error, error: error)
         }
     }
 
@@ -75,5 +78,43 @@ public final class DASHEngine: DownloadEngine {
         }
         let (data, _) = try await URLSession.shared.data(for: req)
         return data
+    }
+}
+
+extension DASHEngine: EngineDelegate {
+    public func engineDidUpdate(taskID: UUID, progress: DownloadProgress) {
+        delegate?.engineDidUpdate(taskID: taskID, progress: progress)
+    }
+
+    public func engineDidChangeState(taskID: UUID, state: DownloadState, error: Error?) {
+        if state == .completed, let fragmented = outputs[taskID] {
+            // Flatten the fragmented-MP4 output into a single self-contained MP4 in the
+            // background. If export is unavailable or fails we keep the fragmented file,
+            // which is still playable, so playback is never lost.
+            Task.detached(priority: .utility) { await Self.flatten(fragmented) }
+        }
+        delegate?.engineDidChangeState(taskID: taskID, state: state, error: error)
+    }
+
+    /// Replace the fragmented-MP4 byte stream with one flattened, seekable MP4 using
+    /// AVFoundation's passthrough export (no re-encode, no ffmpeg dependency).
+    private static func flatten(_ fragmented: URL) async {
+        let asset = AVURLAsset(url: fragmented)
+        guard let session = AVAssetExportSession(asset: asset,
+                                                 presetName: AVAssetExportPresetPassthrough),
+              session.supportedFileTypes.contains(.mp4) else { return }
+        let flat = fragmented.deletingLastPathComponent()
+            .appendingPathComponent(fragmented.deletingPathExtension().lastPathComponent + "_flat.mp4")
+        session.outputURL = flat
+        session.outputFileType = .mp4
+        await session.export()
+        if session.status == .completed,
+           let size = try? FileManager.default.attributesOfItem(atPath: flat.path)[.size],
+           (size as? NSNumber)?.int64Value ?? 0 > 0 {
+            try? FileManager.default.removeItem(at: fragmented)
+            try? FileManager.default.moveItem(at: flat, to: fragmented)
+        } else {
+            try? FileManager.default.removeItem(at: flat)
+        }
     }
 }

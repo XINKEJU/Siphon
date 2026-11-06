@@ -30,6 +30,12 @@ public enum HLSParser {
                              keyURL: nil, keyIV: nil, mediaSequence: 0)
         let lines = text.components(separatedBy: "\n")
         var pendingByteRange: (Int, Int)?
+        /// Whether the pending `#EXT-X-BYTERANGE` carried an explicit `@offset`.
+        /// When false, the offset must continue from the previous segment's end (RFC 8216).
+        var pendingByteRangeHasOffset = false
+        /// End offset (exclusive) of the last resolved byte-range, used to derive
+        /// implicit offsets for subsequent ranges.
+        var lastByteRangeEnd: Int? = nil
         var pendingKeyURI: String?
         var pendingKeyIV: String?
         var mediaSequence: Int64 = 0
@@ -67,6 +73,7 @@ public enum HLSParser {
             if line.hasPrefix("#EXT-X-BYTERANGE") {
                 let body = String(line.dropFirst("#EXT-X-BYTERANGE:".count))
                 pendingByteRange = parseByteRange(body)
+                pendingByteRangeHasOffset = body.contains("@")
                 continue
             }
             if line.hasPrefix("#EXT-X-MAP") {
@@ -74,7 +81,12 @@ public enum HLSParser {
                 if let uri = attrs["URI"]?.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) {
                     pl.mapURL = resolve(uri, base: baseURL)
                 }
-                if let br = attrs["BYTERANGE"] { pl.mapByteRange = parseByteRange(br) }
+                if let br = attrs["BYTERANGE"] {
+                    let hasOffset = br.contains("@")
+                    var parsed = parseByteRange(br)
+                    if let p = parsed, !hasOffset { parsed = (p.0, lastByteRangeEnd ?? 0) }
+                    pl.mapByteRange = parsed
+                }
                 continue
             }
             if line.hasPrefix("#") { continue }   // any other tag: ignore
@@ -84,8 +96,16 @@ public enum HLSParser {
                 pl.variants.append((resolve(line, base: baseURL), bw))
                 awaiting = .none
             case .segment:
-                pl.segments.append(HLSSegment(url: resolve(line, base: baseURL), byteRange: pendingByteRange))
+                var br = pendingByteRange
+                if let b = br, !pendingByteRangeHasOffset {
+                    // RFC 8216: a BYTERANGE without an explicit `@offset` continues
+                    // from the end of the previous segment's range.
+                    br = (b.0, lastByteRangeEnd ?? 0)
+                }
+                if let b = br { lastByteRangeEnd = b.1 + b.0 }
+                pl.segments.append(HLSSegment(url: resolve(line, base: baseURL), byteRange: br))
                 pendingByteRange = nil
+                pendingByteRangeHasOffset = false
                 awaiting = .none
             case .none:
                 break

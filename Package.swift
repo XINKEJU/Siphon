@@ -26,7 +26,18 @@ let package = Package(
         .executableTarget(
             name: "Siphon",
             path: "Sources/Siphon",
-            linkerSettings: [.unsafeFlags(modernSDKLinkerFlags)]
+            swiftSettings: [
+                // Optimize the shipped binary for size (smaller .app, often better
+                // code locality) instead of the default speed tuning.
+                .unsafeFlags(["-Osize", "-whole-module-optimization"],
+                             .when(configuration: .release))
+            ],
+            linkerSettings: [
+                .unsafeFlags(modernSDKLinkerFlags),
+                // Drop unreachable code/data from the final Mach-O. Must be wrapped
+                // in -Xlinker because linkerSettings flow through the swiftc driver.
+                .unsafeFlags(["-Xlinker", "-dead_strip"], .when(configuration: .release))
+            ]
         )
     ]
 )

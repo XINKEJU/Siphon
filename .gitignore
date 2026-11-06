@@ -25,3 +25,7 @@ build/
 .env
 .idea/
 .vscode/
+
+# Test fixtures are generated deterministically by scripts/verify.sh
+Tests/fixtures-http/big.bin
+Tests/fixtures-ed2k/fixture.bin

@@ -16,20 +16,21 @@ SHARED=(Sources/Siphon/Engines/Engine.swift
         Sources/Siphon/Engines/DASH/DASHMPDParser.swift)
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"; kill "${SERVER_PID:-}" 2>/dev/null || true' EXIT
+trap 'rm -rf "$TMP"; kill "${SERVER_PID:-}" "${SERVER2_PID:-}" "${SERVER3_PID:-}" \
+      "${SERVER4_PID:-}" "${ED2K_PID:-}" 2>/dev/null || true' EXIT
 
-echo "== 1/6 swift build =="
+echo "== 1/12 swift build =="
 swift build
 
-echo "== 2/6 MD4 / eD2K / link vectors =="
+echo "== 2/12 MD4 / eD2K / link vectors =="
 swiftc -o "$TMP/vectors" Tests/VectorTests/main.swift "${MODELS[@]}" "${ED2K[@]}"
 "$TMP/vectors"
 
-echo "== 3/6 HLS / DASH parsers =="
+echo "== 3/12 HLS / DASH parsers =="
 swiftc -o "$TMP/parsers" Tests/ParserTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/parsers"
 
-echo "== 4/6 concurrent ordered segment assembly =="
+echo "== 4/12 concurrent ordered segment assembly =="
 ( cd Tests/fixtures && exec python3 -m http.server 18765 --bind 127.0.0.1 ) \
     > "$TMP/server.log" 2>&1 &
 SERVER_PID=$!
@@ -43,12 +44,12 @@ done
 swiftc -parse-as-library -o "$TMP/segments" Tests/SegmentTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/segments"
 
-echo "== 5/6 real aria2 JSON-RPC download (skipped if aria2c absent) =="
+echo "== 5/12 real aria2 JSON-RPC download (skipped if aria2c absent) =="
 if command -v aria2c >/dev/null 2>&1; then
     ( cd Tests/fixtures-aria2 && exec python3 -m http.server 18766 --bind 127.0.0.1 ) \
         > "$TMP/server2.log" 2>&1 &
     SERVER2_PID=$!
-    trap 'rm -rf "$TMP"; kill "${SERVER_PID:-}" "${SERVER2_PID:-}" 2>/dev/null || true' EXIT
+    trap 'rm -rf "$TMP"; kill "${SERVER_PID:-}" "${SERVER2_PID:-}" "${SERVER3_PID:-}" 2>/dev/null || true' EXIT
     for _ in $(seq 1 50); do
         if curl -sf -o /dev/null http://127.0.0.1:18766/file.bin; then break; fi
         python3 -c 'import time; time.sleep(0.1)'
@@ -62,7 +63,7 @@ else
     echo "SKIP  aria2c not installed (brew install aria2 to enable)"
 fi
 
-echo "== 6/6 protocol matrix: detection, vendor links, playlists, SigV4, normalization, engine E2E =="
+echo "== 6/12 protocol matrix: detection, vendor links, playlists, SigV4, normalization, engine E2E =="
 # Fixture server on :18765 is still running from step 4 and serves seg0.ts.
 PROTOCOL_SOURCES=(
     Sources/Siphon/Engines/Engine.swift
@@ -83,6 +84,154 @@ PROTOCOL_SOURCES=(
 )
 swiftc -o "$TMP/protocols" Tests/ProtocolTests/main.swift "${PROTOCOL_SOURCES[@]}"
 "$TMP/protocols"
+
+echo "== 7/12 ED2K engine (resume destination regression) =="
+swiftc -o "$TMP/ed2kengine" Tests/ED2KTests/main.swift \
+    Sources/Siphon/Models/*.swift \
+    Sources/Siphon/Engines/Engine.swift \
+    Sources/Siphon/Managers/SpeedLimitController.swift \
+    Sources/Siphon/Engines/ED2K/*.swift
+"$TMP/ed2kengine"
+
+echo "== 8/12 NativeMessagingServer (split-request regression) =="
+swiftc -framework Network -o "$TMP/nativemsg" \
+    Tests/NativeMessagingTests/main.swift \
+    Sources/Siphon/BrowserExtension/NativeMessagingServer.swift
+"$TMP/nativemsg"
+
+echo "== 9/12 native HTTP download engine (no external tools) =="
+mkdir -p Tests/fixtures-http
+# Deterministic ~5 MiB fixture so the test can verify exact byte equality.
+python3 - <<'PY'
+import os
+p = "Tests/fixtures-http/big.bin"
+if not os.path.exists(p):
+    n = 5_000_000
+    s = 123456789
+    with open(p, "wb") as f:
+        for _ in range(0, n, 65536):
+            chunk = bytearray(min(65536, n - _))
+            for j in range(len(chunk)):
+                s = (1103515245 * s + 12345) & 0x7fffffff
+                chunk[j] = s & 0xff
+            f.write(chunk)
+PY
+
+# Range-capable fixture server on :18767 (python -m http.server does not honour
+# Range, so we serve a tiny handler that does).
+cat > "$TMP/range_server.py" <<'PY'
+import http.server, socketserver, os, re
+ROOT = os.path.join(os.getcwd(), "Tests/fixtures-http")
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = os.path.join(ROOT, self.path.lstrip("/"))
+        if not os.path.isfile(path):
+            self.send_error(404); return
+        size = os.path.getsize(path)
+        rng = self.headers.get("Range")
+        if rng:
+            m = re.match(r"bytes=(\d+)-(\d*)", rng)
+            start = int(m.group(1)); end = size - 1
+            if m.group(2): end = min(int(m.group(2)), size - 1)
+            with open(path, "rb") as f:
+                f.seek(start); data = f.read(end - start + 1)
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.end_headers(); self.wfile.write(data)
+        else:
+            with open(path, "rb") as f: data = f.read()
+            self.send_response(200)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(size))
+            self.end_headers(); self.wfile.write(data)
+    def log_message(self, *a): pass
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer(("127.0.0.1", 18767), H) as s:
+    s.serve_forever()
+PY
+python3 "$TMP/range_server.py" > "$TMP/range_server.log" 2>&1 &
+SERVER3_PID=$!
+for _ in $(seq 1 50); do
+    if curl -sf -o /dev/null http://127.0.0.1:18767/big.bin; then break; fi
+    python3 -c 'import time; time.sleep(0.1)'
+done
+swiftc -o "$TMP/nativehttp" Tests/NativeHTTPTests/main.swift \
+    Sources/Siphon/Models/*.swift \
+    Sources/Siphon/Engines/Engine.swift \
+    Sources/Siphon/Managers/SpeedLimitController.swift \
+    Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift
+"$TMP/nativehttp"
+kill "$SERVER3_PID" 2>/dev/null || true
+
+echo "== 10/12 native eD2K transport (real wire protocol E2E) =="
+# Deterministic multi-block fixture (>2 x 180 KiB + short tail); both the Swift
+# test and the independent Python peer read the same file.
+FIXTURE=Tests/fixtures-ed2k/fixture.bin
+mkdir -p Tests/fixtures-ed2k
+if [[ ! -f "$FIXTURE" ]]; then
+    python3 - "$FIXTURE" <<'PY'
+import sys
+seed = 0x9E3779B97F4A7C15
+size = 180*1024*2 + 12345
+with open(sys.argv[1], "wb") as f:
+    for _ in range(size):
+        seed = (seed * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+        f.write(bytes([(seed >> 33) & 0xFF]))
+PY
+fi
+python3 Tests/fixtures-ed2k/ed2k_peer.py "$FIXTURE" 18770 > "$TMP/ed2k_peer.log" 2>&1 &
+ED2K_PID=$!
+for _ in $(seq 1 50); do
+    if python3 -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',18770))==0 else 1)" 2>/dev/null; then break; fi
+    python3 -c 'import time; time.sleep(0.1)'
+done
+swiftc -o "$TMP/ed2knative" Tests/ED2KNativeTests/main.swift \
+    Sources/Siphon/Models/*.swift \
+    Sources/Siphon/Engines/Engine.swift \
+    Sources/Siphon/Managers/SpeedLimitController.swift \
+    Sources/Siphon/Engines/ED2K/*.swift
+"$TMP/ed2knative"
+kill "$ED2K_PID" 2>/dev/null || true
+
+echo "== 11/12 LocalEngine + CurlEngine transport smoke =="
+( cd Tests/fixtures-http && exec python3 -m http.server 18773 --bind 127.0.0.1 ) \
+    > "$TMP/server4.log" 2>&1 &
+SERVER4_PID=$!
+for _ in $(seq 1 50); do
+    if curl -sf -o /dev/null http://127.0.0.1:18773/big.bin; then break; fi
+    python3 -c 'import time; time.sleep(0.1)'
+done
+SMOKE=(Sources/Siphon/Engines/Engine.swift
+       "${MODELS[@]}"
+       Sources/Siphon/Protocols/S3Signer.swift
+       Sources/Siphon/Protocols/ProtocolSettings.swift
+       Sources/Siphon/Engines/Shared/ExternalRunner.swift
+       Sources/Siphon/Managers/SpeedLimitController.swift
+       Sources/Siphon/Engines/Local/LocalEngine.swift
+       Sources/Siphon/Engines/External/CurlEngine.swift)
+swiftc -o "$TMP/smoke" Tests/TransferSmokeTests/main.swift "${SMOKE[@]}"
+"$TMP/smoke"
+kill "$SERVER4_PID" 2>/dev/null || true
+
+echo "== 12/12 Info.plist scheme registration matches URISchemes.registered =="
+python3 - <<'PY'
+import plistlib, re, sys
+p = plistlib.load(open('Resources/Info.plist', 'rb'))
+plist_schemes = sorted({s for e in p['CFBundleURLTypes'] for s in e['CFBundleURLSchemes']})
+src = open('Sources/Siphon/Models/Protocols.swift').read()
+m = re.search(r'public static let registered: \[String\] = \[(.*?)\]', src, re.S)
+if not m:
+    sys.exit('URISchemes.registered not found in Protocols.swift')
+swift_schemes = sorted(set(re.findall(r'"([a-z0-9]+)"', m.group(1))))
+missing_in_plist = set(swift_schemes) - set(plist_schemes)
+missing_in_swift = set(plist_schemes) - set(swift_schemes)
+if missing_in_plist or missing_in_swift:
+    sys.exit(f'scheme mismatch: plist-only={sorted(missing_in_swift)} '
+             f'swift-only={sorted(missing_in_plist)}')
+print(f'OK  {len(swift_schemes)} schemes registered in both Info.plist and URISchemes.registered')
+PY
 
 echo
 echo "ALL CHECKS PASSED"

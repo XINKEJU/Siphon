@@ -13,7 +13,7 @@ func check(_ label: String, _ ok: Bool, _ detail: String = "") {
 
 let bootstrap = Aria2Bootstrap.shared
 do {
-    try bootstrap.start()
+    try await bootstrap.start()
     check("aria2c launched", bootstrap.isRunning)
 } catch {
     print("FAIL  aria2c launch: \(error)")

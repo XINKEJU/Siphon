@@ -29,11 +29,27 @@ public final class SpeedLimitController: @unchecked Sendable {
     }
 
     /// Sleep until `bytes` worth of tokens are available. No-op when unlimited.
+    ///
+    /// Each draw is capped at the bucket capacity (one second's worth of
+    /// `limitBytesPerSec`). This way a single request larger than the per-second
+    /// budget — e.g. an HLS/DASH segment of 5 MB under a 2 MB/s cap — is split
+    /// into multiple waits instead of dead-locking forever (the old code let
+    /// `tokens` top out at `limit` while `need` stayed at the full `bytes`, so
+    /// `tokens >= need` could never become true).
     public func consume(_ bytes: Int) async {
-        while true {
-            let wait: TimeInterval? = computeWait(bytes: bytes)
-            guard let wait else { return }
-            try? await Task.sleep(nanoseconds: UInt64(max(0.001, wait) * 1_000_000_000))
+        guard currentLimit > 0, bytes > 0 else { return }
+        let capacity = max(1, Int(currentLimit))
+        var remaining = bytes
+        while remaining > 0 {
+            let draw = min(remaining, capacity)
+            remaining -= draw
+            // `computeWait` returns `nil` when the bucket already holds enough
+            // tokens for this draw — consume immediately and continue with the
+            // rest. (An unlimited limiter is handled by the `guard` above and
+            // never reaches the loop, so `nil` here never means "stop".)
+            if let wait = computeWait(bytes: draw) {
+                try? await Task.sleep(nanoseconds: UInt64(max(0.001, wait) * 1_000_000_000))
+            }
         }
     }
 

@@ -33,7 +33,7 @@
     <key>LSUIElement</key>
     <false/>
     <key>NSHumanReadableCopyright</key>
-    <string>Built on aria2 (GPLv2, external process). Native engines: MIT.</string>
+    <string>Native Swift engines (HTTP, HLS, DASH, eD2K). Optional aria2 (GPLv2, external process) for BT/Magnet/Metalink/SFTP.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -73,6 +73,27 @@
                 <string>ipfs</string>
                 <string>ipns</string>
                 <string>s3</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>libcurl Catch-all Links</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>tftp</string>
+                <string>gopher</string>
+                <string>gophers</string>
+                <string>rtsp</string>
+                <string>dict</string>
+                <string>imap</string>
+                <string>imaps</string>
+                <string>pop3</string>
+                <string>pop3s</string>
+                <string>smtp</string>
+                <string>smtps</string>
+                <string>ldap</string>
+                <string>ldaps</string>
+                <string>mqtt</string>
             </array>
         </dict>
     </array>

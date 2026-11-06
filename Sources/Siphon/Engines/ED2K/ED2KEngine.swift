@@ -1,18 +1,20 @@
 import Foundation
 
-// MARK: - Honest scope statement
+// MARK: - Scope
 //
-// This module implements the parts of eD2K that are self-contained and verifiable:
+// This module now ships a working native eD2K client:
 //   * MD4 (RFC 1320), the eD2K file hash and local-file verification
-//   * ed2k:// link parsing (file size, hash, sources)
-//   * the transport-facing backend abstraction below
+//   * ed2k:// link parsing (file size, hash, embedded sources)
+//   * a real eDonkey/eMule TCP transfer backend (`NativeED2KBackend`):
+//     HELLO handshake, source discovery via OP_GETSOURCES, 180 KiB part
+//     requests (32- and 64-bit), ordered writes and per-link hash verification
+//   * the backend abstraction below, so tests can inject a capture backend
 //
-// A *complete* eD2K transfer needs a full ED2K/Kademlia client: server login +
-// ID assignment, `OP_ASKFILES` / search-by-hash, source exchange (OP_REQUESTFILENAME
-// / OP_REQFILENAMESP), the peer handshake, 180 KiB part requests, the credit system,
-// and Kad DHT source finding. That is a separate native library, not something a UI
-// scaffold can reimplement correctly in one pass. The recommended integration paths
-// are documented in README.md under "eD2K 传输后端".
+// Not implemented (requires a live P2P network and a full eMule stack):
+// Kad/UDP DHT bootstrapping, protocol obfuscation, AICH hashsets, source
+// exchange and the credit system. Links without embedded sources therefore need
+// a configured eD2K server; otherwise the backend fails explicitly with
+// `noSources` rather than pretending to download.
 
 public enum ED2KError: Error, LocalizedError {
     case backendUnavailable
@@ -22,15 +24,15 @@ public enum ED2KError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .backendUnavailable:
-            return "eD2K 传输后端尚未接入。已解析链接并计算 eD2K 哈希，但 P2P 传输需要集成 libed2k / aMule 内核（见 README）。"
+            return "eD2K 传输后端未启用。"
         case .invalidLink(let s): return "无效的 ed2k 链接：\(s)"
         case .hashMismatch(let e, let a): return "校验失败：期望 \(e)，实际 \(a)"
         }
     }
 }
 
-/// Contract for a real eD2K core. Implement this by bridging `libed2k` (C++) or
-/// spawning an `aMule`/`amulecmd` daemon. `ED2KEngine` stays UI-facing and backend-agnostic.
+/// Contract for a real eD2K core. `NativeED2KBackend` implements the native
+/// eDonkey/eMule TCP transfer; tests may inject a capture backend instead.
 public protocol ED2KBackend: AnyObject {
     /// Connect to an ED2K server / bootstrap Kad.
     func connect() async throws
@@ -40,8 +42,8 @@ public protocol ED2KBackend: AnyObject {
     func cancel(fileHashHex: String) async
 }
 
-/// Default backend: deliberately reports that the native core is not wired up yet.
-/// Kept explicit so the app never *pretends* an eD2K download succeeded.
+/// Opt-out backend: explicitly refuses every transfer. Only used when a caller
+/// wants to disable eD2K entirely; the app's default is `NativeED2KBackend`.
 public final class UnavailableED2KBackend: ED2KBackend {
     public init() {}
     public func connect() async throws { throw ED2KError.backendUnavailable }
@@ -60,9 +62,10 @@ public final class ED2KEngine: DownloadEngine {
 
     private let backend: ED2KBackend
     private var links: [UUID: ED2KLink] = [:]
+    private var destinations: [UUID: URL] = [:]
     private var running: Set<UUID> = []
 
-    public init(backend: ED2KBackend = UnavailableED2KBackend()) {
+    public init(backend: ED2KBackend = NativeED2KBackend()) {
         self.backend = backend
     }
 
@@ -72,6 +75,7 @@ public final class ED2KEngine: DownloadEngine {
     public func submit(_ task: DownloadTask) async throws {
         let link = try ED2KURI.parse(task.source)
         links[task.id] = link
+        destinations[task.id] = task.destination
         running.insert(task.id)
 
         // Provide real, useful progress even before a backend exists: report the
@@ -109,10 +113,10 @@ public final class ED2KEngine: DownloadEngine {
     }
 
     public func resume(_ id: UUID) async {
-        guard let link = links[id] else { return }
+        guard let link = links[id], let destination = destinations[id] else { return }
         running.insert(id)
         do {
-            try await backend.download(link, destination: URL(fileURLWithPath: NSTemporaryDirectory())) { _ in }
+            try await backend.download(link, destination: destination) { _ in }
             await delegate?.engineDidChangeState(taskID: id, state: .active, error: nil)
         } catch {
             await delegate?.engineDidChangeState(taskID: id, state: .error, error: error)
@@ -123,6 +127,7 @@ public final class ED2KEngine: DownloadEngine {
         if let link = links.removeValue(forKey: id) {
             await backend.cancel(fileHashHex: link.hashHex)
         }
+        destinations.removeValue(forKey: id)
         running.remove(id)
     }
 

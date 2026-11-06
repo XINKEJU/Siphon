@@ -9,7 +9,7 @@ import Foundation
 public final class CurlEngine: DownloadEngine {
     public let name = "curl"
     public let supportedProtocols: Set<DownloadProtocol> =
-        [.ftps, .smb, .smbs, .ipfs, .ipns, .curl]
+        [.ftps, .smb, .smbs, .curl]
     public weak var delegate: (any EngineDelegate)?
 
     private var runners: [UUID: ExternalRunner] = [:]
@@ -44,7 +44,6 @@ public final class CurlEngine: DownloadEngine {
                                 withIntermediateDirectories: true)
         let settings = ProtocolSettings.load()
         let curl = URL(fileURLWithPath: settings.curlPath)
-        let scheme = task.source.scheme?.lowercased() ?? ""
 
         var args: [String] = [
             "--globoff", "--location", "--fail", "--silent", "--show-error",
@@ -55,9 +54,6 @@ public final class CurlEngine: DownloadEngine {
             args += ["--continue-at", "-"]
         }
         if let limit, limit > 0 { args += ["--limit-rate", String(limit)] }
-        if scheme == "ipfs" || scheme == "ipns" {
-            args += ["--ipfs-gateway", settings.ipfsGateway]
-        }
         for (k, v) in task.options where !["dir", "out"].contains(k.lowercased()) {
             args += ["--header", "\(k): \(v)"]
         }

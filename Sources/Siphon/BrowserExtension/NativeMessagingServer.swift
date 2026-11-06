@@ -44,14 +44,48 @@ public final class NativeMessagingServer {
 
     private func handle(_ conn: NWConnection) {
         conn.start(queue: queue)
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, _ in
-            guard let self, let data else { conn.cancel(); return }
-            let response = self.process(data)
-            conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+        var buffer = Data()
+        func read() {
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, error in
+                guard let self else { conn.cancel(); return }
+                if let data, !data.isEmpty { buffer.append(data) }
+                // Keep reading until we hold a complete HTTP request (full header block
+                // plus the entire body per Content-Length). The old code received only
+                // once, so a TCP-split or >64 KB POST arrived truncated or was dropped.
+                if error == nil, data != nil, !hasCompleteRequest(buffer) {
+                    read()
+                    return
+                }
+                let response = process(buffer)
+                conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
+            }
         }
+        read()
     }
 
-    private func process(_ data: Data) -> Data {
+    /// True once `data` contains a full HTTP request: a complete header block, and —
+    /// for POST — at least `Content-Length` bytes of body after the header terminator.
+    /// Body length is measured in **bytes**, not Swift characters, so multi-byte UTF-8
+    /// payloads are read exactly (neither truncated nor over-read).
+    func hasCompleteRequest(_ data: Data) -> Bool {
+        // The header/body terminator "\r\n\r\n" is pure ASCII, so we can locate it by
+        // byte value regardless of how the body is encoded.
+        let terminator: [UInt8] = [0x0D, 0x0A, 0x0D, 0x0A]
+        guard let headerEnd = data.range(of: Data(terminator)) else { return false }
+        // Header block is everything up to the terminator (ASCII, so UTF-8 safe).
+        let header = String(data: data[..<headerEnd.lowerBound], encoding: .utf8) ?? ""
+        guard header.hasPrefix("POST"),
+              let cl = header.range(of: "Content-Length: "),
+              let len = Int(header[cl.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines))
+        else {
+            // Non-POST (e.g. GET) or missing Content-Length: header completeness suffices.
+            return true
+        }
+        let bodyBytes = data.count - headerEnd.upperBound
+        return bodyBytes >= len
+    }
+
+    func process(_ data: Data) -> Data {
         guard let raw = String(data: data, encoding: .utf8) else { return http("400 Bad Request", #"{"ok":false}"#) }
         let lines = raw.components(separatedBy: "\r\n")
         let requestLine = lines.first ?? ""

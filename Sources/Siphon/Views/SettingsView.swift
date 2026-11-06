@@ -118,11 +118,10 @@ struct SettingsView: View {
                 Text("POST {\"url\": \"…\"} 即可添加任务；浏览器扩展可通过 host_permissions 调用。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("aria2 引擎") {
+            Section("P2P 引擎（aria2，随应用打包）") {
                 HStack(spacing: 10) {
                     Circle()
-                        .fill(store.aria2Status == "已停止" || store.aria2Status == "aria2 不可用"
-                              ? Color.red : Color.green)
+                        .fill(store.aria2Ready ? Color.green : Color.red)
                         .frame(width: 8, height: 8)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("引擎状态")
@@ -135,10 +134,10 @@ struct SettingsView: View {
                 .padding(12)
                 .glassCard(cornerRadius: 12)
 
-                Text("应用需捆绑 aria2c 二进制（放到 App Bundle 的 Resources 或 ~/Library/Application Support/Siphon/）。")
+                Text("aria2c 随应用打包（GPLv2，独立进程），仅用于 BitTorrent / Magnet / Metalink / SFTP。HTTP/HTTPS/FTP、eD2K 等由原生 Swift 引擎处理，无需任何外部依赖。")
                     .font(.caption).foregroundStyle(.secondary)
                 GlassGroup(spacing: 8) {
-                    Button("重新启动引擎") { store.restartAria2() }
+                    Button("重新启动引擎") { Task { await store.restartAria2() } }
                         .controlSize(.small)
                         .glassButton()
                     Button("停止引擎", role: .destructive) { store.stop() }
@@ -157,7 +156,7 @@ struct SettingsView: View {
                 TextField("网关地址", text: $ipfsGateway,
                           prompt: Text("https://ipfs.io 或 http://127.0.0.1:8080"))
                     .textFieldStyle(.roundedBorder)
-                Text("ipfs:// 与 ipns:// 会重写为 <网关>/ipfs/<CID> 后交给 aria2；也可用系统 libcurl 的 --ipfs-gateway。")
+                Text("ipfs:// 与 ipns:// 会重写为 <网关>/ipfs/<CID> 后交给原生 HTTP 引擎拉取。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("S3 兼容对象存储") {
@@ -235,12 +234,13 @@ struct SettingsView: View {
                     .resizable()
                     .frame(width: 72, height: 72)
                 Text("Siphon").font(.title2.weight(.semibold))
-                Text("原生 macOS 全协议下载管理器")
+                Text("原生 macOS 多协议下载管理器")
                     .font(.subheadline).foregroundStyle(.secondary)
                 Divider().frame(width: 260)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("下载内核：aria2（独立进程，JSON-RPC）")
-                    Text("原生补充：HLS · DASH · eD2K 哈希 · 专用链 · 网关 · libcurl")
+                    Text("下载内核：Swift 原生 HTTP/HTTPS/FTP（URLSession 分段）")
+                    Text("P2P：aria2 独立进程，随应用打包（BT / Magnet / Metalink / SFTP）")
+                    Text("原生协议：HTTP/HTTPS/FTP · HLS · DASH · eD2K 传输 · 专用链 · 网关 · libcurl")
                     Text("界面：SwiftUI · Liquid Glass（macOS 26+）")
                 }
                 .font(.caption)
@@ -250,7 +250,7 @@ struct SettingsView: View {
             .glassCard(cornerRadius: 20)
 
             Spacer()
-            Text("aria2 采用 GPLv2；以独立进程调用，不链接其库。")
+            Text("HTTP/HTTPS/FTP、DASH 扁平化与 eD2K 传输均为原生 Swift 实现；aria2 以独立进程调用（GPLv2），不链接其库。AFP 链接自动迁移为 SMB。")
                 .font(.caption2).foregroundStyle(.tertiary)
         }
         .padding()

@@ -104,6 +104,10 @@ public final class Aria2Engine: DownloadEngine {
                 + rpc.tellStopped()
         } catch { return }
 
+        // `submit`/`remove` mutate `gidToTask` on the main actor; this loop runs on a
+        // background Task. Snapshot the value-type map so this tick reads a consistent
+        // view instead of racing the writer (and never tears mid-iteration).
+        let gidToTask = self.gidToTask
         for s in statuses {
             guard let gid = s["gid"] as? String, let taskID = gidToTask[gid] else { continue }
             let progress = Self.progress(from: s)

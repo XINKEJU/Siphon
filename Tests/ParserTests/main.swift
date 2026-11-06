@@ -42,6 +42,24 @@ check("HLS media sequence", p.mediaSequence == 7)
 check("HLS byte range", p.segments.first?.byteRange?.length == 1000
       && p.segments.first?.byteRange?.offset == 200)
 check("HLS second segment has nil range", p.segments.last?.byteRange == nil)
+
+// Regression: EXT-X-BYTERANGE without an explicit '@offset' must continue from
+// the end of the previous segment's range (RFC 8216). Previously the offset was
+// always treated as 0, corrupting every segment after the first in such playlists.
+let implicitBR = """
+#EXTM3U
+#EXT-X-BYTERANGE:1000000
+#EXTINF:4.0,
+seg.ts
+#EXT-X-BYTERANGE:1000000
+#EXTINF:4.0,
+seg.ts
+"""
+let ip = HLSParser.parse(implicitBR, baseURL: URL(string: "https://cdn.example.com/h.m3u8")!)
+check("HLS implicit byterange seg0", ip.segments[0].byteRange?.offset == 0
+      && ip.segments[0].byteRange?.length == 1000000)
+check("HLS implicit byterange seg1 continues", ip.segments[1].byteRange?.offset == 1000000
+      && ip.segments[1].byteRange?.length == 1000000)
 check("HLS key URI", p.keyURL?.absoluteString == "https://cdn.example.com/key.bin")
 check("HLS key IV length", p.keyIV?.count == 16)
 check("HLS relative URL resolves", p.segments.first?.url.absoluteString

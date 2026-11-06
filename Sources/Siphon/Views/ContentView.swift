@@ -45,7 +45,7 @@ struct ContentView: View {
         .searchable(text: $searchText, prompt: "搜索任务")
         .toolbar { toolbarContent }
         .sheet(isPresented: $showingAdd) { AddTaskView() }
-        .task { store.start() }
+        .task { await store.start() }
         .alert("无法添加任务", isPresented: Binding(
             get: { store.lastError != nil },
             set: { if !$0 { store.lastError = nil } }
@@ -141,7 +141,7 @@ struct ContentView: View {
                     }
                 }
                 Divider()
-                Button("重新启动 aria2") { store.restartAria2() }
+                Button("重新启动 aria2") { Task { await store.restartAria2() } }
             } label: {
                 Label("更多操作", systemImage: "ellipsis.circle")
             }

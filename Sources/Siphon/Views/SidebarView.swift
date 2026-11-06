@@ -100,7 +100,7 @@ struct SidebarView: View {
                 .help("\(store.aria2Status) · 总速度 \(Formatting.speed(store.aggregateSpeed))")
 
                 if let e = store.startupError {
-                    Button { store.restartAria2() } label: {
+                    Button { Task { await store.restartAria2() } } label: {
                         Label(e, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption2)
                             .lineLimit(1)

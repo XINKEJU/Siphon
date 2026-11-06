@@ -4,12 +4,14 @@ import AppKit
 /// Siphon — a native macOS download manager.
 ///
 /// Architecture (borrowing the best of each project reviewed):
-/// - aria2 (C++) is the battle-tested core for HTTP/HTTPS/FTP/SFTP/BitTorrent/Metalink/magnet,
-///   driven over JSON-RPC as a separate process (avoids GPL linking obligations).
-/// - Native Swift engines add the protocols aria2 lacks: HLS, DASH and eD2K identification.
+/// - The core for HTTP/HTTPS/FTP and every vendor-link front-end (thunder, WebDAV, S3, IPFS…)
+///   is a dependency-free native engine (URLSession + byte-range segmentation).
+/// - aria2 (C++) is an OPTIONAL separate process, used only for protocols with no pure-Swift
+///   implementation: BitTorrent / Magnet / Metalink / SFTP (avoids GPL linking obligations).
+/// - Native Swift engines also cover HLS, DASH (with native AVFoundation fMP4 flattening) and eD2K id.
 /// - A DownloadManager routes each task to the correct engine and aggregates progress for the UI.
 /// - QueueManager (named queues, sequential/concurrent, schedule windows) — inspired by AB DM / HyperDM.
-/// - SpeedLimitController (global token bucket + aria2 limit) — inspired by Motrix / HyperDM.
+/// - SpeedLimitController (global token bucket) — inspired by Motrix / HyperDM.
 /// - ClipboardMonitor + browser native-messaging — inspired by HyperDM / Gopeed / AB DM.
 @main
 struct SiphonApp: App {
@@ -81,7 +83,7 @@ struct SiphonCommands: Commands {
                 NSWorkspace.shared.open(store.downloadDirectory)
             }
             Divider()
-            Button("重新启动 aria2") { store.restartAria2() }
+            Button("重新启动 aria2") { Task { await store.restartAria2() } }
             Toggle("显示任务详情", isOn: $showingInspector)
                 .keyboardShortcut("i", modifiers: [.command, .option])
         }

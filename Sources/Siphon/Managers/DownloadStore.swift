@@ -10,6 +10,9 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     @Published public var selectedTaskID: UUID?
     @Published public var filter: TaskFilter = .all
     @Published public var aria2Status: String = "未启动"
+    /// Prefer this over string-matching `aria2Status`: the human-readable status
+    /// text changes, but the readiness flag stays a reliable source of truth.
+    @Published public var aria2Ready: Bool = false
     @Published public var startupError: String?
     /// Last link-normalization failure (bad vendor link, missing S3 credentials, …).
     @Published public var lastError: String?
@@ -63,19 +66,20 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     /// Idempotent: `.task` modifiers can fire more than once, and Settings can request
     /// a restart. Registering engines twice would create duplicate RPC polling loops
     /// and replace live engine instances (losing their in-flight task state).
-    public func start() {
+    public func start() async {
         guard !didStart else { return }
         didStart = true
 
         let nativeEngines: [any DownloadEngine] = [
             HLSEngine(), DASHEngine(), ED2KEngine(),
-            CurlEngine(), SystemTransferEngine(), LocalEngine()
+            CurlEngine(), SystemTransferEngine(), LocalEngine(),
+            HTTPDownloadEngine()
         ]
         for engine in nativeEngines {
             engine.delegate = self
             for p in engine.supportedProtocols { engines[p] = engine }
         }
-        startAria2()
+        await startAria2()
         restoreIntegrations()
     }
 
@@ -88,25 +92,28 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         if d.bool(forKey: PrefKey.clipboard) { setClipboardEnabled(true) }
     }
 
-    public func restartAria2() {
+    public func restartAria2() async {
         Aria2Bootstrap.shared.stop()
-        startAria2()
+        await startAria2()
     }
 
-    private func startAria2() {
+    private func startAria2() async {
+        aria2Ready = false
         do {
-            try Aria2Bootstrap.shared.start()
+            try await Aria2Bootstrap.shared.start()
             let engine = Aria2Engine(endpoint: Aria2Bootstrap.shared.rpcURL)
             engine.delegate = self
             engine.startPolling()
             aria2 = engine
-            // Includes every URI front-end URINormalizer rewrites onto aria2's
-            // native protocols (thunder, WebDAV, IPFS, S3, …).
+            // aria2 handles only the P2P family (BT / Magnet / Metalink / SFTP);
+            // every other protocol is owned by the native / curl / system engines.
             for p in engine.supportedProtocols { engines[p] = engine }
-            aria2Status = "已连接 (127.0.0.1:6800)"
+            aria2Status = "已连接 aria2（用于 BT/Magnet/Metalink/SFTP）"
+            aria2Ready = true
             startupError = nil
         } catch {
-            aria2Status = "aria2 不可用"
+            aria2Status = "aria2 不可用（应用未正确打包 aria2c，BT/Magnet/Metalink/SFTP 暂不可用）"
+            aria2Ready = false
             startupError = error.localizedDescription
         }
     }
@@ -114,6 +121,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     public func stop() {
         Aria2Bootstrap.shared.stop()
         aria2?.suspendPolling()
+        aria2Ready = false
         aria2Status = "已停止"
         didStart = false   // allow a clean re-start if the window reappears
     }
@@ -243,6 +251,12 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
 
     public func engineDidChangeState(taskID: UUID, state: DownloadState, error: Error?) {
         guard let i = tasks.firstIndex(where: { $0.id == taskID }) else { return }
+        // Aria2's poll() reports the current state every tick; skip the per-second
+        // reschedule + full JSON re-encode when nothing actually changed.
+        guard tasks[i].state != state else {
+            if let error { tasks[i].errorDescription = error.localizedDescription }
+            return
+        }
         tasks[i].state = state
         if let error { tasks[i].errorDescription = error.localizedDescription }
         if state.isTerminal { save() }

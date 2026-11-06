@@ -99,13 +99,26 @@ public enum URINormalizer {
                                       options: options)]
 
         case .webdav, .webdavs:
-            // aria2 already speaks HTTP Basic/Digest auth embedded in the URL.
+            // The native HTTP engine speaks HTTP Basic/Digest auth embedded in the URL.
             guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
                 throw NormalizerError.malformedURL(input)
             }
             comps.scheme = proto == .webdavs ? "https" : "http"
             guard let target = comps.url else { throw NormalizerError.malformedURL(input) }
             return [NormalizedRequest(url: target, proto: proto, origin: input, options: options)]
+
+        case .afp:
+            // Apple removed the AFP client (mount_afp / NetFS afp.bundle) in
+            // modern macOS; NetFSMountURLSync(afp://) now returns ENOTSUP. AFP
+            // servers almost always expose the same share over SMB, which the
+            // system curl handles natively, so rewrite instead of dropping the
+            // protocol entirely. The original link is kept in `origin` for retry.
+            guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                throw NormalizerError.malformedURL(input)
+            }
+            comps.scheme = "smb"
+            guard let target = comps.url else { throw NormalizerError.malformedURL(input) }
+            return [NormalizedRequest(url: target, proto: .smb, origin: input, options: options)]
 
         case .s3:
             let signed = try S3Signer.presignedGET(s3URI: url, config: settings.s3)
@@ -139,7 +152,7 @@ public enum URINormalizer {
                                     settings: settings, depth: depth)
 
         case .http, .https, .ftp, .sftp, .bittorrent, .metalink, .magnet,
-             .ed2k, .hls, .dash, .ftps, .smb, .smbs, .nfs, .afp,
+             .ed2k, .hls, .dash, .ftps, .smb, .smbs, .nfs,
              .scp, .rsync, .file, .data, .curl:
             if !URISchemes.all.contains(scheme) && scheme != "file" && scheme != "data" {
                 throw NormalizerError.unsupportedScheme(scheme)
@@ -167,8 +180,8 @@ public enum URINormalizer {
 
     /// Schemes we advertise in the UI, grouped for the "新建下载" help text.
     public static var capabilitySummary: String {
-        "HTTP(S) · FTP/FTPS · SFTP/SCP · rsync · WebDAV · SMB · NFS · AFP · " +
-        "BT/Magnet/Metalink · eD2K · HLS · DASH · 迅雷/快车/QQ旋风 · IPFS · S3 · " +
-        "file/data · 批量列表"
+        "HTTP(S) · FTP/FTPS · SFTP/SCP · rsync · WebDAV · SMB (AFP 链接自动转 SMB) · " +
+        "NFS · BT/Magnet/Metalink · eD2K · HLS · DASH · 迅雷/快车/QQ旋风 · IPFS · S3 · " +
+        "file/data · 批量列表 · libcurl 兜底协议"
     }
 }

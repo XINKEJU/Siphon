@@ -2,14 +2,18 @@ import Foundation
 
 /// Bridges SSH-family and macOS network-filesystem protocols using tools Apple
 /// already ships: `/usr/bin/scp`, `/usr/bin/rsync`, `/sbin/mount_nfs`,
-/// `/sbin/mount_afp`, `/sbin/umount`.
+/// `/sbin/umount`.
 ///
-/// SFTP itself is handled by aria2 (which is built with libssh2); SCP and rsync
-/// are not part of aria2's URI grammar, and NFS/AFP have no userspace client in
-/// libcurl, so they need this bridge.
+/// SFTP itself is handled by aria2 (built with libssh2); SCP and rsync are not
+/// part of aria2's URI grammar, and NFS has no userspace client in libcurl.
+///
+/// AFP is NOT handled here: Apple removed `mount_afp` and the NetFS afp.bundle
+/// from modern macOS (NetFSMountURLSync(afp://) returns ENOTSUP). `afp://`
+/// links are rewritten to `smb://` by URINormalizer and served by CurlEngine.
+/// The `.afp` case below is a defensive guard for tasks restored from old saves.
 public final class SystemTransferEngine: DownloadEngine {
     public let name = "system"
-    public let supportedProtocols: Set<DownloadProtocol> = [.scp, .rsync, .nfs, .afp]
+    public let supportedProtocols: Set<DownloadProtocol> = [.scp, .rsync, .nfs]
     public weak var delegate: (any EngineDelegate)?
 
     private var runners: [UUID: ExternalRunner] = [:]
@@ -23,6 +27,8 @@ public final class SystemTransferEngine: DownloadEngine {
     public func submit(_ task: DownloadTask) async throws {
         tasks[task.id] = task
         switch task.protocol {
+        // `.afp` stays in the switch only so restored old tasks get the explicit
+        // "use smb://" error above instead of being handed to the SSH launcher.
         case .nfs, .afp: try await mountAndCopy(task)
         default: try launchSSH(task)
         }
@@ -97,25 +103,23 @@ public final class SystemTransferEngine: DownloadEngine {
         return "\(host):\(path)"
     }
 
-    // MARK: - NFS / AFP mount bridge
+    // MARK: - NFS mount bridge
     private func mountAndCopy(_ task: DownloadTask) async throws {
+        // Tasks restored from older saves may still carry `.afp`; never call the
+        // removed /sbin/mount_afp. Tell the user what actually works instead.
+        guard task.protocol == .nfs else {
+            throw ExternalRunnerError.transferFailed(
+                "AFP 已被 macOS 移除，请使用 smb:// 链接（会自动转换）")
+        }
         let fm = FileManager.default
         let mountPoint = fm.temporaryDirectory
             .appendingPathComponent("Siphon-Mount-\(task.id.uuidString)", isDirectory: true)
         try? fm.createDirectory(at: mountPoint, withIntermediateDirectories: true)
 
         let url = task.source
-        let isNFS = task.protocol == .nfs
-        let executable = URL(fileURLWithPath: isNFS ? "/sbin/mount_nfs" : "/sbin/mount_afp")
-        let spec: String
-        if isNFS {
-            let host = url.host ?? ""
-            spec = "\(host):\(url.path.isEmpty ? "/" : url.path)"
-        } else {
-            // mount_afp wants the original afp:// URL (including credentials).
-            spec = url.absoluteString
-        }
-        let args = (isNFS ? ["-o", "ro", spec] : [spec]) + [mountPoint.path]
+        let executable = URL(fileURLWithPath: "/sbin/mount_nfs")
+        let spec = "\(url.host ?? ""):\(url.path.isEmpty ? "/" : url.path)"
+        let args = ["-o", "ro", spec] + [mountPoint.path]
 
         let mountRunner = ExternalRunner(executable: executable, arguments: args,
                                          destination: nil)

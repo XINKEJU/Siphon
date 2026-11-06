@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Build a real, codesigned-by-adhoc macOS .app bundle with aria2c embedded.
+# Build a real, codesigned-by-adhoc macOS .app bundle. HTTP/HTTPS/FTP, HLS, DASH,
+# eD2K and the vendor-link front-ends are handled by the native Swift engines.
+# aria2c is REQUIRED and bundled (with its Homebrew dylibs relinked) because it powers
+# BitTorrent / Magnet / Metalink / SFTP — a build without it would silently ship a
+# downloader missing four protocols. ffmpeg is not required (DASH flattening is native
+# AVFoundation). The build FAILS if aria2c cannot be found.
 # Usage:
 #   ./scripts/build-app.sh                 # release .app in ./build/
 #   ARIA2C=/path/to/aria2c ./scripts/build-app.sh
@@ -9,11 +14,12 @@ cd "$ROOT"
 
 APP="$ROOT/build/Siphon.app"
 CONTENTS="$APP/Contents"
-BIN_DIR="$(swift build -c release --show-bin-path 2>/dev/null)"
 
 echo "==> Building release binary"
 swift build -c release
-BIN_DIR="$(swift build -c release --show-bin-path)"
+# Derive the output path directly; SwiftPM always stages release binaries in
+# .build/release, so probing --show-bin-path would trigger a redundant build.
+BIN_DIR="$ROOT/.build/release"
 BIN="$BIN_DIR/Siphon"
 
 echo "==> Assembling $APP"
@@ -59,6 +65,15 @@ if [[ -z "$ARIA2C" ]] && command -v aria2c >/dev/null 2>&1; then
     ARIA2C="$(command -v aria2c)"
 fi
 
+# Fail loudly rather than shipping an app that claims P2P support but cannot
+# deliver it. Install with `brew install aria2` or pass ARIA2C=/path/to/aria2c.
+if [[ -z "$ARIA2C" || ! -x "$ARIA2C" ]]; then
+    echo "ERROR: aria2c is required — BT / Magnet / Metalink / SFTP depend on it." >&2
+    echo "       Install it with 'brew install aria2', then re-run, or pass" >&2
+    echo "       ARIA2C=/path/to/aria2c ./scripts/build-app.sh" >&2
+    exit 1
+fi
+
 FRAMEWORKS="$CONTENTS/Frameworks"
 mkdir -p "$FRAMEWORKS"
 SEEN_DIR="$(mktemp -d)"
@@ -96,32 +111,18 @@ relink() {
     done < <(otool -L "$target" 2>/dev/null | awk 'NR>1 {print $1}')
 }
 
-if [[ -n "$ARIA2C" && -x "$ARIA2C" ]]; then
-    cp "$ARIA2C" "$CONTENTS/Resources/aria2c"
-    chmod +x "$CONTENTS/Resources/aria2c"
-    relink "$CONTENTS/Resources/aria2c"
-    echo "==> Bundled aria2c from $ARIA2C ($RELINK_COUNT image(s) relinked)"
-    echo "    Frameworks: $(ls -1 "$FRAMEWORKS" | tr '\n' ' ')"
-else
-    echo "!!  aria2c not found. HTTP/FTP/BT downloads will be unavailable until you"
-    echo "    place a universal aria2c binary at $CONTENTS/Resources/aria2c"
-    echo "    (e.g. 'brew install aria2' then re-run, or pass ARIA2C=/path/to/aria2c)."
-fi
-
-# Optional ffmpeg for fMP4 / DASH remux.
-if command -v ffmpeg >/dev/null 2>&1; then
-    cp "$(command -v ffmpeg)" "$CONTENTS/Resources/ffmpeg"
-    chmod +x "$CONTENTS/Resources/ffmpeg"
-    relink "$CONTENTS/Resources/ffmpeg"
-    echo "==> Bundled ffmpeg (dylibs relinked)"
-fi
+cp "$ARIA2C" "$CONTENTS/Resources/aria2c"
+chmod +x "$CONTENTS/Resources/aria2c"
+relink "$CONTENTS/Resources/aria2c"
+echo "==> Bundled aria2c from $ARIA2C ($RELINK_COUNT image(s) relinked)"
+echo "    Frameworks: $(ls -1 "$FRAMEWORKS" | tr '\n' ' ')"
 
 # Re-sign every nested Mach-O explicitly. `--deep` alone does NOT reliably
 # re-sign helper executables in Resources/ or dylibs in Frameworks/, and an
 # install_name_tool-modified binary with a stale signature is SIGKILLed (137)
 # by the kernel at launch.
 echo "==> Signing nested binaries"
-for img in "$CONTENTS/Resources/aria2c" "$CONTENTS/Resources/ffmpeg" \
+for img in "$CONTENTS/Resources/aria2c" \
            "$FRAMEWORKS"/*.dylib; do
     [[ -f "$img" ]] && codesign --force --sign - "$img" 2>/dev/null || true
 done

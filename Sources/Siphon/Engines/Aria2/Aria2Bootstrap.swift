@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum Aria2Error: Error, LocalizedError {
     case binaryNotFound
@@ -52,7 +53,10 @@ public final class Aria2Bootstrap {
         throw Aria2Error.binaryNotFound
     }
 
-    public func start() throws {
+    /// Launches aria2c (async). The caller thread is **not** blocked: the old
+    /// `Thread.sleep(0.3)` is gone, replaced by an `await`-ed loopback port probe
+    /// that only suspends the async task until aria2 binds the RPC port (or fails).
+    public func start() async throws {
         guard !isRunning else { return }
         let binary = try locateBinary()
         let proc = Process()
@@ -76,8 +80,44 @@ public final class Aria2Bootstrap {
         proc.standardOutput = Pipe()
         try proc.run()
         process = proc
+        // Poll the real loopback port until it answers, or give up on crash/timeout.
+        // `await` keeps the caller thread free instead of blocking it like the old probe.
+        guard await waitUntilReady(process: proc, port: port, timeout: 5) else {
+            proc.terminate()
+            process = nil
+            throw Aria2Error.notRunning
+        }
         isRunning = true
-        Thread.sleep(forTimeInterval: 0.3)
+    }
+
+    /// Poll the loopback RPC port until it accepts a connection, or the process died
+    /// / timed out. Returns false if aria2 never came up, so we never lie about isRunning.
+    /// Async so the wait suspends the task instead of blocking the caller's thread.
+    private func waitUntilReady(process proc: Process, port: UInt16, timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !proc.isRunning { return false }
+            if portOpen(port) { return true }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return false
+    }
+
+    /// Synchronous loopback TCP connect probe (best-effort readiness check).
+    private func portOpen(_ port: UInt16) -> Bool {
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        defer { close(sock) }
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        return withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
     }
 
     public func stop() {

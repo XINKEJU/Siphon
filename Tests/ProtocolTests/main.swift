@@ -56,9 +56,20 @@ for (raw, expected) in detection {
 }
 eq(DownloadProtocol.thunder.displayName, "迅雷", "vendor display name")
 eq(DownloadProtocol.smb.transport, .curl, "smb -> libcurl transport")
-eq(DownloadProtocol.thunder.requiresAria2, true, "vendor link -> aria2")
+// Vendor links are normalised to plain HTTP(S) and pulled by the native engine,
+// so they no longer require the external aria2 subprocess. Only the P2P family
+// (BT / Magnet / Metalink / SFTP) still delegates to aria2.
+eq(DownloadProtocol.thunder.transport, .native, "vendor link -> native HTTP transport")
+eq(DownloadProtocol.thunder.requiresAria2, false, "vendor link no longer needs aria2")
+eq(DownloadProtocol.webdavs.requiresAria2, false, "webdav front-end needs no aria2")
+eq(DownloadProtocol.s3.requiresAria2, false, "S3 front-end needs no aria2")
+eq(DownloadProtocol.ipfs.requiresAria2, false, "IPFS gateway needs no aria2")
+eq(DownloadProtocol.magnet.requiresAria2, true, "magnet -> aria2")
+eq(DownloadProtocol.bittorrent.requiresAria2, true, "bittorrent -> aria2")
+eq(DownloadProtocol.metalink.requiresAria2, true, "metalink -> aria2")
+eq(DownloadProtocol.sftp.requiresAria2, true, "sftp -> aria2")
 eq(DownloadProtocol.nfs.transport, .mount, "nfs -> mount transport")
-eq(URISchemes.registered.count, 18, "registered URL schemes")
+eq(URISchemes.registered.count, 32, "registered URL schemes")
 
 // MARK: - 2. vendor link codec
 print("[2] vendor link decoding")
@@ -154,6 +165,23 @@ do {
     _ = try S3Signer.presignedGET(s3URI: url("s3://b/k"), config: bad)
     check(false, "missing credentials must throw")
 } catch { check(true, "missing credentials throws") }
+
+// Regression: AWS SigV4 leaves '*' literal in the canonical URI. Encoding it as
+// %2A made the locally computed signature diverge from what S3 expects,
+// yielding 403 SignatureDoesNotMatch. (AWS SDK UriEncoder keeps '*' unencoded.)
+do {
+    var starCfg = S3Signer.Config()
+    starCfg.accessKey = "AKIAIOSFODNN7EXAMPLE"
+    starCfg.secretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    starCfg.region = "us-east-1"
+    starCfg.endpoint = "s3.amazonaws.com"
+    let starSigned = try S3Signer.presignedGET(
+        s3URI: url("s3://examplebucket/path/with*star.bin"), config: starCfg)
+    check(starSigned.absoluteString.contains("*"),
+          "S3 key '*' stays literal (not %2A)")
+    check(!starSigned.absoluteString.contains("%2A"),
+          "S3 key '*' not percent-encoded")
+}
 
 // MARK: - 5. data: URI
 print("[5] data URI")
@@ -328,7 +356,10 @@ func asyncTests() async {
         let bootstrap = Aria2Bootstrap.shared
         // Never share port 6800 with a running Siphon.app instance.
         bootstrap.port = 6801
-        try bootstrap.start()
+        try await bootstrap.start()
+        // Regression: start() must not report isRunning until aria2 actually bound
+        // the RPC port (the old Thread.sleep(0.3) lied when aria2 crashed early).
+        check(bootstrap.isRunning, "aria2 reports running only after RPC port is ready")
         defer { bootstrap.stop() }
         let aria2 = Aria2Engine(endpoint: bootstrap.rpcURL)
         let aria2Delegate = MockDelegate()
@@ -367,6 +398,22 @@ func asyncTests() async {
     } catch {
         check(false, "vendor-link aria2 E2E threw: \(error)")
     }
+
+    // Regression: SpeedLimitController.consume must throttle a draw larger than
+    // the per-second budget instead of dead-locking. Split into per-bucket-capacity
+    // draws so a 6 KB request under a 2 KB/s cap takes ~1-2 s, never ∞ and never 0.
+    print("[12] SpeedLimitController throttling (regression)")
+    let sl = SpeedLimitController.shared
+    sl.setLimit(2000) // 2 KB/s
+    let slStart = Date()
+    await sl.consume(6000) // 3x the per-second budget
+    let slDt = Date().timeIntervalSince(slStart)
+    check(slDt > 0.4 && slDt < 8.0,
+          "consume(6000) under 2KB/s throttled (~\(String(format: "%.2f", slDt))s), not deadlocked")
+    sl.setLimit(nil) // unlimited
+    let slInstant = Date()
+    await sl.consume(6000)
+    check(Date().timeIntervalSince(slInstant) < 0.5, "consume is instant when unlimited")
 }
 
 final class Done { var value = false }

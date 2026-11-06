@@ -124,10 +124,17 @@ public enum S3Signer {
         return (amz, stamp)
     }
 
-    /// RFC 3986 unreserved characters only; `*` and `~` handled explicitly for Swift.
+    /// RFC 3986 unreserved characters plus the sub-delims AWS SigV4 leaves
+    /// unencoded (matching the AWS SDK `UriEncoder`).
+    ///
+    /// Critically, `*` MUST stay literal: encoding it as `%2A` makes the locally
+    /// computed signature diverge from what S3 expects, yielding a
+    /// `403 SignatureDoesNotMatch`. The default `addingPercentEncoding` encodes
+    /// `*` (it is not in `url*Allowed`), which is the bug being fixed here.
     public static func rfc3986(_ s: String) -> String {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
+        allowed.insert(charactersIn: "!#$&'()*+,:;=?@[]")
         return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s
     }
 

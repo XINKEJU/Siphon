@@ -7,7 +7,7 @@ import Foundation
 /// Those keep their original `DownloadProtocol` for the UI badge, but their
 /// `transport` says which code actually moves the bytes.
 public enum TransportKind: String, Sendable {
-    case aria2, hls, dash, ed2k, curl, ssh, mount, local
+    case aria2, hls, dash, ed2k, curl, ssh, mount, local, native
 
     public var displayName: String {
         switch self {
@@ -19,16 +19,19 @@ public enum TransportKind: String, Sendable {
         case .ssh:   return "OpenSSH / rsync"
         case .mount: return "macOS 文件系统挂载"
         case .local: return "本地文件"
+        case .native: return "Swift 原生 HTTP"
         }
     }
 }
 
 /// Protocol families the app understands.
 ///
-/// `http/https/ftp/sftp/bittorrent/metalink/magnet` are served by the bundled aria2
-/// core. `hls/dash/ed2k` are native Swift engines. Everything else is either a
-/// URI front-end normalized onto HTTP(S), or a transport bridged to a system tool
-/// (libcurl / OpenSSH / rsync / mount_*). See `URINormalizer`.
+/// `http/https/ftp` and every URI front-end (`thunder`, `webdav`, `s3`, `ipfs`, …)
+/// are served by the dependency-free native `HTTPDownloadEngine` (URLSession +
+/// byte-range segmentation). `bittorrent/metalink/magnet/sftp` stay on the optional
+/// external aria2 (only if the user installs it). `hls/dash/ed2k` are native Swift
+/// engines. Everything else is a transport bridged to a system tool (libcurl /
+/// OpenSSH / rsync / mount_*). See `URINormalizer`.
 public enum DownloadProtocol: String, CaseIterable, Identifiable, Sendable {
     // aria2 core
     case http, https, ftp, sftp, bittorrent, metalink, magnet
@@ -80,6 +83,8 @@ public enum DownloadProtocol: String, CaseIterable, Identifiable, Sendable {
         case .scp, .rsync: return .ssh
         case .nfs, .afp: return .mount
         case .file, .data, .playlist: return .local
+        case .http, .https, .ftp: return .native
+        case .thunder, .flashget, .qqdl, .webdav, .webdavs, .s3, .ipfs, .ipns: return .native
         default: return .aria2
         }
     }
@@ -162,7 +167,7 @@ public enum DownloadProtocol: String, CaseIterable, Identifiable, Sendable {
 /// Canonical scheme tables. Kept in one place so clipboard monitoring, Info.plist,
 /// detection and the UI all agree on what the app claims to accept.
 public enum URISchemes {
-    /// Wrapped onto HTTP(S) by `URINormalizer`, then handed to aria2.
+    /// Wrapped onto HTTP(S) by `URINormalizer`, then served by the native engine.
     public static let frontEnds: Set<String> =
         ["thunder", "flashget", "qqdl", "webdav", "webdavs", "s3", "ipfs", "ipns"]
 
@@ -174,6 +179,9 @@ public enum URISchemes {
     /// Handled by OpenSSH / rsync / macOS mount helpers.
     public static let systemTools: Set<String> = ["scp", "rsync", "nfs", "afp"]
 
+    /// Schemes aria2 understands natively. Kept only as a recognised-scheme
+    /// whitelist; actual routing is decided by `DownloadProtocol.transport`
+    /// (http/https/ftp/file/data now go to the native engine).
     public static let aria2: Set<String> =
         ["http", "https", "ftp", "sftp", "magnet", "ed2k", "file", "data"]
 
@@ -182,9 +190,15 @@ public enum URISchemes {
     }
 
     /// Schemes registered as `CFBundleURLTypes` so Finder / browsers can hand links over.
+    /// Must stay in sync with Resources/Info.plist; `verify.sh` asserts the equality.
+    /// `libcurlOnly` catch-all schemes are included so every protocol we claim to
+    /// accept can actually be delivered to the app from a browser.
     public static let registered: [String] = [
         "magnet", "ed2k", "thunder", "flashget", "qqdl",
         "sftp", "scp", "rsync", "webdav", "webdavs",
-        "smb", "smbs", "nfs", "afp", "ipfs", "ipns", "s3", "ftps"
+        "smb", "smbs", "nfs", "afp", "ipfs", "ipns", "s3", "ftps",
+        "tftp", "gopher", "gophers", "rtsp", "dict",
+        "imap", "imaps", "pop3", "pop3s", "smtp", "smtps",
+        "ldap", "ldaps", "mqtt"
     ]
 }
