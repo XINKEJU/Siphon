@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="Resources/UI-Preview.png" width="720" alt="Siphon Liquid Glass interface on macOS 27">
+  <img src="Resources/UI-Preview.png" width="720" alt="Siphon unified glass toolbar and new window controls on macOS 27">
 </p>
 
 面向 macOS 的原生全协议下载管理器。核心思路：**用 aria2 做久经考验的下载内核，用一层 Swift 协议适配把专用链 / 网关 / 系统工具统一成可下载请求，用 SwiftUI/AppKit 做符合 macOS HIG、macOS 26+ 液态玻璃（Liquid Glass）的原生界面。**
@@ -13,7 +13,7 @@
 > **为什么叫虹吸**：虹吸跨过落差，靠一根连续管道把远端的流体自发引到本处。aria2 是自持内核，多协议与多分段是入流，落盘的单一文件是出流。
 
 - 语言：Swift 6.4（Swift 5.10 工具链兼容模式）
-- 最低系统：macOS 14 (Sonoma)；**macOS 26+ 启用完整液态玻璃外观**，14/15 自动降级为材质外观（同一二进制）
+- 最低系统：macOS 14 (Sonoma)；**macOS 26+ 启用完整液态玻璃窗口（红绿灯 + 统一玻璃工具栏），前提是二进制 linked SDK ≥ 26**（由构建脚本保证，见 §7.1）；14/15 自动降级为材质外观（同一二进制）
 - 依赖：零第三方 Swift 包。仅系统框架（Foundation / SwiftUI / AppKit / Network / CommonCrypto / Security）
 - 外部二进制：`aria2c`（捆绑，运行必需）；系统 `/usr/bin/curl`、`scp`、`rsync`、`mount_*`（按需调用，不捆绑）；`ffmpeg`（可选，用于 fMP4 重封装）
 - 许可证：MIT（详见 [LICENSE](LICENSE)）；aria2 以独立进程调用，见 §11
@@ -139,6 +139,7 @@ swift run Siphon
 **打包脚本已处理的分发细节**（已实测）：
 - Homebrew 的 `aria2c` 动态链接 6 个 `/opt/homebrew/opt/*/lib/*.dylib`。`build-app.sh` 会把这些库连同传递依赖复制进 `Contents/Frameworks/`，用 `install_name_tool` 改写为 `@executable_path/../Frameworks/`，产物在无 Homebrew 的机器上也能运行。
 - 改写 Mach-O 会使原代码签名失效（内核会以 SIGKILL/137 结束进程），脚本对每个嵌套二进制**逐个重签**后再签整个 bundle，并做 `codesign --verify --deep --strict` 校验。
+- `Package.swift` 用 `-platform_version` 把 `LC_BUILD_VERSION.sdk` 固定在 26.0；`build-app.sh` 再用 `vtool` 提升到本机实际 SDK（27.2），否则 macOS 26+ 会把整个窗口 chrome 降级为旧式不透明标题栏与老红绿灯（详见 §7.1）。可用 `vtool -show-build build/Siphon.app/Contents/MacOS/Siphon` 自查。
 - 当前实测产物约 **14 MB**（主程序 2.1 MB + 图标 1.7 MB + aria2c 3.2 MB + 依赖库），arm64、adhoc 签名，含 `Contents/Resources/AppIcon.icns`。
 
 > 跨架构分发：当前为 arm64。若需通用二进制，用 `lipo -create` 合成 arm64 + x86_64 的 aria2c 及其 dylib（注意 OpenSSL 等库的架构也要匹配），或分别出两个架构的包。正式发布还需 Developer ID 签名 + 公证 + Hardened Runtime。
@@ -149,7 +150,7 @@ swift run Siphon
 
 ```
 Sources/Siphon/
-  SiphonApp.swift              @main 入口，单窗口 Window + Settings scene
+  SiphonApp.swift              @main 入口，单窗口 Window + Settings scene + 菜单栏 Commands
   Models/                         协议枚举、任务、进度、状态
   Engines/
     Engine.swift                  统一引擎协议 + 主线程回调协议
@@ -175,10 +176,12 @@ Sources/Siphon/
     ClipboardMonitor.swift       剪贴板链接捕获
   BrowserExtension/              本地 HTTP 控制接口（NWListener, 127.0.0.1:17801）
   Views/
-    Glass.swift                   Liquid Glass 自适应组件（26+ 玻璃 / 14–15 材质回退）
-    ...                          NavigationSplitView / 列表 / 检查器 / 设置 / 表单
+    Glass.swift                   浮层控件的玻璃自适应组件（26+ 玻璃 / 14–15 材质回退）
+    ContentView.swift            三栏布局 + 系统统一工具栏分组 + 搜索
+    TaskListView.swift           任务列表（纯内容层，无悬浮条）
+    ...                          侧栏 / 检查器 / 设置 / 表单
 Resources/
-  UI-Preview.png                 真实窗口截图（macOS 27.2，深色模式）
+  UI-Preview.png                 真实窗口截图：新版红绿灯 + 顶部玻璃工具栏（macOS 27.2，深色模式）
   AppIcon.icns                   打包进 .app 的图标（Info.plist 以 CFBundleIconFile 引用）
   AppIcon-1024.png               1024 不透明主图（App Store 规格，无 alpha 通道）
   AppIcon-Preview.png            圆角 + 阴影的访达效果预览
@@ -187,7 +190,7 @@ Resources/
   Info.plist                     18 种 URL scheme、文档类型、最低系统版本
   BrowserExtension/              Manifest V3 扩展示例
 scripts/
-  build-app.sh                   release 编译 + .app 组装 + dylib 重链接 + 重签名
+  build-app.sh                   release 编译 + .app 组装 + SDK 标记提升 + dylib 重链接 + 重签名
   make-dmg.sh                    可拖拽安装的 DMG（含挂载后签名校验）
   make-icon.sh / MakeIcon.swift  矢量图标生成器
   verify.sh                      6 组可复现验证
@@ -223,29 +226,57 @@ Tests/                           向量、解析、协议矩阵与端到端测�
 
 ---
 
-## 7. 液态玻璃 UI（macOS 26+）
+## 7. 窗口框架与液态玻璃 UI（macOS 26+）
 
-界面按 Apple 的 Liquid Glass 设计语言重写，核心原则是**玻璃只属于浮层**：
+### 7.1 关键：链接 SDK 决定窗口 chrome 代际
+
+macOS 26+ 不只看系统版本，还看主可执行文件 `LC_BUILD_VERSION` 的 **sdk 字段**来决定是否给 app 新版窗口外观。SwiftPM 会把部署目标同时写进 `minos` 和 `sdk`：`platforms: [.macOS(.v14)]` 产出的二进制是 `minos 14.0 / sdk 14.0`，即便用 Xcode 27 SDK 编译、跑在 macOS 27 上，AppKit 仍会**降级成不透明旧标题栏 + 老式红绿灯**。这不是控件画得不够，而是整个 chrome 被系统换掉了。
+
+修复分两层，均已固化：
+
+| 位置 | 做法 |
+|---|---|
+| `Package.swift` | `linkerSettings: [.unsafeFlags([... "-platform_version", "macos", "14.0", "26.0"])]`，让 `swift build` / `swift run` 的二进制声明 sdk ≥ 26 |
+| `scripts/build-app.sh` | 打包时用 `vtool -set-build-version macos <minos> $(xcrun --show-sdk-version) -replace` 提升到实际 SDK（本机 27.2），再统一重签 |
+
+自查：
+
+```bash
+vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
+# minos 14.0 / sdk 27.2  ← 新版红绿灯与玻璃工具栏生效
+```
+
+实测对比：仅把 sdk 从 `14.0` 改成 `27.2`（UI 代码零改动），红绿灯即从实心圆变成带玻璃圆形底座的新样式，侧栏开关与顶部按钮自动合并进系统玻璃胶囊，失焦时整套玻璃按系统规则变灰。
+
+### 7.2 系统 chrome 不手绘
 
 | 规则 | 落地 |
 |---|---|
-| 玻璃不放在内容背后 | 任务列表、正文、进度条保持不透明；工具栏与边栏由系统自动玻璃化 |
-| 相邻玻璃共享一个透镜系统 | 底部悬浮命令条用 `GlassEffectContainer`（封装为 `GlassGroup`）统一包裹状态胶囊、扩展按钮与快捷操作 |
-| 交互有折射反馈 | 可点元素用 `.interactive()`，按压/悬停由系统渲染高光与缩放 |
-| 强调色克制 | 仅「开始下载」用 `.tint()`；中性面板 `.regular`，小型图标按钮 `.clear` |
-| 形变而非弹出 | `glassEffectID` + `Namespace` + `.glassEffectTransition(.matchedGeometry)`，展开快捷操作时玻璃相互融合 |
-| 滚动边缘柔化 | `.scrollEdgeEffectStyle(.soft, for: .top)`，列表在半透明栏下渐隐 |
+| 窗口控件由系统绘制 | 红绿灯、圆角、统一标题栏、侧栏玻璃全部交给 AppKit；不叠加自定义背景、描边、着色或 `.glassEffect` |
+| 工具栏玻璃由系统绘制 | 只用标准 `ToolbarItem` / `ToolbarItemGroup` / `Menu` / `.searchable`；Apple 明确要求移除栏后自定义背景，否则破坏滚动边缘效果 |
+| 玻璃只属于浮层控件 | 任务列表、正文、进度条、检查器 `Form` 保持不透明；自定义玻璃仅用于行内圆形按钮与表单中的浮层控件（`Glass.swift`） |
+| 空状态用系统组件 | `ContentUnavailableView`，不再自绘玻璃卡片 |
+| 侧栏底部用普通内容 | 侧栏本身已是玻璃，再叠玻璃卡片会双重合成；下载位置与引擎状态改为纯文本行 |
+| 滚动边缘柔化 | `.scrollEdgeEffectStyle(.soft, for: .top)` |
 | 微小元素不用玻璃 | 协议徽章保留彩色胶囊，避免失去对比度 |
 
-使用位置：底部悬浮命令条（引擎状态 / 速度 / 恢复全部 / 清理已完成）、任务行圆形控制按钮、详情列浮动信息卡、边栏底部下载位置卡、新建任务表单的头部身份卡与底部按钮组、设置中的引擎状态卡 / 快速限速按钮组 / 关于卡。
+### 7.3 顶部统一工具栏（HIG 分组）
 
-**兼容性**：`Package.swift` 仍以 macOS 14 为部署目标。所有 macOS 26 API 都收敛在 `Sources/Siphon/Views/Glass.swift` 的 `if #available(macOS 26.0, *)` 分支里；14/15 自动回退到 `Material` 与 `.bordered` 按钮，单一二进制覆盖两代外观。26.1+ 的 `.glass(_:)` 只用于主按钮的强调色。
+所有全局操作从原来的**底部悬浮命令条**收回到窗口顶部 —— macOS 没有底部工具栏这一惯例：
 
-**单窗口**：入口用 `Window` 而非 `WindowGroup`。否则每打开一个 `magnet:` / `ed2k:` 链接都会新建窗口（半透明列叠在一起），且默认的「新建窗口」菜单项会与 ⌘N「新建下载」冲突。
+- **前缘**：系统侧栏开关（独立玻璃胶囊）+ 当前资料库标题（`.navigationTitle`，不用 app 名作窗口标题）
+- **中间**：传输控制 `[恢复全部][全部暂停]`，一个 `ToolbarItemGroup` 形成一组
+- **后缘**：`[+ 新建下载]`（唯一 `.borderedProminent` + `tint`，蓝色独立胶囊）、`[检查器]`、`[更多操作]` 菜单，再由系统 `.searchable` 提供独立玻璃搜索字段
+- 组间用 `ToolbarSpacer(.fixed, placement: .primaryAction)` 分隔（macOS 26+ API，必须与被分隔项同 placement 才生效）
+- `SiphonCommands` 让每个工具栏动作在菜单栏都有对应项（⌘N、「任务」菜单），因为工具栏可被隐藏或自定义
 
-其余 HIG 要点：三栏 `NavigationSplitView`、原生工具栏与 `Settings` scene（⌘,）、分组 `Form` / `LabeledContent`、语义色与 SF Symbols、`.help` 提示、系统文件选择器与访达跳转、浅色/深色与辅助功能。
+搜索作用于整个 `NavigationSplitView`，按任务名 / 规范化后 URL / 原始专用链 / 协议名过滤。检查器列不再声明自己的 `.toolbar`，避免向窗口工具栏注入未分组的第四组。
 
-> 实测环境 macOS 27.2：已用真实窗口截图验证玻璃渲染、贴底命令条不遮挡内容、单窗口无叠影、列表无空占位行。图标仍是标准 macOS 26 兼容 `.icns`（系统自动套圆角）；Apple 的分层玻璃图标需 Icon Composer 生成 `.icon`，本机无该工具，故未包含。
+**兼容性**：部署目标仍是 macOS 14。`glassEffect`、`ToolbarSpacer` 等 26 API 全部收敛在 `if #available(macOS 26.0, *)`；14/15 回退到 `Material`、`.bordered` 按钮与标准工具栏，单一二进制覆盖两代外观。
+
+**单窗口**：入口用 `Window` 而非 `WindowGroup`，避免每个 `magnet:` / `ed2k:` 链接新建窗口叠影，并消除默认「新建窗口」与 ⌘N 的冲突。
+
+> 实测环境 macOS 27.2：用真实窗口截图验证空状态、双任务状态、失焦状态，确认分组胶囊、蓝色主操作、搜索字段、无底部悬浮条遮挡、列表无幽灵行。图标仍是标准兼容 `.icns`（系统自动套圆角）；Apple 的分层玻璃图标需 Icon Composer 生成 `.icon`，本机无该工具，故未包含。
 
 ---
 

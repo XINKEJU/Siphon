@@ -4,8 +4,15 @@ import SwiftUI
 //
 // Apple's macOS 26 "Liquid Glass" design rules applied throughout the app:
 //
-//  1. Glass belongs to the *floating* layer — controls, status pills, inspector
-//     cards. Content (list rows, body text, progress bars) stays opaque and crisp.
+//  0. Window chrome is SYSTEM-OWNED. AppKit draws the window controls and the
+//     unified title bar, SwiftUI draws toolbar items on their glass surfaces,
+//     and NavigationSplitView draws the sidebar glass. Never add .glassEffect,
+//     a tint or a custom background to those — it double-composites and breaks
+//     the automatic scroll edge effect. That chrome only appears on macOS 26+
+//     when the binary's LC_BUILD_VERSION.sdk is >= 26 (see Package.swift).
+//  1. Custom glass belongs to the *floating* layer — small controls that sit
+//     above content. Content (list rows, body text, progress bars, inspector
+//     forms) stays opaque and crisp.
 //  2. Neighbouring glass elements share one `GlassEffectContainer` so their
 //     lenses merge and morph, instead of stacking independent blurred layers.
 //  3. Interactive elements opt into `.interactive()` for press/hover refraction.

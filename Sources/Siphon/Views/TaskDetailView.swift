@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// Inspector column: a floating glass identity card above an opaque,
-/// grouped statistics form. Glass never sits behind the numeric content.
+/// Inspector column: an opaque grouped form. The inspector sits beside the
+/// system's glass sidebar, so adding another custom glass surface here would
+/// double-composite; header, rows and numbers stay plain and crisp.
 struct TaskDetailView: View {
     @EnvironmentObject private var store: DownloadStore
     let task: DownloadTask
@@ -67,35 +68,33 @@ struct TaskDetailView: View {
             .formStyle(.grouped)
         }
         .frame(minWidth: 280)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("在访达中显示") {
-                    NSWorkspace.shared.activateFileViewerSelecting([task.destination])
-                }
-                .disabled(!FileManager.default.fileExists(atPath: task.destination.path))
-            }
-        }
+        // No nested toolbar: a second .toolbar here injects an ungrouped item
+        // into the window's unified toolbar. "在访达中显示所选文件" lives in
+        // ContentView's More menu instead.
     }
 
     private var identityCard: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "doc.fill")
-                .font(.system(size: 30))
-                .foregroundStyle(Color.accentColor)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(task.name)
-                    .font(.headline)
-                    .lineLimit(2)
-                HStack(spacing: 6) {
-                    ProtocolBadge(proto: task.protocol)
-                    Text(task.state.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: "doc.fill")
+                    .font(.system(size: 30))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(task.name)
+                        .font(.headline)
+                        .lineLimit(2)
+                    HStack(spacing: 6) {
+                        ProtocolBadge(proto: task.protocol)
+                        Text(task.state.displayName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            Divider()
         }
-        .padding(14)
-        .glassCard(cornerRadius: 14)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
     }
 }

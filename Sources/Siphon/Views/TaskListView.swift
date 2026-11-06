@@ -1,51 +1,57 @@
 import SwiftUI
 import AppKit
 
-/// Task list with a floating Liquid Glass command bar.
+/// Task list. All global commands live in the window's unified toolbar (see
+/// `ContentView`); the list column itself is pure opaque content.
 ///
-/// The list itself is deliberately opaque: glass belongs above content, not
-/// behind text and progress bars. The command bar is a single
-/// `GlassEffectContainer`, so its pills share one lens system and morph into
-/// each other when quick actions expand/collapse (macOS 26+).
+/// Keeping the list free of floating chrome is deliberate: on macOS 26+ the
+/// system already draws the sidebar and toolbar in Liquid Glass, and Apple's
+/// guidance is to reserve custom glass for genuine floating controls — never
+/// for list rows, text or an ersatz bottom command bar.
 struct TaskListView: View {
     @EnvironmentObject private var store: DownloadStore
     @Binding var selection: SidebarItem
+    let searchText: String
     @State private var selectedID: UUID?
-    @State private var controlsExpanded = false
-    @Namespace private var glassNamespace
 
     private var visible: [DownloadTask] {
+        let base: [DownloadTask]
         switch selection {
-        case .all: return store.tasks
-        case .downloading: return store.tasks.filter { $0.state == .active || $0.state == .pending }
-        case .completed: return store.tasks.filter { $0.state == .completed }
-        case .paused: return store.tasks.filter { $0.state == .paused }
-        case .queue(let name): return store.tasks.filter { $0.queueName == name }
+        case .all: base = store.tasks
+        case .downloading: base = store.tasks.filter { $0.state == .active || $0.state == .pending }
+        case .completed: base = store.tasks.filter { $0.state == .completed }
+        case .paused: base = store.tasks.filter { $0.state == .paused }
+        case .queue(let name): base = store.tasks.filter { $0.queueName == name }
+        }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return base }
+        let needle = query.lowercased()
+        return base.filter { task in
+            task.name.lowercased().contains(needle)
+                || task.source.absoluteString.lowercased().contains(needle)
+                || (task.origin?.lowercased().contains(needle) ?? false)
+                || task.protocol.displayName.lowercased().contains(needle)
         }
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            listContent
-            floatingControls
-                .padding(.horizontal, 18)
-                .padding(.bottom, 18)
-        }
-        .onChange(of: selectedID) { _, newValue in
-            store.selectedTaskID = newValue
-        }
+        listContent
+            .onChange(of: selectedID) { _, newValue in
+                store.selectedTaskID = newValue
+            }
     }
-
-    // MARK: - Content layer (never glass)
 
     @ViewBuilder
     private var listContent: some View {
         Group {
             if visible.isEmpty {
                 ContentUnavailableView {
-                    Label("没有任务", systemImage: "tray")
+                    Label(searchText.isEmpty ? "没有任务" : "没有匹配的任务",
+                          systemImage: searchText.isEmpty ? "tray" : "magnifyingglass")
                 } description: {
-                    Text("点按工具栏的「+」添加下载，或开启剪贴板监听自动捕获链接。")
+                    Text(searchText.isEmpty
+                         ? "点按工具栏的「+」添加下载，或开启剪贴板监听自动捕获链接。"
+                         : "换个关键词，或清除顶部搜索框中的文字。")
                 }
             } else {
                 List(selection: $selectedID) {
@@ -59,107 +65,11 @@ struct TaskListView: View {
                 // visible scroll area (including empty space), which looks like
                 // a stack of phantom tasks. Plain inset keeps only real rows.
                 .listStyle(.inset)
-                // Content softly fades under the translucent toolbar / bar.
+                // Content softly fades under the translucent system toolbar.
                 .softScrollTopEdge()
             }
         }
-        // Reserve space for the floating glass bar in BOTH states — the empty
-        // state is centred, so without this its description sits under the bar.
-        .safeAreaInset(edge: .bottom) {
-            Color.clear.frame(height: 76)
-        }
-        // Fill the whole content column so the ZStack's bottom alignment really
-        // is the window bottom; otherwise the bar floats in the middle.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - Floating glass layer
-
-    @ViewBuilder
-    private var floatingControls: some View {
-        GlassGroup(spacing: 10) {
-            if let e = store.startupError {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(e).font(.caption).lineLimit(1)
-                    Button("重试") { store.restartAria2() }
-                        .buttonStyle(.plain)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.accentColor)
-                }
-                .fixedSize()
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .glassPill(tint: .orange.opacity(0.16))
-                .glassMorphID("error", in: glassNamespace)
-            }
-
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(statusTint)
-                    .frame(width: 7, height: 7)
-                Text(store.aria2Status)
-                Text("·").foregroundStyle(.tertiary)
-                Text(Formatting.speed(store.aggregateSpeed))
-                    .monospacedDigit()
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize()
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .glassPill()
-            .glassMorphID("status", in: glassNamespace)
-
-            Button {
-                withAnimation(.smooth) { controlsExpanded.toggle() }
-            } label: {
-                Image(systemName: controlsExpanded ? "xmark" : "ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 16, height: 16)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(9)
-            .glassCircle()
-            .glassMorphID("more", in: glassNamespace)
-            .help(controlsExpanded ? "收起快捷操作" : "展开快捷操作")
-
-            if controlsExpanded {
-                Button {
-                    for t in store.tasks where t.state == .paused || t.state == .error {
-                        store.resume(t.id)
-                    }
-                } label: {
-                    Label("恢复全部", systemImage: "play.fill").font(.caption)
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .glassPill(interactive: true)
-                .glassMorphID("resume-all", in: glassNamespace)
-                .glassMorphTransition()
-
-                Button {
-                    store.removeCompleted()
-                } label: {
-                    Label("清理已完成", systemImage: "trash").font(.caption)
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .glassPill(interactive: true)
-                .glassMorphID("clean", in: glassNamespace)
-                .glassMorphTransition()
-            }
-        }
-        .animation(.smooth, value: controlsExpanded)
-    }
-
-    private var statusTint: Color {
-        store.aria2Status == "已停止" || store.aria2Status == "aria2 不可用"
-            ? .red : .green
     }
 
     // MARK: - Context menu

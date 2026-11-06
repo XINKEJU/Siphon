@@ -22,6 +22,25 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BIN" "$CONTENTS/MacOS/Siphon"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 
+# Lift LC_BUILD_VERSION.sdk to the SDK actually used for this build. Package.swift
+# pins 26.0 so plain `swift run` also gets the modern chrome; here we use the real
+# SDK (e.g. 27.2) so the shipped bundle adopts the newest window metrics. macOS
+# 26+ falls back to the opaque pre-Tahoe title bar when this field says 14.0.
+APP_BIN="$CONTENTS/MacOS/Siphon"
+SDK_VERSION="$(xcrun --show-sdk-version)"
+MIN_VERSION="$(vtool -show-build "$APP_BIN" | awk '/minos/{print $2; exit}')"
+LD_VERSION="$(vtool -show-build "$APP_BIN" | awk '/version/{print $2; exit}')"
+VTOOL_TMP="$(mktemp)"
+if vtool -set-build-version macos "${MIN_VERSION:-14.0}" "$SDK_VERSION" \
+        -tool ld "${LD_VERSION:-1}" -replace -output "$VTOOL_TMP" "$APP_BIN" >/dev/null 2>&1; then
+    cp "$VTOOL_TMP" "$APP_BIN"
+    chmod +x "$APP_BIN"
+    echo "==> Linked SDK $SDK_VERSION (modern window chrome enabled)"
+else
+    echo "!!  vtool could not update LC_BUILD_VERSION; window chrome may fall back" >&2
+fi
+rm -f "$VTOOL_TMP"
+
 # App icon. Generate from the vector source if this is a fresh clone.
 if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
     echo "==> Generating app icon from vector source"

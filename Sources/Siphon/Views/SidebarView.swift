@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Sidebar entries: built-in smart folders plus user-defined queues.
 enum SidebarItem: Hashable {
@@ -53,29 +54,65 @@ struct SidebarView: View {
         .softScrollTopEdge()
         .frame(minWidth: 190)
         .safeAreaInset(edge: .bottom) {
-            // The sidebar itself is system glass on macOS 26+. This small
-            // destination card is a floating surface above the list, not a
-            // second glass pane behind the rows.
-            HStack(spacing: 8) {
-                Image(systemName: "internaldrive")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("下载位置")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(store.downloadDirectory.lastPathComponent)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+            // The sidebar itself IS the system glass panel on macOS 26+.
+            // Painting another glass card on top of it double-composites, so
+            // this footer is plain content: destination + engine status.
+            VStack(alignment: .leading, spacing: 9) {
+                Button {
+                    NSWorkspace.shared.open(store.downloadDirectory)
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "internaldrive")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("下载位置")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text(store.downloadDirectory.lastPathComponent)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
                 }
-                Spacer(minLength: 0)
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+                .help("在访达中打开下载目录")
+
+                Divider()
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(statusTint)
+                        .frame(width: 6, height: 6)
+                    Text(shortStatus)
+                        .font(.caption2)
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text(Formatting.speed(store.aggregateSpeed))
+                        .font(.caption2.monospacedDigit())
+                        .frame(minWidth: 52, alignment: .trailing)
+                }
+                .foregroundStyle(.secondary)
+                .help("\(store.aria2Status) · 总速度 \(Formatting.speed(store.aggregateSpeed))")
+
+                if let e = store.startupError {
+                    Button { store.restartAria2() } label: {
+                        Label(e, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .help("点击重试启动 aria2")
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .glassCard(cornerRadius: 12)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 14)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
         }
         .alert("新建队列", isPresented: $showingNewQueue) {
             TextField("队列名称", text: $newQueueName)
@@ -88,6 +125,18 @@ struct SidebarView: View {
         } message: {
             Text("队列可设置并发数、顺序模式和下载时段。")
         }
+    }
+
+    private var statusTint: Color {
+        store.aria2Status == "已停止" || store.aria2Status == "aria2 不可用"
+            ? .red : .green
+    }
+
+    /// The store appends the RPC endpoint ("已连接 (127.0.0.1:6800)");
+    /// the footer only has room for the short state, full text is the tooltip.
+    private var shortStatus: String {
+        guard let r = store.aria2Status.range(of: " (") else { return store.aria2Status }
+        return String(store.aria2Status[..<r.lowerBound])
     }
 
     @ViewBuilder
