@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px -apple-system, system-ui, sans-serif; width: 240px; padding: 14px; margin: 0; color: #1d1d1f; }
+    h1 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+    p  { margin: 8px 0; color: #6e6e73; line-height: 1.5; }
+    label { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
+    #status { font-weight: 500; }
+  </style>
+</head>
+<body>
+  <h1>Siphon</h1>
+  <p id="status">检查连接中…</p>
+  <label><input type="checkbox" id="captureAll"> 接管浏览器全部下载</label>
+  <p>也可右键点击链接，选择「用 Siphon 下载」。</p>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+# SwiftPM
+.build/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+
+# Built bundle: contains machine-specific aria2c / dylibs (~14 MB), regenerate it
+build/
+*.app/
+*.dSYM/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs / temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Local configuration / editors
+.env
+.idea/
+.vscode/
