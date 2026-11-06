@@ -26,8 +26,7 @@ public struct DownloadTask: Identifiable, Sendable {
     ) {
         let proto = DownloadProtocol.detect(from: source)
         self.id = id
-        self.name = name ?? (source.lastPathComponent.isEmpty
-            ? source.absoluteString : source.lastPathComponent)
+        self.name = name ?? Self.inferredName(for: source)
         self.source = source
         self.destination = destination
         self.protocol = proto
@@ -37,5 +36,31 @@ public struct DownloadTask: Identifiable, Sendable {
         self.createdAt = Date()
         self.errorDescription = nil
         self.options = options
+    }
+
+    /// Human-readable fallback name. Custom schemes carry their filename in
+    /// the URI payload, not in `lastPathComponent` (which is "/" for ed2k).
+    private static func inferredName(for source: URL) -> String {
+        let raw = source.absoluteString.replacingOccurrences(of: "%7C", with: "|")
+
+        switch source.scheme?.lowercased() {
+        case "ed2k":
+            // ed2k://|file|<name>|<size>|<hash>|/
+            let parts = raw.components(separatedBy: "|")
+            if parts.count > 2, !parts[2].isEmpty {
+                return (parts[2].removingPercentEncoding ?? parts[2])
+            }
+        case "magnet":
+            if let items = URLComponents(url: source, resolvingAgainstBaseURL: false)?.queryItems,
+               let dn = items.first(where: { $0.name == "dn" })?.value, !dn.isEmpty {
+                return dn.replacingOccurrences(of: "+", with: " ")
+            }
+        default:
+            break
+        }
+
+        let last = source.lastPathComponent
+        if !last.isEmpty, last != "/" { return last }
+        return source.host ?? source.absoluteString
     }
 }

@@ -1,15 +1,19 @@
 # Siphon · 虹吸
 
 <p align="center">
-  <img src="Resources/AppIcon-Preview.png" width="240" alt="Siphon macOS app icon">
+  <img src="Resources/AppIcon-Preview.png" width="180" alt="Siphon macOS app icon">
 </p>
 
-面向 macOS 的原生全协议下载管理器。核心思路：**用 aria2 做久经考验的下载内核，用 Swift 补齐 aria2 不擅长的协议，用 SwiftUI/AppKit 做符合 macOS HIG 的原生界面。**
+<p align="center">
+  <img src="Resources/UI-Preview.png" width="720" alt="Siphon Liquid Glass interface on macOS 27">
+</p>
+
+面向 macOS 的原生全协议下载管理器。核心思路：**用 aria2 做久经考验的下载内核，用 Swift 补齐 aria2 不擅长的协议，用 SwiftUI/AppKit 做符合 macOS HIG、macOS 26+ 液态玻璃（Liquid Glass）的原生界面。**
 
 > **为什么叫虹吸**：虹吸跨过落差，靠一根连续管道把远端的流体自发引到本处。aria2 是自持内核，多协议与多分段是入流，落盘的单一文件是出流。
 
 - 语言：Swift 6.4（Swift 5.10 工具链兼容模式）
-- 最低系统：macOS 14 (Sonoma)
+- 最低系统：macOS 14 (Sonoma)；**macOS 26+ 启用完整液态玻璃外观**，14/15 自动降级为材质外观（同一二进制）
 - 依赖：零第三方 Swift 包。仅系统框架（Foundation / SwiftUI / AppKit / Network / CommonCrypto）
 - 外部二进制：`aria2c`（捆绑，运行必需）；`ffmpeg`（可选，用于 fMP4 重封装）
 - 许可证：MIT（详见 [LICENSE](LICENSE)）；aria2 以独立进程调用，见 §11
@@ -85,7 +89,7 @@ swift run Siphon
 **打包脚本已处理的分发细节**（已实测）：
 - Homebrew 的 `aria2c` 动态链接 6 个 `/opt/homebrew/opt/*/lib/*.dylib`。`build-app.sh` 会把这些库连同传递依赖复制进 `Contents/Frameworks/`，用 `install_name_tool` 改写为 `@executable_path/../Frameworks/`，产物在无 Homebrew 的机器上也能运行。
 - 改写 Mach-O 会使原代码签名失效（内核会以 SIGKILL/137 结束进程），脚本对每个嵌套二进制**逐个重签**后再签整个 bundle，并做 `codesign --verify --deep --strict` 校验。
-- 当前实测产物约 **14 MB**（主程序 1.6 MB + 图标 1.7 MB + aria2c 3.2 MB + 依赖库），arm64、adhoc 签名，含 `Contents/Resources/AppIcon.icns`。
+- 当前实测产物约 **14 MB**（主程序 2.1 MB + 图标 1.7 MB + aria2c 3.2 MB + 依赖库），arm64、adhoc 签名，含 `Contents/Resources/AppIcon.icns`。
 
 > 跨架构分发：当前为 arm64。若需通用二进制，用 `lipo -create` 合成 arm64 + x86_64 的 aria2c 及其 dylib（注意 OpenSSL 等库的架构也要匹配），或分别出两个架构的包。正式发布还需 Developer ID 签名 + 公证 + Hardened Runtime。
 
@@ -95,7 +99,7 @@ swift run Siphon
 
 ```
 Sources/Siphon/
-  SiphonApp.swift              @main 入口，WindowGroup + Settings scene
+  SiphonApp.swift              @main 入口，单窗口 Window + Settings scene
   Models/                         协议枚举、任务、进度、状态
   Engines/
     Engine.swift                  统一引擎协议 + 主线程回调协议
@@ -110,8 +114,11 @@ Sources/Siphon/
     SpeedLimitController.swift   令牌桶（原生引擎）+ aria2 全局限速转发
     ClipboardMonitor.swift       剪贴板链接捕获
   BrowserExtension/              本地 HTTP 控制接口（NWListener, 127.0.0.1:17801）
-  Views/                         NavigationSplitView / 列表 / 检查器 / 设置 / 表单
+  Views/
+    Glass.swift                   Liquid Glass 自适应组件（26+ 玻璃 / 14–15 材质回退）
+    ...                          NavigationSplitView / 列表 / 检查器 / 设置 / 表单
 Resources/
+  UI-Preview.png                 真实窗口截图（macOS 27.2，深色模式）
   AppIcon.icns                   打包进 .app 的图标（Info.plist 以 CFBundleIconFile 引用）
   AppIcon-1024.png               1024 不透明主图（App Store 规格，无 alpha 通道）
   AppIcon-Preview.png            圆角 + 阴影的访达效果预览
@@ -155,13 +162,29 @@ Tests/                           向量、解析与端到端测试
 
 ---
 
-## 7. macOS HIG 要点
+## 7. 液态玻璃 UI（macOS 26+）
 
-- `NavigationSplitView` 三栏结构（边栏 / 内容 / 检查器），而非把 Web 页面塞进窗口
-- 原生工具栏、状态栏、`Settings` scene（⌘,）、键盘快捷键（⌘N / Esc / Return）
-- 分组 `Form` 布局、`LabeledContent`、语义色与 SF Symbols、`.help` 悬停提示
-- 系统文件选择器、访达跳转、右键菜单、系统托盘式状态指示
-- 支持系统浅色/深色、动态字体与辅助功能（所有控件使用语义样式）
+界面按 Apple 的 Liquid Glass 设计语言重写，核心原则是**玻璃只属于浮层**：
+
+| 规则 | 落地 |
+|---|---|
+| 玻璃不放在内容背后 | 任务列表、正文、进度条保持不透明；工具栏与边栏由系统自动玻璃化 |
+| 相邻玻璃共享一个透镜系统 | 底部悬浮命令条用 `GlassEffectContainer`（封装为 `GlassGroup`）统一包裹状态胶囊、扩展按钮与快捷操作 |
+| 交互有折射反馈 | 可点元素用 `.interactive()`，按压/悬停由系统渲染高光与缩放 |
+| 强调色克制 | 仅「开始下载」用 `.tint()`；中性面板 `.regular`，小型图标按钮 `.clear` |
+| 形变而非弹出 | `glassEffectID` + `Namespace` + `.glassEffectTransition(.matchedGeometry)`，展开快捷操作时玻璃相互融合 |
+| 滚动边缘柔化 | `.scrollEdgeEffectStyle(.soft, for: .top)`，列表在半透明栏下渐隐 |
+| 微小元素不用玻璃 | 协议徽章保留彩色胶囊，避免失去对比度 |
+
+使用位置：底部悬浮命令条（引擎状态 / 速度 / 恢复全部 / 清理已完成）、任务行圆形控制按钮、详情列浮动信息卡、边栏底部下载位置卡、新建任务表单的头部身份卡与底部按钮组、设置中的引擎状态卡 / 快速限速按钮组 / 关于卡。
+
+**兼容性**：`Package.swift` 仍以 macOS 14 为部署目标。所有 macOS 26 API 都收敛在 `Sources/Siphon/Views/Glass.swift` 的 `if #available(macOS 26.0, *)` 分支里；14/15 自动回退到 `Material` 与 `.bordered` 按钮，单一二进制覆盖两代外观。26.1+ 的 `.glass(_:)` 只用于主按钮的强调色。
+
+**单窗口**：入口用 `Window` 而非 `WindowGroup`。否则每打开一个 `magnet:` / `ed2k:` 链接都会新建窗口（半透明列叠在一起），且默认的「新建窗口」菜单项会与 ⌘N「新建下载」冲突。
+
+其余 HIG 要点：三栏 `NavigationSplitView`、原生工具栏与 `Settings` scene（⌘,）、分组 `Form` / `LabeledContent`、语义色与 SF Symbols、`.help` 提示、系统文件选择器与访达跳转、浅色/深色与辅助功能。
+
+> 实测环境 macOS 27.2：已用真实窗口截图验证玻璃渲染、贴底命令条不遮挡内容、单窗口无叠影、列表无空占位行。图标仍是标准 macOS 26 兼容 `.icns`（系统自动套圆角）；Apple 的分层玻璃图标需 Icon Composer 生成 `.icon`，本机无该工具，故未包含。
 
 ---
 
@@ -203,6 +226,8 @@ curl http://127.0.0.1:17801/ping
 - **主图无 alpha 通道**：`AppIcon-1024.png` 由纯 `CGContext` 输出 RGB；`.icns` 经 `iconutil` 生成并已往返校验 10 个尺寸齐全
 
 除图标资源外，仓库还附带 `Resources/Assets.xcassets/AppIcon.appiconset/`，可直接用 Xcode 打开。
+
+> macOS 26 的**分层玻璃图标**需要 Apple Icon Composer 产出的 `.icon` bundle（含玻璃层与 Clear / Dark / Tinted 变体）。当前交付的是标准不透明 `.icns`，系统会自动套用圆角；本机未安装 Icon Composer CLI，因此没有生成 `.icon`。这与 §7 的界面液态玻璃是两件事。
 
 ---
 

@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// "New download" sheet. Follows the macOS form convention: labelled rows in a
-/// grouped layout, an explicit destination picker, and a prominent default action.
+/// "New download" sheet. Grouped form for content, glass identity card above,
+/// and a single glass button group at the bottom. macOS convention: labelled
+/// rows, explicit destination picker, prominent default action.
 struct AddTaskView: View {
     @EnvironmentObject private var store: DownloadStore
     @Environment(\.dismiss) private var dismiss
@@ -17,6 +18,8 @@ struct AddTaskView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Floating identity card. It also surfaces the detected protocol,
+            // so the glass has a meaningful job instead of being decorative.
             HStack(spacing: 12) {
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.system(size: 34))
@@ -26,11 +29,15 @@ struct AddTaskView: View {
                     Text("粘贴链接、磁力、eD2K 或流媒体播放列表地址")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Spacer()
+                Spacer(minLength: 6)
+                ProtocolBadge(proto: detected)
             }
-            .padding(20)
+            .padding(18)
+            .glassCard(cornerRadius: 16)
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
 
-            Divider()
+            Divider().padding(.top, 14)
 
             Form {
                 Section {
@@ -38,15 +45,8 @@ struct AddTaskView: View {
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: urlString) { _, v in updateDetection(v) }
 
-                    HStack {
-                        Text("识别协议")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        ProtocolBadge(proto: detected)
-                        Text(detected.requiresAria2 ? "aria2 引擎" : "原生引擎")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
+                    LabeledContent("下载引擎",
+                                   value: detected.requiresAria2 ? "aria2 (JSON-RPC)" : "Swift 原生引擎")
 
                     TextField("文件名（可选）", text: $name)
                         .textFieldStyle(.roundedBorder)
@@ -85,7 +85,9 @@ struct AddTaskView: View {
 
             Divider()
 
-            HStack {
+            // One lens system for the whole action row, so adjacent glass
+            // buttons merge rather than stacking separate blurs.
+            GlassGroup(spacing: 10) {
                 if let clip = NSPasteboard.general.string(forType: .string),
                    clip.hasPrefix("http") || clip.hasPrefix("magnet") || clip.hasPrefix("ed2k") {
                     Button("粘贴剪贴板链接") {
@@ -93,13 +95,16 @@ struct AddTaskView: View {
                         updateDetection(urlString)
                     }
                     .controlSize(.small)
+                    .glassButton()
                 }
                 Spacer()
                 Button("取消", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .glassButton()
                 Button("开始下载") { commit() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!isValid)
+                    .glassButton(prominent: true)
             }
             .padding(16)
         }

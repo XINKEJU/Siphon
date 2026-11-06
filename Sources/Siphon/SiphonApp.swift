@@ -16,7 +16,10 @@ struct SiphonApp: App {
     @StateObject private var store = DownloadStore()
 
     var body: some Scene {
-        WindowGroup {
+        // Single-window scene: opening a magnet:/ed2k: URL (or re-activating
+        // the app) must not spawn extra translucent windows. It also removes
+        // the default "New Window" menu item that clashes with ⌘N "new download".
+        Window("Siphon", id: "main-window") {
             ContentView()
                 .environmentObject(store)
                 .frame(minWidth: 900, minHeight: 600)

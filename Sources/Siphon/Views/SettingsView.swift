@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// Settings scene (⌘,). macOS convention: tabs/panes, no "Save" button — changes apply
-/// immediately, and destructive actions are clearly separated.
+/// Settings scene (⌘,). macOS convention: tabs/panes, no "Save" button — changes
+/// apply immediately, destructive actions are clearly separated. Glass is used
+/// for the small status/identity cards and grouped quick-action buttons only.
 struct SettingsView: View {
     @EnvironmentObject private var store: DownloadStore
     @State private var limitText = ""
@@ -65,13 +66,14 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("快速设置") {
-                HStack {
+                GlassGroup(spacing: 8) {
                     ForEach(["", "524288", "1048576", "5242880"], id: \.self) { v in
                         Button(v.isEmpty ? "不限速" : Formatting.speed(Int64(v) ?? 0)) {
                             limitText = v
                             store.applySpeedLimit(v)
                         }
                         .controlSize(.small)
+                        .glassButton()
                     }
                 }
             }
@@ -103,12 +105,31 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("aria2 引擎") {
-                LabeledContent("状态", value: store.aria2Status)
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(store.aria2Status == "已停止" || store.aria2Status == "aria2 不可用"
+                              ? Color.red : Color.green)
+                        .frame(width: 8, height: 8)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("引擎状态")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        Text(store.aria2Status).font(.body)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(12)
+                .glassCard(cornerRadius: 12)
+
                 Text("应用需捆绑 aria2c 二进制（放到 App Bundle 的 Resources 或 ~/Library/Application Support/Siphon/）。")
                     .font(.caption).foregroundStyle(.secondary)
-                HStack {
+                GlassGroup(spacing: 8) {
                     Button("重新启动引擎") { store.restartAria2() }
+                        .controlSize(.small)
+                        .glassButton()
                     Button("停止引擎", role: .destructive) { store.stop() }
+                        .controlSize(.small)
+                        .glassButton()
                 }
             }
         }
@@ -118,19 +139,26 @@ struct SettingsView: View {
     // MARK: - About
     private var aboutTab: some View {
         VStack(spacing: 14) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 52))
-                .foregroundStyle(Color.accentColor)
-            Text("Siphon").font(.title2.weight(.semibold))
-            Text("原生 macOS 全协议下载管理器").font(.subheadline).foregroundStyle(.secondary)
-            Divider().frame(width: 260)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("下载内核：aria2（独立进程，JSON-RPC）")
-                Text("原生补充：HLS · DASH · eD2K 哈希与链接解析")
-                Text("界面：SwiftUI / AppKit，遵循 macOS Human Interface Guidelines")
+            VStack(spacing: 12) {
+                // The real bundled app icon, not a placeholder SF Symbol.
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable()
+                    .frame(width: 72, height: 72)
+                Text("Siphon").font(.title2.weight(.semibold))
+                Text("原生 macOS 全协议下载管理器")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Divider().frame(width: 260)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("下载内核：aria2（独立进程，JSON-RPC）")
+                    Text("原生补充：HLS · DASH · eD2K 哈希与链接解析")
+                    Text("界面：SwiftUI · Liquid Glass（macOS 26+）")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .padding(24)
+            .glassCard(cornerRadius: 20)
+
             Spacer()
             Text("aria2 采用 GPLv2；以独立进程调用，不链接其库。")
                 .font(.caption2).foregroundStyle(.tertiary)

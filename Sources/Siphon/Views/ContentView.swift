@@ -1,8 +1,12 @@
 import SwiftUI
 
-/// Root window. Uses `NavigationSplitView` — the standard macOS three-column
-/// pattern — with a sidebar for library/queues, the task list as the content
-/// column, and an inspector-style detail column for the selected task.
+/// Root window. `NavigationSplitView` is the standard macOS three-column
+/// pattern: sidebar (library/queues), content (task list), detail (inspector).
+///
+/// On macOS 26+ the system gives the toolbar and sidebar their Liquid Glass
+/// material automatically. We deliberately keep the *content* opaque and add
+/// glass only to the floating command bar (see `TaskListView`) and to floating
+/// inspector cards — glass must never sit behind body text or progress bars.
 struct ContentView: View {
     @EnvironmentObject private var store: DownloadStore
     @State private var showingAdd = false
@@ -16,11 +20,23 @@ struct ContentView: View {
             TaskListView(selection: $sidebarSelection)
                 .navigationTitle(sidebarSelection.title)
         } detail: {
-            if showingInspector, let id = store.selectedTaskID,
-               let task = store.tasks.first(where: { $0.id == id }) {
-                TaskDetailView(task: task)
-            } else {
-                EmptyDetailView()
+            ZStack {
+                // A very light colour wash gives the floating glass something
+                // to refract. Never applied to the list column itself.
+                LinearGradient(
+                    colors: [Color.accentColor.opacity(0.075),
+                             Color.purple.opacity(0.035),
+                             Color.clear],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+
+                if showingInspector, let id = store.selectedTaskID,
+                   let task = store.tasks.first(where: { $0.id == id }) {
+                    TaskDetailView(task: task)
+                } else {
+                    EmptyDetailView()
+                }
             }
         }
         .toolbar { toolbarContent }
@@ -59,39 +75,30 @@ struct ContentView: View {
             }
             .help("显示或隐藏任务详情")
         }
-
-        ToolbarItem(placement: .status) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(store.aria2Status == "已停止" || store.aria2Status == "aria2 不可用"
-                          ? Color.red : Color.green)
-                    .frame(width: 7, height: 7)
-                Text(store.aria2Status)
-                Text("·")
-                Text(Formatting.speed(store.aggregateSpeed))
-                    .monospacedDigit()
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
+        // Engine status / aggregate speed now live in the floating glass bar:
+        // a translucent toolbar item would be glass stacked on glass.
     }
 }
 
+/// Floating "no selection" inspector card. A glass surface over the colour
+/// wash, sized as a card rather than filling the whole column.
 private struct EmptyDetailView: View {
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "arrow.down.circle.dotted")
                 .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             Text("选择一个任务查看详情")
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
             Text("支持 HTTP / HTTPS / FTP / SFTP / BitTorrent / Metalink / 磁力 / eD2K / HLS / DASH")
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
+        .padding(28)
+        .frame(width: 300)
+        .glassCard(cornerRadius: 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(32)
     }
 }

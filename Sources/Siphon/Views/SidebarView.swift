@@ -50,22 +50,32 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .softScrollTopEdge()
         .frame(minWidth: 190)
         .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                Divider()
-                HStack(spacing: 6) {
-                    Image(systemName: "internaldrive")
-                        .foregroundStyle(.secondary)
+            // The sidebar itself is system glass on macOS 26+. This small
+            // destination card is a floating surface above the list, not a
+            // second glass pane behind the rows.
+            HStack(spacing: 8) {
+                Image(systemName: "internaldrive")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("下载位置")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                     Text(store.downloadDirectory.lastPathComponent)
+                        .font(.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .glassCard(cornerRadius: 12)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
         }
         .alert("新建队列", isPresented: $showingNewQueue) {
             TextField("队列名称", text: $newQueueName)

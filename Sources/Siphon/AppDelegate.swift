@@ -7,6 +7,14 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var store: DownloadStore?
 
+    override init() {
+        super.init()
+        // A download manager is a single-window app. Without this, macOS can
+        // merge extra WindowGroup windows into tabs and stack translucent
+        // columns on top of each other.
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
