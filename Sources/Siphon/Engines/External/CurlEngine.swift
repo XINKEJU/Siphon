@@ -15,10 +15,33 @@ public final class CurlEngine: DownloadEngine {
     private var runners: [UUID: ExternalRunner] = [:]
     private var tasks: [UUID: DownloadTask] = [:]
     private var limit: Int64?
+    private var perTaskLimit: [UUID: Int64] = [:]
 
     public init() {}
     public func canHandle(_ p: DownloadProtocol) -> Bool { supportedProtocols.contains(p) }
     public func setGlobalSpeedLimit(_ bytesPerSec: Int64?) async { limit = bytesPerSec }
+
+    /// Hot-updatable per-task cap. curl's `--limit-rate` only takes effect at
+    /// process start, so changing it mid-flight relaunches the runner with the
+    /// folded value (`min(global, perTask)`).
+    public func setTaskSpeedLimit(_ id: UUID, bytesPerSec: Int64?) async {
+        perTaskLimit[id] = bytesPerSec
+        // Relaunch to apply; `launch` re-reads `effectiveLimit(for:)`.
+        if tasks[id] != nil {
+            launch(tasks[id]!, resume: true)
+        }
+    }
+
+    private func effectiveLimit(for id: UUID) -> Int64? {
+        let g = limit
+        let t = perTaskLimit[id]
+        switch (g, t) {
+        case (.some(let a), .some(let b)): return min(a, b)
+        case (.some(let a), .none): return a
+        case (.none, .some(let b)): return b
+        case (.none, .none): return nil
+        }
+    }
 
     public func submit(_ task: DownloadTask) async throws {
         tasks[task.id] = task
@@ -35,6 +58,7 @@ public final class CurlEngine: DownloadEngine {
     public func remove(_ id: UUID) async {
         runners.removeValue(forKey: id)?.cancel()
         tasks.removeValue(forKey: id)
+        perTaskLimit.removeValue(forKey: id)
     }
 
     private func launch(_ task: DownloadTask, resume: Bool) {
@@ -53,7 +77,9 @@ public final class CurlEngine: DownloadEngine {
         if resume || (fm.fileExists(atPath: task.destination.path)) {
             args += ["--continue-at", "-"]
         }
-        if let limit, limit > 0 { args += ["--limit-rate", String(limit)] }
+        if let eff = effectiveLimit(for: task.id), eff > 0 {
+            args += ["--limit-rate", String(eff)]
+        }
         for (k, v) in task.options where !["dir", "out"].contains(k.lowercased()) {
             args += ["--header", "\(k): \(v)"]
         }

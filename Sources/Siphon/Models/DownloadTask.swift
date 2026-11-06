@@ -18,6 +18,13 @@ public struct DownloadTask: Identifiable, Sendable {
     /// The exact string the user supplied, before `URINormalizer` rewrote it.
     /// Kept so a vendor link / gateway URI can be re-opened or retried verbatim.
     public var origin: String?
+    /// Expected integrity hash, `"algorithm:hex"` or bare hex (defaults to SHA-256).
+    /// Supported algorithms: md5, sha1, sha256. Verified after download completes.
+    public var checksum: String?
+    /// Mirror / CDN sources for the same file (FluxDown multi_cdn model). The
+    /// native HTTP engine probes the primary first and fails over to a mirror
+    /// when the primary is unreachable, errors mid-transfer, or is slow.
+    public var mirrors: [URL]
 
     public init(
         id: UUID = UUID(),
@@ -27,6 +34,8 @@ public struct DownloadTask: Identifiable, Sendable {
         queueName: String = "Default",
         options: [String: String] = [:],
         origin: String? = nil,
+        checksum: String? = nil,
+        mirrors: [URL] = [],
         protoOverride: DownloadProtocol? = nil
     ) {
         let proto = DownloadProtocol.detect(from: source)
@@ -42,6 +51,8 @@ public struct DownloadTask: Identifiable, Sendable {
         self.errorDescription = nil
         self.options = options
         self.origin = origin
+        self.checksum = checksum
+        self.mirrors = mirrors
     }
 
     /// Human-readable fallback name. Custom schemes carry their filename in

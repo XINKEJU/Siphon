@@ -151,7 +151,33 @@ public enum URINormalizer {
             return try await expand(entries, origin: input, options: options,
                                     settings: settings, depth: depth)
 
-        case .http, .https, .ftp, .sftp, .bittorrent, .metalink, .magnet,
+        case .ftp:
+            // Directory URLs expand into one task per file (recursive listing).
+            // aria2 cannot do this; curl's MLSD/EPSV backend handles the wire work.
+            guard !URISchemes.all.contains(scheme) else {
+                throw NormalizerError.unsupportedScheme(scheme)
+            }
+            if FTPDirectoryLister.looksLikeDirectory(url) {
+                let entries = try await FTPDirectoryLister.list(url, options: options)
+                guard !entries.isEmpty else {
+                    throw NormalizerError.fetchFailed("FTP 目录为空：\(input)")
+                }
+                var out: [NormalizedRequest] = []
+                for e in entries where !e.isDirectory {
+                    let fileURL = url.appendingPathComponent(e.name)
+                    out.append(NormalizedRequest(url: fileURL, proto: .ftp,
+                                                 origin: input,
+                                                 suggestedName: e.name,
+                                                 options: options))
+                }
+                // If the listing surfaced only subdirectories (no files), surface an
+                // error rather than silently enqueuing nothing.
+                if out.isEmpty { throw NormalizerError.fetchFailed("FTP 目录仅含子目录：\(input)") }
+                return out
+            }
+            return [NormalizedRequest(url: url, proto: proto, origin: input, options: options)]
+
+        case .http, .https, .sftp, .bittorrent, .metalink, .magnet,
              .ed2k, .hls, .dash, .ftps, .smb, .smbs, .nfs,
              .scp, .rsync, .file, .data, .curl:
             if !URISchemes.all.contains(scheme) && scheme != "file" && scheme != "data" {

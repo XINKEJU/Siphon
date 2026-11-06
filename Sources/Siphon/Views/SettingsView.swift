@@ -19,6 +19,13 @@ struct SettingsView: View {
     @State private var curlPath = ""
     @State private var settingsSaved = false
 
+    // RSS subscriptions
+    @State private var feedURLText = ""
+
+    // Webhooks
+    @State private var webhooks: [WebhookManager.Endpoint] = []
+    @State private var webhookURLText = ""
+
     var body: some View {
         TabView(selection: $selectedTab) {
             generalTab.tabItem { Label("通用", systemImage: "gear") }.tag(0)
@@ -32,7 +39,12 @@ struct SettingsView: View {
         .onAppear {
             limitText = store.speedLimitText
             loadGatewaySettings()
+            reloadWebhooks()
         }
+    }
+
+    private func reloadWebhooks() {
+        webhooks = WebhookManager.shared.endpoints
     }
 
     // MARK: - General
@@ -60,6 +72,40 @@ struct SettingsView: View {
                 Text("每个队列还可单独设置并发数与下载时段。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
+            Section("自动化") {
+                Toggle("按类型自动归类子文件夹", isOn: Binding(
+                    get: { UserDefaults.standard.bool(forKey: "Siphon.autoCategorize") },
+                    set: { UserDefaults.standard.set($0, forKey: "Siphon.autoCategorize") }))
+                Text("开启后新任务按视频 / 音频 / 文档 / 压缩包 / 镜像等自动放入子目录。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("定时下载时段", isOn: Binding(
+                    get: { store.scheduleWindow.enabled },
+                    set: { store.scheduleWindow.enabled = $0 }))
+                if store.scheduleWindow.enabled {
+                    HStack {
+                        TextField("开始 HH:mm", text: Binding(
+                            get: { store.scheduleWindow.start },
+                            set: { store.scheduleWindow.start = $0 }))
+                            .textFieldStyle(.roundedBorder)
+                        Text("至").foregroundStyle(.secondary)
+                        TextField("结束 HH:mm", text: Binding(
+                            get: { store.scheduleWindow.end },
+                            set: { store.scheduleWindow.end = $0 }))
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Text("时段外自动暂停（支持跨零点，如 22:00–07:00），时段内自动恢复。每 15 秒检查一次。")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+
+                Picker("全部完成后", selection: $store.completionAction) {
+                    ForEach(CompletionAction.allCases) { action in
+                        Text(action.rawValue).tag(action)
+                    }
+                }
+                Text("任务全部进入终态时执行一次；仅当选「无」以外选项时生效。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
             Section {
                 Button("清除已完成任务", role: .destructive) { store.removeCompleted() }
             }
@@ -70,6 +116,47 @@ struct SettingsView: View {
     // MARK: - Speed
     private var speedTab: some View {
         Form {
+            Section("乌龟模式（三档限速）") {
+                Picker("模式", selection: Binding(
+                    get: { store.turtleConfig.mode },
+                    set: { store.turtleConfig.mode = $0 })) {
+                    ForEach(TurtleMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if store.turtleConfig.mode != .off {
+                    HStack {
+                        Text("限速")
+                        TextField("字节/秒", value: Binding(
+                            get: { store.turtleConfig.limitBytesPerSec },
+                            set: { store.turtleConfig.limitBytesPerSec = $0 }),
+                            format: .number)
+                            .textFieldStyle(.roundedBorder)
+                        Text("B/s").foregroundStyle(.secondary)
+                    }
+                }
+                if store.turtleConfig.mode == .auto {
+                    HStack {
+                        Text("时段")
+                        TextField("开始(分)", value: Binding(
+                            get: { store.turtleConfig.autoStartMinutes },
+                            set: { store.turtleConfig.autoStartMinutes = $0 }),
+                            format: .number)
+                            .textFieldStyle(.roundedBorder)
+                        Text("–").foregroundStyle(.secondary)
+                        TextField("结束(分)", value: Binding(
+                            get: { store.turtleConfig.autoEndMinutes },
+                            set: { store.turtleConfig.autoEndMinutes = $0 }),
+                            format: .number)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Text("开始/结束为当日分钟数（如 1320=22:00，420=07:00），支持跨零点。仅此时段内限速。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("乌龟模式与全局限速叠加，取二者较小值。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("全局限速") {
                 HStack {
                     TextField("字节/秒", text: $limitText, prompt: Text("留空为不限速"))
@@ -105,6 +192,23 @@ struct SettingsView: View {
                 Text("捕获后以「已暂停」状态添加，需手动确认开始。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("视频站解析（yt-dlp）") {
+                Toggle("解析视频站链接为直链", isOn: Binding(
+                    get: { UserDefaults.standard.bool(forKey: "Siphon.ytdlp") },
+                    set: { UserDefaults.standard.set($0, forKey: "Siphon.ytdlp") }))
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(YtDlpResolver.available() ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(YtDlpResolver.available()
+                         ? "已检测到 yt-dlp"
+                         : "未安装 yt-dlp（brew install yt-dlp）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("开启后 YouTube / B 站 / Twitter 等链接经 yt-dlp 解析为最高画质直链（音视频合一），交由原生 HTTP 引擎下载。未安装或解析失败时按普通链接处理。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
             Section("浏览器与脚本") {
                 Toggle("启用本地控制接口", isOn: Binding(
                     get: { store.browserCaptureEnabled },
@@ -117,6 +221,97 @@ struct SettingsView: View {
                 }
                 Text("POST {\"url\": \"…\"} 即可添加任务；浏览器扩展可通过 host_permissions 调用。")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("AI 客户端（MCP）") {
+                Toggle("启用 MCP 服务", isOn: Binding(
+                    get: { store.mcpEnabled },
+                    set: { store.setMCPEnabled($0) }))
+                HStack {
+                    Text("http://127.0.0.1:\(MCPServer.port)/mcp")
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                    Spacer()
+                }
+                Text("让 Claude / Cursor 等 AI 客户端管理下载：add_download、list_tasks、pause_task、resume_task、remove_task。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("任务事件 Webhook") {
+                ForEach(webhooks) { ep in
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ep.url).font(.caption.monospaced())
+                                .lineLimit(1).truncationMode(.middle)
+                            if !ep.secret.isEmpty {
+                                Text("已启用签名验证").font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button(role: .destructive) {
+                            WebhookManager.shared.remove(id: ep.id)
+                            reloadWebhooks()
+                        } label: { Image(systemName: "trash") }
+                        .controlSize(.small)
+                    }
+                }
+                HStack {
+                    TextField("Webhook URL（任务完成/失败时 POST）", text: $webhookURLText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("添加") {
+                        let url = webhookURLText.trimmingCharacters(in: .whitespaces)
+                        if URL(string: url)?.scheme != nil {
+                            WebhookManager.shared.add(url: url)
+                            webhookURLText = ""
+                            reloadWebhooks()
+                        }
+                    }
+                    .disabled(!webhookURLText.contains("://"))
+                }
+                Text("任务进入完成 / 出错 / 移除终态时向每个地址 POST JSON；可选签名验证。失败不阻塞下载。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("RSS 订阅下载") {
+                ForEach(store.feedManager.feeds) { feed in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(feed.lastError == nil ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(feed.title).font(.body)
+                            Text(feed.lastError ?? feed.url.absoluteString)
+                                .font(.caption2.monospaced())
+                                .lineLimit(1).truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { feed.enabled },
+                            set: { store.feedManager.setEnabled(id: feed.id, $0) }))
+                            .labelsHidden()
+                        Button(role: .destructive) {
+                            store.feedManager.remove(id: feed.id)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                HStack {
+                    TextField("RSS / Atom 订阅地址", text: $feedURLText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("添加") {
+                        if let u = URL(string: feedURLText.trimmingCharacters(
+                            in: .whitespacesAndNewlines)), u.scheme != nil {
+                            store.feedManager.add(url: u)
+                            feedURLText = ""
+                            Task { await store.feedManager.refreshAll() }
+                        }
+                    }
+                    .disabled(!feedURLText.contains("://"))
+                    Button("立即刷新") { Task { await store.feedManager.refreshAll() } }
+                }
+                Text("每次刷新按 guid 去重，只下载新条目；首次添加不下载历史内容。应用运行期间每 30 分钟自动检查一次（有活动下载时顺延）。")
+                    .font(.caption).foregroundStyle(.tertiary)
             }
             Section("P2P 引擎（aria2，随应用打包）") {
                 HStack(spacing: 10) {
@@ -152,6 +347,13 @@ struct SettingsView: View {
     // MARK: - Protocol gateways
     private var gatewayTab: some View {
         Form {
+            Section("系统代理（PAC）") {
+                Toggle("自动使用系统代理 / PAC 脚本", isOn: Binding(
+                    get: { ProxyRouter.shared.enabled },
+                    set: { ProxyRouter.shared.enabled = $0 }))
+                Text("开启后，下载按系统代理设置（含 PAC 自动配置）走代理；本地回环地址始终直连。默认关闭以避免阻塞。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("IPFS / IPNS 网关") {
                 TextField("网关地址", text: $ipfsGateway,
                           prompt: Text("https://ipfs.io 或 http://127.0.0.1:8080"))

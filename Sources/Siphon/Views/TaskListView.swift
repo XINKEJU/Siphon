@@ -86,6 +86,13 @@ struct TaskListView: View {
             Button("在访达中显示") { reveal(task) }
         }
         Divider()
+        Menu("限速") {
+            Button("不限速") { store.setTaskSpeedLimit(task.id, nil) }
+            Button("512 KB/s") { store.setTaskSpeedLimit(task.id, 524288) }
+            Button("1 MB/s") { store.setTaskSpeedLimit(task.id, 1048576) }
+            Button("5 MB/s") { store.setTaskSpeedLimit(task.id, 5242880) }
+        }
+        Divider()
         Button("拷贝链接") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(task.source.absoluteString, forType: .string)

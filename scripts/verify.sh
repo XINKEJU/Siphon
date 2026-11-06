@@ -19,18 +19,18 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"; kill "${SERVER_PID:-}" "${SERVER2_PID:-}" "${SERVER3_PID:-}" \
       "${SERVER4_PID:-}" "${ED2K_PID:-}" 2>/dev/null || true' EXIT
 
-echo "== 1/12 swift build =="
+echo "== 1/21 swift build =="
 swift build
 
-echo "== 2/12 MD4 / eD2K / link vectors =="
+echo "== 2/21 MD4 / eD2K / link vectors =="
 swiftc -o "$TMP/vectors" Tests/VectorTests/main.swift "${MODELS[@]}" "${ED2K[@]}"
 "$TMP/vectors"
 
-echo "== 3/12 HLS / DASH parsers =="
+echo "== 3/21 HLS / DASH parsers =="
 swiftc -o "$TMP/parsers" Tests/ParserTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/parsers"
 
-echo "== 4/12 concurrent ordered segment assembly =="
+echo "== 4/21 concurrent ordered segment assembly =="
 ( cd Tests/fixtures && exec python3 -m http.server 18765 --bind 127.0.0.1 ) \
     > "$TMP/server.log" 2>&1 &
 SERVER_PID=$!
@@ -44,7 +44,7 @@ done
 swiftc -parse-as-library -o "$TMP/segments" Tests/SegmentTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/segments"
 
-echo "== 5/12 real aria2 JSON-RPC download (skipped if aria2c absent) =="
+echo "== 5/21 real aria2 JSON-RPC download (skipped if aria2c absent) =="
 if command -v aria2c >/dev/null 2>&1; then
     ( cd Tests/fixtures-aria2 && exec python3 -m http.server 18766 --bind 127.0.0.1 ) \
         > "$TMP/server2.log" 2>&1 &
@@ -63,7 +63,7 @@ else
     echo "SKIP  aria2c not installed (brew install aria2 to enable)"
 fi
 
-echo "== 6/12 protocol matrix: detection, vendor links, playlists, SigV4, normalization, engine E2E =="
+echo "== 6/21 protocol matrix: detection, vendor links, playlists, SigV4, normalization, engine E2E =="
 # Fixture server on :18765 is still running from step 4 and serves seg0.ts.
 PROTOCOL_SOURCES=(
     Sources/Siphon/Engines/Engine.swift
@@ -73,6 +73,7 @@ PROTOCOL_SOURCES=(
     Sources/Siphon/Protocols/S3Signer.swift
     Sources/Siphon/Protocols/ProtocolSettings.swift
     Sources/Siphon/Protocols/URINormalizer.swift
+    Sources/Siphon/Protocols/FTPDirectoryLister.swift
     Sources/Siphon/Engines/HLS/HLSParser.swift
     Sources/Siphon/Engines/Shared/ExternalRunner.swift
     Sources/Siphon/Managers/SpeedLimitController.swift
@@ -85,7 +86,7 @@ PROTOCOL_SOURCES=(
 swiftc -o "$TMP/protocols" Tests/ProtocolTests/main.swift "${PROTOCOL_SOURCES[@]}"
 "$TMP/protocols"
 
-echo "== 7/12 ED2K engine (resume destination regression) =="
+echo "== 7/21 ED2K engine (resume destination regression) =="
 swiftc -o "$TMP/ed2kengine" Tests/ED2KTests/main.swift \
     Sources/Siphon/Models/*.swift \
     Sources/Siphon/Engines/Engine.swift \
@@ -93,13 +94,13 @@ swiftc -o "$TMP/ed2kengine" Tests/ED2KTests/main.swift \
     Sources/Siphon/Engines/ED2K/*.swift
 "$TMP/ed2kengine"
 
-echo "== 8/12 NativeMessagingServer (split-request regression) =="
+echo "== 8/21 NativeMessagingServer (split-request regression) =="
 swiftc -framework Network -o "$TMP/nativemsg" \
     Tests/NativeMessagingTests/main.swift \
     Sources/Siphon/BrowserExtension/NativeMessagingServer.swift
 "$TMP/nativemsg"
 
-echo "== 9/12 native HTTP download engine (no external tools) =="
+echo "== 9/21 native HTTP download engine (no external tools) =="
 mkdir -p Tests/fixtures-http
 # Deterministic ~5 MiB fixture so the test can verify exact byte equality.
 python3 - <<'PY'
@@ -157,15 +158,17 @@ for _ in $(seq 1 50); do
     if curl -sf -o /dev/null http://127.0.0.1:18767/big.bin; then break; fi
     python3 -c 'import time; time.sleep(0.1)'
 done
-swiftc -o "$TMP/nativehttp" Tests/NativeHTTPTests/main.swift \
+swiftc -framework SystemConfiguration -framework JavaScriptCore -o "$TMP/nativehttp" Tests/NativeHTTPTests/main.swift \
     Sources/Siphon/Models/*.swift \
     Sources/Siphon/Engines/Engine.swift \
     Sources/Siphon/Managers/SpeedLimitController.swift \
+    Sources/Siphon/Protocols/PACResolver.swift \
+    Sources/Siphon/Protocols/ProxyRouter.swift \
     Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift
 "$TMP/nativehttp"
 kill "$SERVER3_PID" 2>/dev/null || true
 
-echo "== 10/12 native eD2K transport (real wire protocol E2E) =="
+echo "== 10/21 native eD2K transport (real wire protocol E2E) =="
 # Deterministic multi-block fixture (>2 x 180 KiB + short tail); both the Swift
 # test and the independent Python peer read the same file.
 FIXTURE=Tests/fixtures-ed2k/fixture.bin
@@ -195,7 +198,7 @@ swiftc -o "$TMP/ed2knative" Tests/ED2KNativeTests/main.swift \
 "$TMP/ed2knative"
 kill "$ED2K_PID" 2>/dev/null || true
 
-echo "== 11/12 LocalEngine + CurlEngine transport smoke =="
+echo "== 11/21 LocalEngine + CurlEngine transport smoke =="
 ( cd Tests/fixtures-http && exec python3 -m http.server 18773 --bind 127.0.0.1 ) \
     > "$TMP/server4.log" 2>&1 &
 SERVER4_PID=$!
@@ -215,7 +218,7 @@ swiftc -o "$TMP/smoke" Tests/TransferSmokeTests/main.swift "${SMOKE[@]}"
 "$TMP/smoke"
 kill "$SERVER4_PID" 2>/dev/null || true
 
-echo "== 12/12 Info.plist scheme registration matches URISchemes.registered =="
+echo "== 12/21 Info.plist scheme registration matches URISchemes.registered =="
 python3 - <<'PY'
 import plistlib, re, sys
 p = plistlib.load(open('Resources/Info.plist', 'rb'))
@@ -232,6 +235,66 @@ if missing_in_plist or missing_in_swift:
              f'swift-only={sorted(missing_in_plist)}')
 print(f'OK  {len(swift_schemes)} schemes registered in both Info.plist and URISchemes.registered')
 PY
+
+echo "== 13/21 native HTTP resume suite (.part publish, ETag pinning, checksum) =="
+swiftc -framework SystemConfiguration -framework JavaScriptCore -o "$TMP/resume" Tests/NativeHTTPResumeTests/main.swift \
+    "${MODELS[@]}" Sources/Siphon/Engines/Engine.swift \
+    Sources/Siphon/Managers/SpeedLimitController.swift \
+    Sources/Siphon/Protocols/PACResolver.swift \
+    Sources/Siphon/Protocols/ProxyRouter.swift \
+    Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift
+"$TMP/resume"
+
+echo "== 14/21 yt-dlp resolver (stub binary, offline) =="
+swiftc -o "$TMP/ytdlp" Tests/YtDlpTests/main.swift \
+    Sources/Siphon/Protocols/YtDlpResolver.swift \
+    Sources/Siphon/Engines/Shared/ExternalRunner.swift "${MODELS[@]}"
+"$TMP/ytdlp"
+
+echo "== 15/21 JavaScriptCore plugin host (sandbox + CRLF guard) =="
+swiftc -framework JavaScriptCore -o "$TMP/plugins" \
+    Tests/PluginHostTests/main.swift Sources/Siphon/Plugins/PluginHost.swift
+"$TMP/plugins"
+
+echo "== 16/21 RSS/Atom feed parsing + guid diffing (loopback) =="
+swiftc -framework Network -o "$TMP/feeds" \
+    Tests/RSSFeedTests/main.swift Sources/Siphon/RSS/FeedManager.swift
+"$TMP/feeds"
+
+echo "== 17/21 FTP directory listing (MLSD/LIST/NLST parser) =="
+swiftc -o "$TMP/ftplist" Tests/FTPListerTests/main.swift \
+    Sources/Siphon/Models/*.swift \
+    Sources/Siphon/Protocols/FTPDirectoryLister.swift \
+    Sources/Siphon/Protocols/ProtocolSettings.swift \
+    Sources/Siphon/Protocols/S3Signer.swift \
+    Sources/Siphon/Engines/Shared/ExternalRunner.swift
+"$TMP/ftplist"
+
+echo "== 18/21 turtle three-tier limiter (off/on/auto window fold) =="
+swiftc -framework AppKit -o "$TMP/turtle" Tests/TurtleTests/main.swift \
+    Sources/Siphon/Managers/TaskPolicy.swift
+"$TMP/turtle"
+
+echo "== 19/21 per-task token-bucket throttler =="
+swiftc -framework SystemConfiguration -framework JavaScriptCore -parse-as-library -o "$TMP/throttle" Tests/ThrottlerTests/main.swift \
+    "${MODELS[@]}" Sources/Siphon/Engines/Engine.swift \
+    Sources/Siphon/Managers/SpeedLimitController.swift \
+    Sources/Siphon/Protocols/PACResolver.swift \
+    Sources/Siphon/Protocols/ProxyRouter.swift \
+    Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift
+"$TMP/throttle"
+
+echo "== 20/21 PAC resolver (parse + JavaScriptCore evaluation) =="
+swiftc -framework JavaScriptCore -o "$TMP/pac" \
+    Tests/PACResolverTests/main.swift Sources/Siphon/Protocols/PACResolver.swift
+"$TMP/pac"
+
+echo "== 21/21 MCP JSON-RPC + webhook payload =="
+swiftc -framework Network -o "$TMP/mcp" \
+    Tests/MCPTests/main.swift \
+    Sources/Siphon/BrowserExtension/MCPServer.swift \
+    Sources/Siphon/Managers/WebhookManager.swift
+"$TMP/mcp"
 
 echo
 echo "ALL CHECKS PASSED"

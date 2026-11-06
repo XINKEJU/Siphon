@@ -14,6 +14,7 @@ struct AddTaskView: View {
     @State private var showAdvanced = false
     @State private var userAgent = ""
     @State private var referer = ""
+    @State private var checksumText = ""
     @State private var detected: DownloadProtocol = .https
 
     var body: some View {
@@ -82,6 +83,14 @@ struct AddTaskView: View {
                     Text("自定义请求头会传给 aria2、libcurl 与原生 HLS/DASH 引擎。")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
+
+                    TextField("校验和（可选）", text: $checksumText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                    Text("下载完成后自动校验，不符则自动重下一次。支持 sha256:/sha1:/md5: 前缀；纯十六进制串按 SHA-256 处理。")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .formStyle(.grouped)
@@ -133,10 +142,12 @@ struct AddTaskView: View {
         var options: [String: String] = [:]
         if !userAgent.isEmpty { options["User-Agent"] = userAgent }
         if !referer.isEmpty { options["Referer"] = referer }
+        let trimmedChecksum = checksumText.trimmingCharacters(in: .whitespacesAndNewlines)
         store.add(urlString: urlString,
                   name: name.isEmpty ? nil : name,
                   queueName: queueName,
-                  options: options)
+                  options: options,
+                  checksum: trimmedChecksum.isEmpty ? nil : trimmedChecksum.lowercased())
         dismiss()
     }
 

@@ -19,6 +19,23 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     @Published public var speedLimitText: String = ""
     @Published public var clipboardEnabled = false
     @Published public var browserCaptureEnabled = false
+    @Published public var mcpEnabled = false
+    /// Per-task speed caps (bytes/s). `nil` / absent = unlimited. Folds under the
+    /// global (and turtle) cap: effective = min(global, perTask).
+    @Published public var taskSpeedLimits: [UUID: Int64] = [:]
+    /// Turtle three-tier mode config (Motrix speed-limit-controller).
+    @Published public var turtleConfig: TurtleConfig = {
+        if let d = UserDefaults.standard.data(forKey: PrefKey.turtle),
+           let c = try? JSONDecoder().decode(TurtleConfig.self, from: d) { return c }
+        return TurtleConfig()
+    }() {
+        didSet {
+            if let d = try? JSONEncoder().encode(turtleConfig) {
+                UserDefaults.standard.set(d, forKey: PrefKey.turtle)
+            }
+            applySpeedLimit(speedLimitText) // re-fold global cap
+        }
+    }
     @Published public var downloadDirectory: URL = {
         FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
     }()
@@ -29,10 +46,17 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     private var engines: [DownloadProtocol: DownloadEngine] = [:]
     private var aria2: Aria2Engine?
     private var nativeMessaging: NativeMessagingServer?
+    private var mcpServer: MCPServer?
     private let defaultsKey = "Siphon.tasks"
     private enum PrefKey {
         static let clipboard = "Siphon.clipboardEnabled"
         static let browser = "Siphon.browserCaptureEnabled"
+        static let mcp = "Siphon.mcpEnabled"
+        static let schedule = "Siphon.scheduleWindow"
+        static let actionFired = "Siphon.completionActionFired"
+        static let autoCategorize = "Siphon.autoCategorize"
+        static let ytdlp = "Siphon.ytdlp"
+        static let turtle = "Siphon.turtleConfig"
     }
     /// Tasks already handed to an engine. Resuming these must call `resume(id)`,
     /// never `submit(task)` again (that would create a duplicate aria2 GID).
@@ -40,6 +64,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     private var didStart = false
     private var isScheduling = false
     private var needsReschedule = false
+    private var lastTurtleEffective: Int64?
 
     public enum TaskFilter: String, CaseIterable, Identifiable {
         case all = "全部", active = "进行中", completed = "已完成", paused = "已暂停"
@@ -60,6 +85,10 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         cancellables.append(clipboard.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         })
+        // RSS subscriptions: new feed entries become download tasks automatically.
+        feedManager.onNewItems = { [weak self] feed, items in
+            Task { @MainActor in self?.enqueueFeedItems(feed, items) }
+        }
     }
 
     // MARK: - lifecycle
@@ -81,6 +110,120 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         }
         await startAria2()
         restoreIntegrations()
+        startSchedulerTick()
+        startFeedPolling()
+    }
+
+    // MARK: - RSS subscriptions
+    public let feedManager = FeedManager()
+    private var feedRefreshTimer: AnyCancellable?
+
+    /// Refresh feeds now, then poll every 30 min while the app runs.
+    private func startFeedPolling() {
+        guard feedRefreshTimer == nil else { return }
+        feedRefreshTimer = Timer.publish(every: 1800, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self, !self.tasks.contains(where: { $0.state == .active }) else { return }
+                Task { await self.feedManager.refreshAll() }
+            }
+        // Seed refresh shortly after launch (deferred so engine startup wins the race).
+        Task { try? await Task.sleep(nanoseconds: 10_000_000_000)
+            await self.feedManager.refreshAll() }
+    }
+
+    /// New feed entries → one task per item, named from the entry title.
+    private func enqueueFeedItems(_ feed: FeedManager.Feed, _ items: [FeedItem]) {
+        for item in items {
+            guard let url = URL(string: item.link), url.scheme != nil else { continue }
+            let title = item.title.isEmpty ? url.lastPathComponent : item.title
+            let fileName = title.replacingOccurrences(of: "/", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            var dir = downloadDirectory
+            if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
+               let sub = AutoCategorizer.subdirectory(for: fileName) {
+                dir = dir.appendingPathComponent(sub, isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+            let destination = uniqueDestination(for: fileName, in: dir)
+            add(DownloadTask(name: fileName, source: url, destination: destination,
+                             queueName: "Default", options: [:],
+                             origin: "rss:\(feed.title)", checksum: nil))
+        }
+    }
+
+    // MARK: - policy state (schedule window / completion action / keep-awake)
+    @Published public var scheduleWindow = ScheduleWindow() {
+        didSet { UserDefaults.standard.set(
+            (try? JSONEncoder().encode(scheduleWindow)) ?? Data(), forKey: PrefKey.schedule) }
+    }
+    @Published public var completionAction: CompletionAction = {
+        CompletionAction(rawValue: UserDefaults.standard.string(
+            forKey: "Siphon.completionAction") ?? "") ?? .none
+    }() {
+        didSet { UserDefaults.standard.set(completionAction.rawValue,
+                                           forKey: "Siphon.completionAction") }
+    }
+    /// Tasks auto-paused by the schedule window; resumed when it reopens.
+    private var autoPausedByWindow: Set<UUID> = []
+    private var schedulerTimer: AnyCancellable?
+    private let keepAwake = KeepAwakeToken()
+
+    /// 15-second tick (HyperDM): enforce the download window and completion actions.
+    private func startSchedulerTick() {
+        if let d = UserDefaults.standard.data(forKey: PrefKey.schedule),
+           let w = try? JSONDecoder().decode(ScheduleWindow.self, from: d) {
+            scheduleWindow = w
+        }
+        schedulerTimer = Timer.publish(every: 15, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in self?.tick() }
+    }
+
+    private func tick() {
+        let window = scheduleWindow
+        if window.isValid {
+            if window.contains() {
+                // Reopen: resume everything we auto-paused.
+                let ids = autoPausedByWindow
+                autoPausedByWindow.removeAll()
+                for id in ids where tasks.first(where: { $0.id == id })?.state == .paused {
+                    resume(id)
+                }
+            } else {
+                for t in tasks where t.state == .active {
+                    autoPausedByWindow.insert(t.id)
+                    pause(t.id)
+                }
+            }
+        }
+        // Keep-awake while anything is active (ABD KeepAwakeManager).
+        if tasks.contains(where: { $0.state == .active }) { keepAwake.begin() }
+        else { keepAwake.end() }
+        // Turtle `.auto`: re-fold the global cap when the quiet-hours window flips,
+        // so daytime traffic is released and night traffic re-throttled without a
+        // manual toggle.
+        if turtleConfig.mode == .auto,
+           turtleConfig.effectiveLimit() != lastTurtleEffective {
+            lastTurtleEffective = turtleConfig.effectiveLimit()
+            applyEffectiveGlobalLimit()
+        }
+        // Completion action: everything terminal → run the configured action once.
+        if completionAction != .none,
+           !tasks.isEmpty,
+           !tasks.contains(where: { $0.state == .active || $0.state == .pending }),
+           UserDefaults.standard.object(forKey: PrefKey.actionFired) == nil {
+            UserDefaults.standard.set(true, forKey: PrefKey.actionFired)
+            let action = completionAction
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000) // engine teardown grace
+                action.run()
+            }
+        }
+    }
+
+    public func resetCompletionLatch() {
+        UserDefaults.standard.removeObject(forKey: PrefKey.actionFired)
     }
 
     /// Integration switches are user preferences, so they must survive relaunch.
@@ -90,6 +233,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         let d = UserDefaults.standard
         if d.bool(forKey: PrefKey.browser) { setBrowserCaptureEnabled(true) }
         if d.bool(forKey: PrefKey.clipboard) { setClipboardEnabled(true) }
+        if d.bool(forKey: PrefKey.mcp) { setMCPEnabled(true) }
     }
 
     public func restartAria2() async {
@@ -128,10 +272,12 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
 
     // MARK: - CRUD
     public func add(urlString: String, name: String? = nil, queueName: String = "Default",
-                    options: [String: String] = [:]) {
+                    options: [String: String] = [:], checksum: String? = nil,
+                    mirrors: [String] = []) {
         Task {
             await addNormalized(urlString: urlString, name: name,
-                                queueName: queueName, options: options)
+                                queueName: queueName, options: options, checksum: checksum,
+                                mirrors: mirrors)
         }
     }
 
@@ -139,9 +285,51 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     /// Kept `async` because a playlist or gateway may require a network read.
     public func addNormalized(urlString: String, name: String? = nil,
                               queueName: String = "Default",
-                              options: [String: String] = [:]) async {
+                              options: [String: String] = [:],
+                              checksum: String? = nil,
+                              mirrors: [String] = []) async {
+        let mirrorURLs = mirrors.compactMap { URL(string: $0) }
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // JS plugin rewrite (PluginHost): a matching plugin may turn the URL
+        // into a direct download URL and attach headers. Pure URL rewriting —
+        // no network access inside the sandbox.
+        if let resolved = PluginHost.shared.resolve(urlString: trimmed, headers: options) {
+            var opts = options
+            for (k, v) in resolved.headers { opts[k] = v }
+            let fileName = resolved.name ?? name
+                ?? URL(string: trimmed)?.lastPathComponent
+            ?? "download"
+            var dir = downloadDirectory
+            if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
+               let sub = AutoCategorizer.subdirectory(for: fileName) {
+                dir = dir.appendingPathComponent(sub, isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+            let destination = uniqueDestination(for: fileName, in: dir)
+            add(DownloadTask(name: fileName, source: resolved.url,
+                             destination: destination, queueName: queueName,
+                             options: opts, origin: "plugin", checksum: checksum))
+            lastError = nil
+            return
+        }
+        // yt-dlp video-site resolution (opt-in; silent fallback when the binary
+        // is absent or the site is unknown). Resolved streams go through the
+        // native HTTP engine like any other URL.
+        if UserDefaults.standard.bool(forKey: PrefKey.ytdlp),
+           let u = URL(string: trimmed), YtDlpResolver.isSupported(u),
+           YtDlpResolver.available() {
+            do {
+                let medias = try await YtDlpResolver.resolve(trimmed)
+                enqueueMedias(medias, queueName: queueName, options: options,
+                              checksum: checksum, customName: name)
+                lastError = nil
+                return
+            } catch {
+                // Resolution is best-effort: fall through to the normal path.
+                lastError = error.localizedDescription
+            }
+        }
         do {
             let reqs = try await URINormalizer.normalize(trimmed, options: options)
             for req in reqs {
@@ -156,11 +344,20 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
                                              protoOverride: req.proto)
                     fileName = probe.name
                 }
-                let destination = downloadDirectory.appendingPathComponent(fileName)
+                // Auto-categorize: route into a subfolder by file type when enabled.
+                var dir = downloadDirectory
+                if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
+                   let sub = AutoCategorizer.subdirectory(for: fileName) {
+                    dir = dir.appendingPathComponent(sub, isDirectory: true)
+                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                }
+                let destination = uniqueDestination(for: fileName, in: dir)
                 let task = DownloadTask(name: fileName, source: req.url,
                                         destination: destination,
                                         queueName: queueName, options: req.options,
-                                        origin: req.origin, protoOverride: req.proto)
+                                        origin: req.origin, checksum: checksum,
+                                        mirrors: reqs.count == 1 ? mirrorURLs : [],
+                                        protoOverride: req.proto)
                 add(task)
             }
             lastError = nil
@@ -169,10 +366,62 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         }
     }
 
+    /// Enqueue yt-dlp–resolved media entries. The title (sanitized) becomes the
+    /// file name, with the container extension when known.
+    private func enqueueMedias(_ medias: [YtDlpResolver.Media], queueName: String,
+                               options: [String: String], checksum: String?,
+                               customName: String?) {
+        for (index, media) in medias.enumerated() {
+            let sanitizedTitle = media.title
+                .replacingOccurrences(of: "/", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            var fileName = sanitizedTitle.isEmpty ? "video-\(index + 1)" : sanitizedTitle
+            if let ext = media.ext, !ext.isEmpty, !fileName.hasSuffix(".\(ext)") {
+                fileName += ".\(ext)"
+            }
+            if medias.count == 1, let customName, !customName.isEmpty {
+                fileName = customName
+            }
+            var dir = downloadDirectory
+            if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
+               let sub = AutoCategorizer.subdirectory(for: fileName) {
+                dir = dir.appendingPathComponent(sub, isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+            let destination = uniqueDestination(for: fileName, in: dir)
+            guard let src = URL(string: media.url) else { continue }
+            let task = DownloadTask(name: fileName,
+                                    source: src,
+                                    destination: destination,
+                                    queueName: queueName, options: options,
+                                    origin: "yt-dlp", checksum: checksum,
+                                    protoOverride: .https)
+            add(task)
+        }
+    }
+
     public func add(_ task: DownloadTask) {
         tasks.append(task)
         save()
+        resetCompletionLatch() // a fresh task re-arms the completion action
         Task { await schedule() }
+    }
+
+    /// Duplicate-name dedup (ABD's numberedIfExists): if the destination already
+    /// exists — on disk or in the task list — append " (n)" until unique.
+    private func uniqueDestination(for fileName: String, in dir: URL? = nil) -> URL {
+        let base = dir ?? downloadDirectory
+        let taken = Set(tasks.map { $0.destination.lastPathComponent })
+        var candidate = fileName
+        var n = 1
+        while taken.contains(candidate)
+                || FileManager.default.fileExists(atPath: base.appendingPathComponent(candidate).path) {
+            let ext = (candidate as NSString).pathExtension
+            let baseName = (candidate as NSString).deletingPathExtension
+            candidate = ext.isEmpty ? "\(baseName) (\(n))" : "\(baseName) (\(n)).\(ext)"
+            n += 1
+        }
+        return base.appendingPathComponent(candidate)
     }
 
     public func pause(_ id: UUID) {
@@ -194,6 +443,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
             Task { await engines[t.protocol]?.remove(id) }
         }
         submitted.remove(id)
+        taskSpeedLimits.removeValue(forKey: id)
         tasks.removeAll { $0.id == id }
         save()
     }
@@ -234,6 +484,10 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
                     try await engine.submit(task)
                     submitted.insert(id)
                 }
+                // Re-apply any saved per-task cap (survives pause/resume/relaunch).
+                if let cap = taskSpeedLimits[id] {
+                    await engine.setTaskSpeedLimit(id, bytesPerSec: cap)
+                }
                 tasks[i].state = .active
             } catch {
                 tasks[i].state = .error
@@ -260,22 +514,59 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         tasks[i].state = state
         if let error { tasks[i].errorDescription = error.localizedDescription }
         if state.isTerminal { save() }
+        // Task-event webhook: fire on every terminal transition (FluxDown model).
+        if state == .completed || state == .error || state == .removed {
+            let t = tasks[i]
+            WebhookManager.shared.deliver(task: .init(
+                id: t.id, name: t.name, url: t.source.absoluteString,
+                state: state.rawValue,
+                downloadedBytes: t.progress.downloadedBytes,
+                totalBytes: t.progress.totalBytes,
+                error: t.errorDescription))
+        }
         Task { await schedule() }
     }
 
     // MARK: - speed limit
     public func applySpeedLimit(_ text: String) {
         speedLimitText = text
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        let bytesPerSec: Int64? = trimmed.isEmpty ? nil : Int64(trimmed)
-        SpeedLimitController.shared.setLimit(bytesPerSec)
+        applyEffectiveGlobalLimit()
+    }
+
+    /// Recompute and push the effective global cap = min(manual, turtle).
+    /// Called whenever the manual limit text or the turtle config changes.
+    private func applyEffectiveGlobalLimit() {
+        let trimmed = speedLimitText.trimmingCharacters(in: .whitespaces)
+        let manual: Int64? = trimmed.isEmpty ? nil : Int64(trimmed)
+        let turtle = turtleConfig.effectiveLimit()
+        let effective: Int64?
+        switch (manual, turtle) {
+        case (.some(let a), .some(let b)): effective = min(a, b)
+        case (.some(let a), .none): effective = a
+        case (.none, .some(let b)): effective = b
+        case (.none, .none): effective = nil
+        }
+        SpeedLimitController.shared.setLimit(effective)
         Task {
-            // One engine instance is registered under many protocols; dedupe so
-            // we don't send the same RPC 20 times.
             var seen = Set<ObjectIdentifier>()
             for engine in engines.values {
                 if seen.insert(ObjectIdentifier(engine)).inserted {
-                    await engine.setGlobalSpeedLimit(bytesPerSec)
+                    await engine.setGlobalSpeedLimit(effective)
+                }
+            }
+        }
+    }
+
+    /// Hot-updatable per-task speed cap (bytes/s). Effective rate is folded under
+    /// the global cap by the engines. Persisted so the cap survives relaunch.
+    public func setTaskSpeedLimit(_ id: UUID, _ bytesPerSec: Int64?) {
+        if let v = bytesPerSec { taskSpeedLimits[id] = v }
+        else { taskSpeedLimits.removeValue(forKey: id) }
+        Task {
+            var seen = Set<ObjectIdentifier>()
+            for engine in engines.values {
+                if seen.insert(ObjectIdentifier(engine)).inserted {
+                    await engine.setTaskSpeedLimit(id, bytesPerSec: bytesPerSec)
                 }
             }
         }
@@ -293,13 +584,113 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         UserDefaults.standard.set(on, forKey: PrefKey.browser)
         if on {
             let server = NativeMessagingServer()
-            server.start { [weak self] url in
-                Task { @MainActor in self?.add(urlString: url) }
-            }
+            server.start(onURL: { [weak self] url, options, checksum, mirrors in
+                Task { @MainActor in
+                    self?.add(urlString: url, options: options, checksum: checksum,
+                              mirrors: mirrors)
+                }
+            }, api: { [weak self] method, path, body in
+                self?.handleRESTAPI(method: method, path: path, body: body) ?? Data(#"{"ok":false}"#.utf8)
+            })
             nativeMessaging = server
         } else {
             nativeMessaging?.stop()
             nativeMessaging = nil
+        }
+    }
+
+    /// MCP server (Model Context Protocol) — lets AI clients manage downloads.
+    /// Runs on a separate loopback port (17802) so it can be toggled independently
+    /// of the browser-capture REST surface.
+    public func setMCPEnabled(_ on: Bool) {
+        mcpEnabled = on
+        UserDefaults.standard.set(on, forKey: PrefKey.mcp)
+        if on {
+            let server = MCPServer()
+            server.configure(handlers: mcpHandlers())
+            server.start()
+            mcpServer = server
+        } else {
+            mcpServer?.stop()
+            mcpServer = nil
+        }
+    }
+
+    /// Tool handlers bound to the store (FluxDown 12-tool MCP model).
+    private func mcpHandlers() -> [String: MCPServer.ToolHandler] {
+        return [
+            "add_download": { [weak self] args in
+                guard let self, let url = args["url"] as? String, !url.isEmpty else {
+                    return "error: missing url"
+                }
+                let name = args["name"] as? String
+                let mirrors = args["mirrors"] as? [String] ?? []
+                Task { @MainActor in
+                    self.add(urlString: url, name: name, mirrors: mirrors)
+                }
+                return "ok: enqueued \(url)"
+            },
+            "list_tasks": { [weak self] _ in
+                guard let self else { return "error: store unavailable" }
+                let lines = self.tasks.map {
+                    "\($0.id.uuidString) [\($0.state.rawValue)] \($0.name) " +
+                    "(\($0.progress.downloadedBytes)/\($0.progress.totalBytes))"
+                }
+                return lines.isEmpty ? "no tasks" : lines.joined(separator: "\n")
+            },
+            "pause_task": { [weak self] args in
+                guard let self, let id = Self.taskID(from: args) else { return "error: missing id" }
+                self.pause(id)
+                return "ok"
+            },
+            "resume_task": { [weak self] args in
+                guard let self, let id = Self.taskID(from: args) else { return "error: missing id" }
+                self.resume(id)
+                return "ok"
+            },
+            "remove_task": { [weak self] args in
+                guard let self, let id = Self.taskID(from: args) else { return "error: missing id" }
+                self.remove(id)
+                return "ok"
+            },
+        ]
+    }
+
+    private static func taskID(from args: [String: Any]) -> UUID? {
+        guard let s = args["id"] as? String else { return nil }
+        return UUID(uuidString: s)
+    }
+
+    // MARK: - REST API (localhost:17801, token-free: loopback only)
+    /// GET  /tasks                 — task list snapshot
+    /// POST /pause /resume /remove {"id":"uuid"}
+    /// POST /add                   — handled above via onURL
+    public func handleRESTAPI(method: String, path: String, body: Data) -> Data {
+        func reply(_ dict: [String: Any]) -> Data {
+            (try? JSONSerialization.data(withJSONObject: dict)) ?? Data(#"{"ok":false}"#.utf8)
+        }
+        switch (method, path) {
+        case ("GET", "/tasks"):
+            let list = tasks.map { t -> [String: Any] in
+                ["id": t.id.uuidString, "name": t.name, "url": t.source.absoluteString,
+                 "state": t.state.rawValue,
+                 "downloaded": t.progress.downloadedBytes, "total": t.progress.totalBytes]
+            }
+            return reply(["ok": true, "tasks": list])
+        case ("POST", "/pause"), ("POST", "/resume"), ("POST", "/remove"):
+            guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let idString = json["id"] as? String, let id = UUID(uuidString: idString) else {
+                return reply(["ok": false, "error": "missing id"])
+            }
+            switch path {
+            case "/pause": pause(id)
+            case "/resume": resume(id)
+            case "/remove": remove(id)
+            default: break
+            }
+            return reply(["ok": true])
+        default:
+            return reply(["ok": false, "error": "not found"])
         }
     }
 
@@ -345,17 +736,25 @@ private struct TaskRecord: Codable {
     var proto: String, state: String, queueName: String
     var downloaded: Int64, total: Int64, error: String?
     var origin: String?
+    var options: [String: String]?
+    var checksum: String?
+    var mirrors: [URL]?
 
     init(_ t: DownloadTask) {
         id = t.id; name = t.name; source = t.source; destination = t.destination
         proto = t.protocol.rawValue; state = t.state.rawValue; queueName = t.queueName
         downloaded = t.progress.downloadedBytes; total = t.progress.totalBytes
         error = t.errorDescription; origin = t.origin
+        options = t.options.isEmpty ? nil : t.options
+        checksum = t.checksum
+        mirrors = t.mirrors.isEmpty ? nil : t.mirrors
     }
 
     var task: DownloadTask {
         var t = DownloadTask(id: id, name: name, source: source,
-                             destination: destination, queueName: queueName)
+                             destination: destination, queueName: queueName,
+                             options: options ?? [:], checksum: checksum,
+                             mirrors: mirrors ?? [])
         t.protocol = DownloadProtocol(rawValue: proto) ?? .https
         // Engine-side GIDs / segment state do not survive an app restart, so
         // restore non-terminal tasks as paused and let the user resume explicitly.

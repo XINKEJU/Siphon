@@ -66,11 +66,30 @@ public final class Aria2Bootstrap {
             "--rpc-listen-all=false",
             "--rpc-listen-port=\(port)",
             "--rpc-allow-origin-all",
+            // Motrix hardening: RPC bodies with huge magnet links need headroom.
+            "--rpc-max-request-size=50M",
             "--continue=true",
             "--max-concurrent-downloads=8",
             "--max-connection-per-server=8",
             "--split=8",
             "--min-split-size=1M",
+            // Don't pre-allocate the full file for small files (less space churn),
+            // keep preallocation only where it helps contiguous writes.
+            "--no-file-allocation-limit=64M",
+            // Give up after repeated "not found" instead of retrying forever.
+            "--max-file-not-found=10",
+            // Die with Siphon (own pid, NOT ppid: bundled apps parent to launchd,
+            // and checking a launchd pid would make aria2 exit immediately).
+            "--stop-with-process=\(ProcessInfo.processInfo.processIdentifier)",
+            // BT hygiene: never linger as a seeder for tasks the user added as
+            // downloads, and drop unselected pieces' files.
+            "--bt-detach-seed-only=true",
+            "--bt-remove-unselected-file=true",
+            // Transmission-flavoured peer identity: trackers and peers handle a
+            // mainstream BT client better than an unknown "aria2" agent.
+            "--peer-agent=Transmission/3.00",
+            "--peer-id-prefix=-TR3000-",
+            "--dht-entry-point=dht.transmissionbt.com:6881",
             "--dir", NSTemporaryDirectory(),
             "--save-session-interval=30",
             "--auto-save-interval=30"

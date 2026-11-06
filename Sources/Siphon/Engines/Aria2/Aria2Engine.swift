@@ -37,6 +37,7 @@ public final class Aria2Engine: DownloadEngine {
 
     public func submit(_ task: DownloadTask) async throws {
         let opts = Self.makeOptions(task)
+        let uri = Self.sanitize(task.source.absoluteString)
         let gid: String
         if task.source.isFileURL {
             // Local .torrent / .metalink documents must go through their dedicated
@@ -47,10 +48,10 @@ public final class Aria2Engine: DownloadEngine {
             case "metalink", "meta4":
                 gid = try await rpc.addMetalink(Data(contentsOf: task.source), options: opts)
             default:
-                gid = try await rpc.addUri(task.source.absoluteString, options: opts)
+                gid = try await rpc.addUri(uri, options: opts)
             }
         } else {
-            gid = try await rpc.addUri(task.source.absoluteString, options: opts)
+            gid = try await rpc.addUri(uri, options: opts)
         }
         taskToGid[task.id] = gid
         gidToTask[gid] = task.id
@@ -67,11 +68,20 @@ public final class Aria2Engine: DownloadEngine {
                 opts[lower] = v
             }
         }
+        // CRLF injection guard: option values land inside aria2's config surface
+        // (and header values are echoed into requests). Control characters must
+        // never travel with them (Motrix aria2-config-builder lesson).
+        for (k, v) in opts { opts[k] = sanitize(v) }
         opts["dir"] = task.destination.deletingLastPathComponent().path
         if !task.destination.lastPathComponent.isEmpty {
-            opts["out"] = task.destination.lastPathComponent
+            opts["out"] = sanitize(task.destination.lastPathComponent)
         }
         return opts
+    }
+
+    /// Strip control characters (everything below U+0020 except space).
+    public static func sanitize(_ s: String) -> String {
+        String(s.unicodeScalars.filter { $0.value > 0x1F || $0 == " " })
     }
 
     public func pause(_ id: UUID) async {
@@ -94,6 +104,13 @@ public final class Aria2Engine: DownloadEngine {
     public func setGlobalSpeedLimit(_ bytesPerSec: Int64?) async {
         // aria2 uses 0 to mean "unlimited".
         try? await rpc.setMaxOverallDownloadLimit(bytesPerSec ?? 0)
+    }
+
+    /// Per-task cap via `aria2.changeOption` (`max-download-limit`), keyed off the
+    /// task's GID. Folds under the global limit on the aria2 side.
+    public func setTaskSpeedLimit(_ id: UUID, bytesPerSec: Int64?) async {
+        guard let gid = taskToGid[id] else { return }
+        try? await rpc.setPerDownloadLimit(gid, bytesPerSec ?? 0)
     }
 
     private func poll() async {

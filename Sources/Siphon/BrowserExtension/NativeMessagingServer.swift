@@ -12,19 +12,31 @@ import Network
 ///          -H 'Content-Type: application/json' \
 ///          -d '{"url":"https://example.com/file.zip"}'
 ///
-/// POST /add   {"url": "...", "name"?: "...", "queue"?: "..."}  -> {"ok":true}
+/// POST /add   {"url": "...", "name"?: "...", "queue"?: "...",
+///              "headers"?: {"Cookie": "...", "Referer": "..."},
+///              "checksum"?: "sha256:…"}                    -> {"ok":true}
 /// GET  /ping  -> {"ok":true,"app":"Siphon"}
+/// GET  /tasks -> {"ok":true,"tasks":[…]}                   (store-backed)
+/// POST /pause /resume /remove {"id": "uuid"}               (store-backed)
+///
+/// `headers` pass-through matters: the extension forwards the page's cookies /
+/// referer / UA, which is what makes logged-in direct links downloadable (the
+/// same design ABD uses for its integration channel).
 public final class NativeMessagingServer {
     public static let port: UInt16 = 17801
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "Siphon.NativeMessaging")
-    private var onURL: ((String) -> Void)?
+    private var onURL: ((String, [String: String], String?, [String]) -> Void)?
+    /// Optional richer API surface (task list / pause / resume), wired to the store.
+    private var apiHandler: ((String, String, Data) -> Data)?
 
     public init() {}
 
-    public func start(onURL: @escaping (String) -> Void) {
+    public func start(onURL: @escaping (String, [String: String], String?, [String]) -> Void,
+                      api: ((String, String, Data) -> Data)? = nil) {
         self.onURL = onURL
+        self.apiHandler = api
         stop()
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(
@@ -35,6 +47,14 @@ public final class NativeMessagingServer {
         }
         listener.start(queue: queue)
         self.listener = listener
+    }
+
+    /// Test seam: install the handlers without binding the port, so `process`
+    /// can be exercised directly against fabricated HTTP requests.
+    func configure(onURL: @escaping (String, [String: String], String?, [String]) -> Void,
+                   apiHandler: ((String, String, Data) -> Data)? = nil) {
+        self.onURL = onURL
+        self.apiHandler = apiHandler
     }
 
     public func stop() {
@@ -105,8 +125,28 @@ public final class NativeMessagingServer {
                   let url = json["url"] as? String, !url.isEmpty else {
                 return http("400 Bad Request", #"{"ok":false,"error":"missing url"}"#)
             }
-            onURL?(url)
+            // CRLF injection guard (Motrix's aria2-config-builder lesson): argv and
+            // header values must never contain control characters.
+            func sanitized(_ s: String) -> String {
+                s.unicodeScalars.filter { $0.value > 0x1F || $0 == " " }.map(String.init).joined()
+            }
+            var options: [String: String] = [:]
+            if let hs = json["headers"] as? [String: String] {
+                for (k, v) in hs { options[sanitized(k)] = sanitized(v) }
+            }
+            let checksum = (json["checksum"] as? String).map(sanitized)
+            let mirrors = (json["mirrors"] as? [String]) ?? []
+            onURL?(sanitized(url), options, checksum, mirrors.map(sanitized))
             return http("200 OK", #"{"ok":true}"#)
+        }
+        // Richer REST surface, handled by the store (GET /tasks, POST /pause, …).
+        if let apiHandler {
+            let bodyStart = raw.range(of: "\r\n\r\n")?.upperBound ?? raw.endIndex
+            let body = raw[bodyStart...].data(using: .utf8) ?? Data()
+            let response = apiHandler(method, path, body)
+            let status = String(data: response, encoding: .utf8)!.contains("\"ok\":false")
+                ? "400 Bad Request" : "200 OK"
+            return http(status, String(data: response, encoding: .utf8) ?? "{}")
         }
         return http("404 Not Found", #"{"ok":false,"error":"not found"}"#)
     }

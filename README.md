@@ -30,7 +30,7 @@
 | 小体积 | Swift 原生编译，无 Electron / Flutter / JVM 运行时；aria2c 单文件约 3–5 MB |
 | 全协议 | aria2 覆盖 HTTP(S)/FTP/SFTP/BT/Metalink/磁力；原生引擎补 HLS / DASH / eD2K 哈希；适配层补专用链、WebDAV、S3、IPFS、SMB、SCP/rsync、本地文件与批量列表（§2） |
 | 真原生 | SwiftUI + AppKit，`.app` bundle，非 WebView 外壳 |
-| 集各家所长 | 队列与调度（AB DM / HyperDM）、限速（Motrix / HyperDM）、剪贴板监听（HyperDM）、浏览器/REST 集成（Gopeed / AB DM）、aria2 JSON-RPC（Motrix / Persepolis） |
+| 集各家所长 | 队列与调度（AB DM / HyperDM）、限速（Motrix / HyperDM）、剪贴板监听（HyperDM）、浏览器/REST 集成（Gopeed / AB DM）、aria2 JSON-RPC（Motrix / Persepolis）、**动态分段 work-stealing（FluxDown）**、**任务事件 Webhook（FluxDown）**、**多 CDN 故障转移（FluxDown）**、**就地扩容 TrueSize 修正（FluxDown）**、**MCP Server（FluxDown / Gopeed）**、**自动归类归档（HyperDM）**、**PAC 代理判定（FluxDown）** |
 
 **许可证关键**：aria2 是 GPLv2。本工程以**独立进程 + JSON-RPC**调用 aria2c，不链接 `libaria2`、不合并二进制，因此应用自身不必 GPL 化。若改为链接 libaria2，需重新评估合规义务。
 
@@ -99,6 +99,18 @@ HLS / DASH 共用 `SegmentAssembler`：有界并发、严格有序落盘、按�
 
 > 本机 `aria2c --version` 实测启用 `HTTPS, SFTP, BitTorrent, Metalink`；`curl -V` 实测协议表含 `ftps smb smbs ipfs ipns tftp gopher rtsp …`（不含 sftp/scp，那两者分别由 aria2 与 OpenSSH 承担）。协议声明与实测能力一致。
 
+### 增强能力（借鉴竞品后新增）
+
+| 能力 | 说明 | 来源 |
+|---|---|---|
+| 动态分段 work-stealing | 协调器按需派发字节区间，慢段在运行时被对半拆分给空闲连接 | FluxDown `segment_coordinator` |
+| 任务事件 Webhook | 任务进入完成 / 出错 / 移除终态时 POST JSON（可选 HMAC-SHA256 签名） | FluxDown task-event webhooks |
+| 多 CDN 故障转移 | 任务可挂多个镜像 URL，主源失败时依次切换 | FluxDown `multi_cdn` / `route_health` |
+| 就地扩容（TrueSize 修正） | 多段下载途中服务器自报总大小变大时延长预分配、追加尾段，已下字节零丢弃（最多 3 次） | FluxDown `MAX_SIZE_EXPANSIONS` |
+| MCP Server | 回环 HTTP + JSON-RPC 2.0，暴露 add_download / list_tasks / pause / resume / remove | FluxDown / Gopeed `mcpserver` |
+| 自动归类归档 | 按扩展名归入 视频/音乐/图片/文档/压缩包/软件/种子 子目录（可关） | HyperDM `categorizer` |
+| PAC 代理判定 | 读系统 PAC/代理设置，用 JavaScriptCore 执行 `FindProxyForURL`，按主机选代理（回环直连） | FluxDown `pac_js` |
+
 ---
 
 ## 3. 构建与运行
@@ -126,7 +138,7 @@ open build/Siphon.app
 
 `build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-0.1.0.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
 
-`verify.sh` 共 6 组：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（未安装 aria2c 时自动跳过），以及**协议矩阵 102 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端，以及**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
+`verify.sh` 共 21 步：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（未安装 aria2c 时自动跳过）、**协议矩阵 102+ 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端、**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路，以及新增的 **PAC 解析器**（JavaScriptCore 执行 + 指令解析）与 **MCP JSON-RPC + Webhook 签名/载荷**测试。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
 
 也可直接调试运行（需已在 `Resources/` 或 `~/Library/Application Support/Siphon/` 放置 `aria2c`）：
 
@@ -169,12 +181,17 @@ Sources/Siphon/
     PlaylistImporter.swift        M3U/PLS/ASX/WPL/JSON/多行列表
     S3Signer.swift                AWS SigV4 预签名（CommonCrypto）
     ProtocolSettings.swift        网关配置 + S3 密钥存钥匙串
+    PACResolver.swift             PAC 脚本解析 + JavaScriptCore 执行 FindProxyForURL
+    ProxyRouter.swift             读系统代理/PAC，按主机选代理（回环直连，默认关闭）
   Managers/
     DownloadStore.swift          任务路由、状态聚合、持久化（主数据源）
     QueueManager.swift           命名队列、并发/顺序模式、下载时段窗口
     SpeedLimitController.swift   令牌桶（原生引擎）+ aria2 全局限速转发
     ClipboardMonitor.swift       剪贴板链接捕获
-  BrowserExtension/              本地 HTTP 控制接口（NWListener, 127.0.0.1:17801）
+    WebhookManager.swift         任务终态事件 Webhook（JSON POST + HMAC-SHA256 签名）
+  BrowserExtension/
+    NativeMessagingServer.swift  本地 HTTP 控制接口（NWListener, 127.0.0.1:17801）
+    MCPServer.swift              MCP 服务（JSON-RPC 2.0, 127.0.0.1:17802，AI 客户端管理下载）
   Views/
     Glass.swift                   浮层控件的玻璃自适应组件（26+ 玻璃 / 14–15 材质回退）
     ContentView.swift            两栏布局 + 系统可折叠检查器 + 统一工具栏分组 + 搜索

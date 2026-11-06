@@ -88,6 +88,13 @@ public final class Aria2RPC {
                            params: [["max-overall-download-limit": String(bytesPerSec)]])
     }
 
+    /// Per-GID speed limit via `aria2.changeOption` (`max-download-limit`). `0`
+    /// clears the per-task cap so the global limit applies alone.
+    public func setPerDownloadLimit(_ gid: String, _ bytesPerSec: Int64) async throws {
+        _ = try await call(method: "aria2.changeOption",
+                           params: [gid, ["max-download-limit": String(bytesPerSec)]])
+    }
+
     public func getGlobalStat() async throws -> [String: Any] {
         (try await call(method: "aria2.getGlobalStat", params: [])) as? [String: Any] ?? [:]
     }
