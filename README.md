@@ -126,7 +126,7 @@ open build/Siphon.app
 
 `build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-0.1.0.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
 
-`verify.sh` 共 6 组：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（未安装 aria2c 时自动跳过），以及**协议矩阵 99 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端，以及**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路。其中还包含一条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效，现已修正。
+`verify.sh` 共 6 组：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（未安装 aria2c 时自动跳过），以及**协议矩阵 102 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端，以及**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
 
 也可直接调试运行（需已在 `Resources/` 或 `~/Library/Application Support/Siphon/` 放置 `aria2c`）：
 
@@ -177,7 +177,7 @@ Sources/Siphon/
   BrowserExtension/              本地 HTTP 控制接口（NWListener, 127.0.0.1:17801）
   Views/
     Glass.swift                   浮层控件的玻璃自适应组件（26+ 玻璃 / 14–15 材质回退）
-    ContentView.swift            三栏布局 + 系统统一工具栏分组 + 搜索
+    ContentView.swift            两栏布局 + 系统可折叠检查器 + 统一工具栏分组 + 搜索
     TaskListView.swift           任务列表（纯内容层，无悬浮条）
     ...                          侧栏 / 检查器 / 设置 / 表单
 Resources/
@@ -189,6 +189,7 @@ Resources/
   Assets.xcassets/AppIcon.appiconset/   Xcode 可直接使用的 asset catalog
   Info.plist                     18 种 URL scheme、文档类型、最低系统版本
   BrowserExtension/              Manifest V3 扩展示例
+  TestLinks/                     各协议公开自测链接 + M3U / JSON / Meta4 夹具
 scripts/
   build-app.sh                   release 编译 + .app 组装 + SDK 标记提升 + dylib 重链接 + 重签名
   make-dmg.sh                    可拖拽安装的 DMG（含挂载后签名校验）
@@ -272,6 +273,10 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 
 搜索作用于整个 `NavigationSplitView`，按任务名 / 规范化后 URL / 原始专用链 / 协议名过滤。检查器列不再声明自己的 `.toolbar`，避免向窗口工具栏注入未分组的第四组。
 
+### 7.4 可折叠的右侧检查器
+
+早期实现用三栏 `NavigationSplitView` 的 `detail` 列放详情，工具栏按钮只切换**列里显示的视图**。该列本身无法隐藏，且未选中任务时开/关都显示同一个空状态 —— 表现为「点了没反应」。现在改成两栏 `NavigationSplitView`（侧栏 + 任务列表）加系统 `.inspector(isPresented:)`（macOS 14+）：AppKit 负责分隔线、折叠动画与玻璃背景，`isPresented` 才是真正的开关。`showingInspector` 用 `@AppStorage` 持久化，工具栏按钮、⌘⌥I 与「任务」菜单的 Toggle 共享同一状态；「剪贴板监听 / 本地控制接口」两个开关同样改为重启后保留。
+
 **兼容性**：部署目标仍是 macOS 14。`glassEffect`、`ToolbarSpacer` 等 26 API 全部收敛在 `if #available(macOS 26.0, *)`；14/15 回退到 `Material`、`.bordered` 按钮与标准工具栏，单一二进制覆盖两代外观。
 
 **单窗口**：入口用 `Window` 而非 `WindowGroup`，避免每个 `magnet:` / `ed2k:` 链接新建窗口叠影，并消除默认「新建窗口」与 ⌘N 的冲突。
@@ -292,7 +297,15 @@ curl -X POST http://127.0.0.1:17801/add \
 curl http://127.0.0.1:17801/ping
 ```
 
-`Resources/BrowserExtension/` 提供可直接「加载已解压的扩展程序」的 Manifest V3 示例。仅绑定回环地址，不监听公网。
+`Resources/BrowserExtension/` 提供可直接「加载已解压的扩展程序」的 Manifest V3 示例。仅绑定回环地址，不监听公网。「自动捕获复制的下载链接」与「启用本地控制接口」两个开关的状态会持久化，重启后自动恢复。
+
+### 8.1 各协议公开自测链接
+
+`Resources/TestLinks/siphon-test-links.txt` 收录可直接粘贴到「新建下载」的公开链接，按协议分组；同目录还有 `siphon-test.m3u`（批量列表）、`siphon-test.json`、`siphon-test.meta4`（Metalink）。专用链是把其中的 W3C `dummy.pdf` 按 `AA/ZZ` 等规则编码而来，Magnet 的 infohash 由 WebTorrent 公开的 Sintel torrent 实际算出。
+
+在 macOS 27.2 上通过本地控制接口把 14 类链接喂进真实 App 实测：HTTPS / FTP / 带凭据 SFTP / 迅雷链 / `data:` / `file://` / WebDAV 网关 / IPFS 网关 / HLS（本地与 Apple 公开流）/ DASH / Metalink / M3U 批量全部 `completed` 并校验字节；Magnet 保持 `active`（等待 DHT / peer，属正常）。测试也发现并修掉了两个真实缺陷：`ipfs://CID` 规范化多带尾斜杠导致网关 404；HLS/DASH 把「段数」当「字节数」上报，使 1.4 MB 的流显示成 `180/180`。
+
+需要自备服务端或凭据的协议无法用公开匿名链接覆盖：SMB / NFS / AFP（需本机共享或挂载）、S3（需在「设置 → 协议网关」填密钥）、eD2K（目前只有哈希与链接解析，无 P2P 传输后端）、DRM 与网盘私有协议。公共 IPFS 网关（`ipfs.io`、`dweb.link`、`cloudflare-ipfs.com` 等）在本机网络下均超时，需在设置里换成自己可达的网关。
 
 ---
 

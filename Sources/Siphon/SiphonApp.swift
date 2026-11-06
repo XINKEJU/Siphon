@@ -20,7 +20,9 @@ struct SiphonApp: App {
     // toolbar operate on exactly the same values (HIG: every toolbar command
     // must also be available from the menu bar).
     @State private var showingAdd = false
-    @State private var showingInspector = true
+    // Persisted so the inspector stays collapsed/expanded across relaunches,
+    // and so the toolbar button and menu-bar Toggle always agree.
+    @AppStorage("Siphon.showInspector") private var showingInspector = true
 
     var body: some Scene {
         // Single-window scene: opening a magnet:/ed2k: URL (or re-activating
@@ -81,6 +83,7 @@ struct SiphonCommands: Commands {
             Divider()
             Button("重新启动 aria2") { store.restartAria2() }
             Toggle("显示任务详情", isOn: $showingInspector)
+                .keyboardShortcut("i", modifiers: [.command, .option])
         }
     }
 }

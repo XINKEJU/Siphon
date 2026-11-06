@@ -1,8 +1,11 @@
 import SwiftUI
 import AppKit
 
-/// Root window. `NavigationSplitView` is the standard macOS three-column
-/// pattern: sidebar (library/queues), content (task list), detail (inspector).
+/// Root window. `NavigationSplitView` provides the standard macOS sidebar +
+/// content columns, while `.inspector` provides the *collapsible* trailing
+/// column. The two are not interchangeable: a three-column
+/// `NavigationSplitView` detail column is always visible — toggling only its
+/// contents (the old implementation) looks like a dead button.
 ///
 /// Window chrome is entirely system-owned: AppKit draws the window controls,
 /// the unified title bar and the sidebar; SwiftUI draws the toolbar items on
@@ -26,16 +29,16 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(selection: $sidebarSelection)
-        } content: {
+        } detail: {
             TaskListView(selection: $sidebarSelection, searchText: searchText)
                 .navigationTitle(sidebarSelection.title)
-        } detail: {
-            if showingInspector, let id = store.selectedTaskID,
-               let task = store.tasks.first(where: { $0.id == id }) {
-                TaskDetailView(task: task)
-            } else {
-                EmptyDetailView()
-            }
+        }
+        // System inspector: AppKit owns the divider, the collapse animation
+        // and the glass surface. `isPresented` is the single source of truth
+        // shared with the toolbar button and the menu-bar Toggle.
+        .inspector(isPresented: $showingInspector) {
+            inspectorContent
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
         }
         // On macOS 26+ the system places this in a glass field at the trailing
         // edge of the toolbar. Searching belongs to the whole split view.
@@ -52,6 +55,16 @@ struct ContentView: View {
             Text(store.lastError ?? "")
         }
         .frame(minWidth: 900, minHeight: 560)
+    }
+
+    @ViewBuilder
+    private var inspectorContent: some View {
+        if let id = store.selectedTaskID,
+           let task = store.tasks.first(where: { $0.id == id }) {
+            TaskDetailView(task: task)
+        } else {
+            EmptyDetailView()
+        }
     }
 
     @ToolbarContentBuilder
@@ -108,9 +121,10 @@ struct ContentView: View {
             Button {
                 showingInspector.toggle()
             } label: {
-                Label("显示详情", systemImage: "sidebar.trailing")
+                Label(showingInspector ? "隐藏详情" : "显示详情",
+                      systemImage: "sidebar.trailing")
             }
-            .help("显示或隐藏任务详情")
+            .help(showingInspector ? "折叠右侧详情面板 (⌘⌥I)" : "展开右侧详情面板 (⌘⌥I)")
         }
 
         ToolbarItem(placement: .primaryAction) {

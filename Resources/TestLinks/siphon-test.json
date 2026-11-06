@@ -1,0 +1,14 @@
+[
+  {
+    "url": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+    "name": "dummy-https.pdf"
+  },
+  {
+    "url": "https://proof.ovh.net/files/1Mb.dat",
+    "name": "ovh-1Mb.dat"
+  },
+  {
+    "url": "ftp://ftp.gnu.org/README",
+    "name": "gnu-ftp-README"
+  }
+]

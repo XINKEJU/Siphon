@@ -1,0 +1,9 @@
+#EXTM3U
+#EXTINF:-1,W3C dummy PDF (HTTPS)
+https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf
+#EXTINF:-1,jsDelivr README (HTTPS)
+https://cdn.jsdelivr.net/gh/XINKEJU/Siphon@main/README.md
+#EXTINF:-1,Cloudflare speed test (HTTPS)
+https://speed.cloudflare.com/__down?bytes=100000
+#EXTINF:-1,GNU anonymous FTP
+ftp://ftp.gnu.org/README

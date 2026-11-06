@@ -1,0 +1,89 @@
+# Siphon · 各协议公开自测链接
+# 实测环境：macOS 27.2 / 2026-11-06 / 本机网络；状态来自真实 App 内端到端下载 + 字节校验
+#
+# 用法 A：复制任意单行 → Siphon「新建下载」→ 粘贴
+# 用法 B：设置 → 集成 → 开启「启用本地控制接口」，然后
+#   curl -X POST http://127.0.0.1:17801/add -H 'Content-Type: application/json' -d '{"url":"链接"}'
+#
+# 图例：✅ 实测 completed 并校验字节  ⚠️ 需服务端/凭据/网关  ❌ 当前环境不可用
+
+## ✅ HTTP / HTTPS — aria2（最稳的一组，建议先测）
+https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf
+https://proof.ovh.net/files/1Mb.dat
+https://speed.cloudflare.com/__down?bytes=1000000
+https://cdn.jsdelivr.net/gh/XINKEJU/Siphon@main/README.md
+https://httpbin.org/bytes/65536
+http://ftp.gnu.org/README
+
+## ✅ FTP — aria2（匿名，实测 2814 B）
+ftp://ftp.gnu.org/README
+ftp://test.rebex.net/readme.txt
+
+## ✅ SFTP — aria2 + libssh2（凭据写在 URL 里，实测 379 B）
+sftp://demo:password@test.rebex.net/readme.txt
+
+## ✅ 专用链 — 解码后就是上面那个 W3C PDF（实测 13264 B）
+thunder://QUFodHRwczovL3d3dy53My5vcmcvV0FJL0VSL3Rlc3RzL3hodG1sL3Rlc3RmaWxlcy9yZXNvdXJjZXMvcGRmL2R1bW15LnBkZlpa
+flashget://W0ZMQVNIR0VUXWh0dHBzOi8vd3d3LnczLm9yZy9XQUkvRVIvdGVzdHMveGh0bWwvdGVzdGZpbGVzL3Jlc291cmNlcy9wZGYvZHVtbXkucGRmW0ZMQVNIR0VUXQ==
+qqdl://aHR0cHM6Ly93d3cudzMub3JnL1dBSS9FUi90ZXN0cy94aHRtbC90ZXN0ZmlsZXMvcmVzb3VyY2VzL3BkZi9kdW1teS5wZGY=
+
+## ✅ BitTorrent / Magnet
+# .torrent 文件：Siphon 会把本地 .torrent 交给 aria2.addTorrent
+https://webtorrent.io/torrents/sintel.torrent
+# Magnet：infohash 由上面这个 Sintel torrent 实算；需要 DHT/tracker 连通，可能长时间停在「进行中」
+magnet:?xt=urn:btih:08ADA5A7A6183AAE1E09D831DF6748D566095A10&dn=Sintel&tr=udp%3A//tracker.openbittorrent.com%3A80&tr=udp%3A//tracker.opentrackr.org%3A1337
+
+## ✅ Metalink（本地 .meta4，实测按 metalink 内 URL 下载 13264 B）
+file:///Users/xinkeju/Documents/Download Manager/Siphon/Resources/TestLinks/siphon-test.meta4
+
+## ✅ HLS — Swift 原生（注意：输出是拼接的 TS/fMP4 字节流，不是可直接播放的 MP4）
+# Apple 官方公开流，gear0 是最小音轨（约 1.4 MB，实测 completed）
+https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/gear0/prog_index.m3u8
+# master 播放列表（会选最高码率，体积大）
+https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8
+https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+# fMP4 / CMAF（含 EXT-X-MAP）
+https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8
+
+## ⚠️ DASH — Swift 原生（公开 MPD 都是长视频，完整下载可达数百 MB，建议先限速）
+https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd
+https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd
+# 想测小样本：./scripts/verify.sh 第 4 组用本地 3 段夹具做 HLS/DASH 装配端到端
+
+## ✅ 批量列表 — 会展开成多个任务（实测 4 个全部 completed）
+file:///Users/xinkeju/Documents/Download Manager/Siphon/Resources/TestLinks/siphon-test.m3u
+file:///Users/xinkeju/Documents/Download Manager/Siphon/Resources/TestLinks/siphon-test.json
+
+## ✅ 本地文件 / Data URI — LocalEngine
+file:///etc/hosts
+data:text/plain;base64,U2lwaG9uIGRhdGEgVVJJIEUyRSBPSwo=
+
+## ⚠️ WebDAV / WebDAVS — 规范化成 http(s)，用 URL 内嵌 Basic 凭据
+# 本机快速起一个可测服务（任意普通 HTTP 服务器即可，因为 WebDAV 前端只做 scheme 改写）：
+#   mkdir -p /tmp/siphon-web && echo hello > /tmp/siphon-web/test.txt && cd /tmp/siphon-web && python3 -m http.server 8099
+webdav://127.0.0.1:8099/test.txt
+
+## ⚠️ IPFS / IPNS — 需要「设置 → 协议网关」填可达网关
+# 公共网关 ipfs.io / dweb.link / cloudflare-ipfs.com / gateway.pinata.cloud 在本机网络下全部超时；
+# 可用上面的本地 8099 服务模拟网关（放一个 /ipfs/<CID> 文件），把网关设为 http://127.0.0.1:8099
+ipfs://bafkreigh2akiscaildcfa3jf7y6q2w7bx6jirxhsxjwjvhhgz6xjfkx2vq
+
+## ⚠️ FTPS / SMB / NFS / AFP / SCP / rsync — 需要本机服务或 SSH 免密
+# FTPS 的公共 rebex 演示站在本机 curl 只返回 150 且无完整数据（err=18），需自建 FTPS 服务
+ftps://demo:password@test.rebex.net/readme.txt
+# SCP / rsync 引擎使用 `-o BatchMode=yes`，只接受 SSH 密钥免密；URL 里的密码不会被使用，
+# 所以 rebex 的 demo/password 不适用于这两条。请改成自己的主机并配好 ~/.ssh 密钥：
+#   scp://youruser@yourhost/path/to/file
+#   rsync://youruser@yourhost/path/to/file
+# SMB / NFS / AFP 需要系统设置里开启「文件共享」，或先手动 mount：
+#   smb://youruser@127.0.0.1/Shared/test.txt
+#   nfs://your-nas/export/test.txt
+#   afp://youruser@yourhost/Shared/test.txt
+
+## ⚠️ S3 — 需要「设置 → 协议网关」填 endpoint / region / access key / secret key
+# 格式：s3://bucket/object-key （会生成 SigV4 预签名 URL）
+
+## ❌ 当前无法完整下载（不是链接问题，是功能边界）
+# eD2K：只实现 MD4 / eD2K 哈希、链接解析与校验，没有 Kad/eMule P2P 传输后端
+#   ed2k://|file|Sintel.avi|0|0|/
+# Usenet NZB / PAR2、DRM（Widevine / FairPlay / SAMPLE-AES）、网盘私有协议、直播录制同样未纳入

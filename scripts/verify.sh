@@ -38,7 +38,9 @@ for _ in $(seq 1 50); do
     if curl -sf -o /dev/null http://127.0.0.1:18765/media.m3u8; then break; fi
     python3 -c 'import time; time.sleep(0.1)'
 done
-swiftc -o "$TMP/segments" Tests/SegmentTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
+# -parse-as-library: this test uses an @main async entry point (a file named
+# main.swift is otherwise treated as a top-level script).
+swiftc -parse-as-library -o "$TMP/segments" Tests/SegmentTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/segments"
 
 echo "== 5/6 real aria2 JSON-RPC download (skipped if aria2c absent) =="

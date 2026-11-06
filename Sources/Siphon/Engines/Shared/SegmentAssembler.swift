@@ -27,6 +27,9 @@ public final class SegmentAssembler {
         let headers: [String: String]
         let transform: (@Sendable (Data, Int) -> Data)?
         var writtenCount: Int
+        /// Real payload bytes written to disk. Progress, speed and ETA must be
+        /// byte-based — segment counts made a 1.4 MB stream report "180 / 180".
+        var writtenBytes: Int64
         var cancelled = false
         var lastBytes: Int64 = 0
         var lastTime = Date()
@@ -34,10 +37,11 @@ public final class SegmentAssembler {
 
         init(requests: [SegmentRequest], handle: FileHandle, outURL: URL,
              headers: [String: String], transform: (@Sendable (Data, Int) -> Data)?,
-             writtenCount: Int) {
+             writtenCount: Int, writtenBytes: Int64 = 0) {
             self.requests = requests; self.handle = handle; self.outURL = outURL
             self.headers = headers; self.transform = transform
-            self.writtenCount = writtenCount; self.lastTime = Date()
+            self.writtenCount = writtenCount; self.writtenBytes = writtenBytes
+            self.lastTime = Date()
         }
     }
 
@@ -59,8 +63,15 @@ public final class SegmentAssembler {
         if resume { try handle.seekToEnd() } else { try handle.truncate(atOffset: 0) }
 
         let written = resume ? (active[taskID]?.writtenCount ?? 0) : 0
+        var alreadyWritten: Int64 = 0
+        if resume,
+           let attrs = try? FileManager.default.attributesOfItem(atPath: destination.path),
+           let size = attrs[.size] as? NSNumber {
+            alreadyWritten = size.int64Value
+        }
         let state = Active(requests: requests, handle: handle, outURL: destination,
-                          headers: headers, transform: transform, writtenCount: written)
+                          headers: headers, transform: transform, writtenCount: written,
+                          writtenBytes: alreadyWritten)
         state.task = Task.detached(priority: .utility) { [weak self] in
             await self?.run(state, taskID: taskID)
         }
@@ -124,6 +135,7 @@ public final class SegmentAssembler {
                         try s.handle.write(contentsOf: final)
                         nextToWrite += 1
                         s.writtenCount = nextToWrite
+                        s.writtenBytes += Int64(final.count)
                         await self.report(s, taskID: taskID)
                     }
                     pump()
@@ -134,8 +146,8 @@ public final class SegmentAssembler {
                 await delegate?.engineDidChangeState(taskID: taskID, state: .paused, error: nil)
             } else {
                 var p = DownloadProgress()
-                p.totalBytes = Int64(s.requests.count)
-                p.downloadedBytes = Int64(s.requests.count)
+                p.totalBytes = s.writtenBytes
+                p.downloadedBytes = s.writtenBytes
                 await delegate?.engineDidUpdate(taskID: taskID, progress: p)
                 await delegate?.engineDidChangeState(taskID: taskID, state: .completed, error: nil)
             }
@@ -150,14 +162,21 @@ public final class SegmentAssembler {
 
     private func report(_ s: Active, taskID: UUID) async {
         var p = DownloadProgress()
-        p.totalBytes = Int64(s.requests.count)
-        p.downloadedBytes = Int64(s.writtenCount)
+        let written = s.writtenBytes
+        p.downloadedBytes = written
+        // Segment sizes are unknown up front. Estimate the total from the mean
+        // of the segments already written, clamped to at least `written` so the
+        // progress bar never overshoots 100%.
+        if s.writtenCount > 0 {
+            let mean = written / Int64(s.writtenCount)
+            p.totalBytes = max(written, mean * Int64(s.requests.count))
+        }
         let now = Date()
         let dt = now.timeIntervalSince(s.lastTime)
         if dt > 0 {
-            p.speedBytesPerSec = Int64(Double(Int64(s.writtenCount) - s.lastBytes) / dt)
+            p.speedBytesPerSec = Int64(Double(written - s.lastBytes) / dt)
         }
-        s.lastBytes = Int64(s.writtenCount)
+        s.lastBytes = written
         s.lastTime = now
         await delegate?.engineDidUpdate(taskID: taskID, progress: p)
     }

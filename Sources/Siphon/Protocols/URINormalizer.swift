@@ -82,7 +82,13 @@ public enum URINormalizer {
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
             let kind = proto == .ipfs ? "ipfs" : "ipns"
             let cid = url.host ?? ""
-            let sub = url.path.hasPrefix("/") ? url.path : "/" + url.path
+            // `ipfs://CID` has no path (or just "/"). Appending "/" produces
+            // `<gateway>/ipfs/CID/`, which public gateways answer with 404.
+            // Only a real sub-path may be forwarded.
+            let path = url.path
+            let sub: String
+            if path.isEmpty || path == "/" { sub = "" }
+            else { sub = path.hasPrefix("/") ? path : "/" + path }
             guard !gateway.isEmpty, !cid.isEmpty,
                   let target = URL(string: "\(gateway)/\(kind)/\(cid)\(sub)") else {
                 throw NormalizerError.malformedURL(input)

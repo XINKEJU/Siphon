@@ -27,6 +27,10 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     private var aria2: Aria2Engine?
     private var nativeMessaging: NativeMessagingServer?
     private let defaultsKey = "Siphon.tasks"
+    private enum PrefKey {
+        static let clipboard = "Siphon.clipboardEnabled"
+        static let browser = "Siphon.browserCaptureEnabled"
+    }
     /// Tasks already handed to an engine. Resuming these must call `resume(id)`,
     /// never `submit(task)` again (that would create a duplicate aria2 GID).
     private var submitted: Set<UUID> = []
@@ -72,6 +76,16 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
             for p in engine.supportedProtocols { engines[p] = engine }
         }
         startAria2()
+        restoreIntegrations()
+    }
+
+    /// Integration switches are user preferences, so they must survive relaunch.
+    /// Restore through the same setters used by Settings to avoid a second
+    /// listener/server instance getting out of sync with the published state.
+    private func restoreIntegrations() {
+        let d = UserDefaults.standard
+        if d.bool(forKey: PrefKey.browser) { setBrowserCaptureEnabled(true) }
+        if d.bool(forKey: PrefKey.clipboard) { setClipboardEnabled(true) }
     }
 
     public func restartAria2() {
@@ -256,11 +270,13 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     // MARK: - integrations
     public func setClipboardEnabled(_ on: Bool) {
         clipboardEnabled = on
+        UserDefaults.standard.set(on, forKey: PrefKey.clipboard)
         clipboard.setEnabled(on)
     }
 
     public func setBrowserCaptureEnabled(_ on: Bool) {
         browserCaptureEnabled = on
+        UserDefaults.standard.set(on, forKey: PrefKey.browser)
         if on {
             let server = NativeMessagingServer()
             server.start { [weak self] url in

@@ -260,6 +260,18 @@ func asyncTests() async {
     let r7 = try! await URINormalizer.normalize("data:text/plain,hello", settings: settings)
     eq(r7[0].proto, .data, "data URI passthrough")
 
+    // Regression: a bare `ipfs://CID` used to be rewritten with a trailing
+    // slash, which public gateways answer with 404 ("Resource not found").
+    let rIPFS1 = try! await URINormalizer.normalize("ipfs://bafyCID123", settings: settings)
+    eq(rIPFS1[0].url.absoluteString, "https://gw.example/ipfs/bafyCID123",
+       "bare IPFS CID has no trailing slash")
+    let rIPFS2 = try! await URINormalizer.normalize("ipfs://bafyCID123/", settings: settings)
+    eq(rIPFS2[0].url.absoluteString, "https://gw.example/ipfs/bafyCID123",
+       "IPFS root slash is normalized")
+    let rIPFS3 = try! await URINormalizer.normalize("ipns://name.eth", settings: settings)
+    eq(rIPFS3[0].url.absoluteString, "https://gw.example/ipns/name.eth",
+       "bare IPNS name has no trailing slash")
+
     let tmp = FileManager.default.temporaryDirectory
         .appendingPathComponent("Siphon-ProtocolTests-\(UUID().uuidString)", isDirectory: true)
     try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)

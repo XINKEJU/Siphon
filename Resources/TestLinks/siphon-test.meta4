@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="dummy.pdf">
+    <size>13264</size>
+    <url priority="1">https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf</url>
+  </file>
+</metalink>
