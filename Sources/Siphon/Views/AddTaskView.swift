@@ -18,6 +18,8 @@ struct AddTaskView: View {
     @State private var checksumText = ""
     @State private var detected: DownloadProtocol = .https
     @State private var clipboardLink: String?
+    @State private var videoSite = false
+    @State private var ytdlpQuality: YtDlpResolver.Quality = .auto
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -59,6 +61,16 @@ struct AddTaskView: View {
 
                     TextField("文件名（可选）", text: $name)
                         .textFieldStyle(.roundedBorder)
+
+                    if videoSite {
+                        Picker("视频画质", selection: $ytdlpQuality) {
+                            ForEach(YtDlpResolver.Quality.allCases) { q in
+                                Text(q.label).tag(q)
+                            }
+                        }
+                        Text("由 yt-dlp 下载，音视频分离时通过 ffmpeg 自动合并（需要本机安装 ffmpeg）。")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
 
                     Picker("队列", selection: $queueName) {
                         ForEach(store.queues.queues) { q in
@@ -148,9 +160,14 @@ struct AddTaskView: View {
 
     private func updateDetection(_ v: String) {
         let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+        videoSite = false
         if t.contains("\n") { detected = .playlist; return }
         guard let u = URL(string: t) else { return }
         detected = DownloadProtocol.detect(from: u)
+        // 只有 yt-dlp 可用且站点受支持时才展示画质选项。
+        videoSite = UserDefaults.standard.bool(forKey: "Siphon.ytdlp")
+            && YtDlpResolver.available()
+            && YtDlpResolver.isSupported(u)
     }
 
     private func commit() {
@@ -163,7 +180,8 @@ struct AddTaskView: View {
                   queueName: queueName,
                   options: options,
                   checksum: trimmedChecksum.isEmpty ? nil : trimmedChecksum.lowercased(),
-                  priority: priority)
+                  priority: priority,
+                  ytdlpQuality: videoSite ? ytdlpQuality : .auto)
         dismiss()
     }
 

@@ -60,6 +60,8 @@ public final class DownloadStore: EngineDelegate {
     public let clipboard = ClipboardMonitor()
 
     private var engines: [DownloadProtocol: DownloadEngine] = [:]
+    /// yt-dlp 专用引擎：不按协议注册，由 `task.ytdlp` 标记显式路由。
+    private let ytdlpEngine = YtDlpEngine()
     private var aria2: Aria2Engine?
     private var nativeMessaging: NativeMessagingServer?
     private var mcpServer: MCPServer?
@@ -113,6 +115,10 @@ public final class DownloadStore: EngineDelegate {
     private var isScheduling = false
     private var needsReschedule = false
     private var lastTurtleEffective: Int64?
+    /// 因 Boost 独占而让位的任务；Boost 结束后按此集合恢复。
+    private var boostPausedIDs: Set<UUID> = []
+    /// 每个任务上次记账的已下载字节数，用于持久化传输统计的增量。
+    private var statsLastBytes: [UUID: Int64] = [:]
 
     /// Rolling aggregate-speed samples for the live sparkline (HyperDM speed_graph).
     public var speedHistory: [Int64] = []
@@ -152,6 +158,7 @@ public final class DownloadStore: EngineDelegate {
             engine.delegate = self
             for p in engine.supportedProtocols { engines[p] = engine }
         }
+        ytdlpEngine.delegate = self
         await startAria2()
         restoreIntegrations()
         startSchedulerTick()
@@ -296,6 +303,33 @@ public final class DownloadStore: EngineDelegate {
         if tasks.contains(where: { $0.state == .pending }) {
             Task { await schedule() }
         }
+        enforceBoost()
+    }
+
+    /// Boost 独占：被标记的任务处于活动/待启动时，其余活动任务让位暂停；
+    /// 独占任务完成、暂停或被移除后，把让位的任务恢复为待启动。
+    private func enforceBoost() {
+        guard let boosted = tasks.first(where: { $0.boost }) else {
+            restoreBoostPaused()
+            return
+        }
+        guard boosted.state == .active else {
+            restoreBoostPaused()
+            return
+        }
+        for t in tasks where t.id != boosted.id && t.state == .active {
+            boostPausedIDs.insert(t.id)
+            pause(t.id)
+        }
+    }
+
+    private func restoreBoostPaused() {
+        guard !boostPausedIDs.isEmpty else { return }
+        let ids = boostPausedIDs
+        boostPausedIDs.removeAll()
+        for id in ids where tasks.first(where: { $0.id == id })?.state == .paused {
+            resume(id)
+        }
     }
 
     public func resetCompletionLatch() {
@@ -381,11 +415,13 @@ public final class DownloadStore: EngineDelegate {
     // MARK: - CRUD
     public func add(urlString: String, name: String? = nil, queueName: String = "Default",
                     options: [String: String] = [:], checksum: String? = nil,
-                    mirrors: [String] = [], priority: Int = 0) {
+                    mirrors: [String] = [], priority: Int = 0,
+                    ytdlpQuality: YtDlpResolver.Quality = .auto) {
         Task {
             await addNormalized(urlString: urlString, name: name,
                                 queueName: queueName, options: options, checksum: checksum,
-                                mirrors: mirrors, priority: priority)
+                                mirrors: mirrors, priority: priority,
+                                ytdlpQuality: ytdlpQuality)
         }
     }
 
@@ -396,7 +432,8 @@ public final class DownloadStore: EngineDelegate {
                               options: [String: String] = [:],
                               checksum: String? = nil,
                               mirrors: [String] = [],
-                              priority: Int = 0) async {
+                              priority: Int = 0,
+                              ytdlpQuality: YtDlpResolver.Quality = .auto) async {
         let mirrorURLs = mirrors.compactMap { URL(string: $0) }
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -448,9 +485,11 @@ public final class DownloadStore: EngineDelegate {
            let u = URL(string: trimmed), YtDlpResolver.isSupported(u),
            YtDlpResolver.available() {
             do {
-                let medias = try await YtDlpResolver.resolve(trimmed)
+                let medias = try await YtDlpResolver.resolveForDownload(
+                    trimmed, quality: ytdlpQuality)
                 enqueueMedias(medias, queueName: queueName, options: options,
-                              checksum: checksum, customName: name, priority: priority)
+                              checksum: checksum, customName: name,
+                              priority: priority, quality: ytdlpQuality)
                 lastError = nil
                 return
             } catch {
@@ -513,7 +552,8 @@ public final class DownloadStore: EngineDelegate {
     /// file name, with the container extension when known.
     private func enqueueMedias(_ medias: [YtDlpResolver.Media], queueName: String,
                                options: [String: String], checksum: String?,
-                               customName: String?, priority: Int = 0) {
+                               customName: String?, priority: Int = 0,
+                               quality: YtDlpResolver.Quality = .auto) {
         for (index, media) in medias.enumerated() {
             let sanitizedTitle = media.title
                 .replacingOccurrences(of: "/", with: " ")
@@ -524,8 +564,14 @@ public final class DownloadStore: EngineDelegate {
             }
             if medias.count == 1, let customName, !customName.isEmpty {
                 fileName = customName
+                // 固定输出名必须带扩展名：yt-dlp 合并时依赖它选择容器。
+                if let ext = media.ext, !ext.isEmpty,
+                   (fileName as NSString).pathExtension.isEmpty {
+                    fileName += ".\(ext)"
+                }
             }
-            guard let src = URL(string: media.url) else { continue }
+            // yt-dlp 必须拿到页面地址，而不是解析出来的直链。
+            guard let src = URL(string: media.pageURL ?? media.url) else { continue }
             var opts = SiteRuleStore.shared.enrichedOptions(options, for: src)
             if !Self.hasHeader(opts, "cookie"),
                let cookie = CookieJar.shared.cookieHeader(for: src) {
@@ -540,6 +586,8 @@ public final class DownloadStore: EngineDelegate {
                                     queueName: queueName, options: opts,
                                     origin: "yt-dlp", checksum: checksum,
                                     priority: priority,
+                                    ytdlp: true,
+                                    ytdlpFormat: media.selector ?? quality.selector,
                                     protoOverride: .https)
             add(task)
         }
@@ -623,9 +671,65 @@ public final class DownloadStore: EngineDelegate {
                 return existsOnDisk ? nil : path
             case .rename:
                 if !existsOnDisk { return path }
+            case .ask:
+                if !existsOnDisk { return path }
+                return askConflict(fileName: fileName, path: path,
+                                   base: base, taken: taken)
             }
         }
-        if ConflictPolicy.current == .skip { return nil }
+        switch ConflictPolicy.current {
+        case .skip:
+            return nil
+        case .ask:
+            return askConflict(fileName: fileName, path: path,
+                               base: base, taken: taken)
+        case .rename, .overwrite:
+            break
+        }
+        return numberedDestination(fileName, base: base, taken: taken)
+    }
+
+    /// 逐次询问（FluxDown 三态冲突对话框）：覆盖 / 重命名 / 跳过，可选“应用到全部”。
+    private func askConflict(fileName: String, path: URL, base: URL,
+                             taken: Set<String>) -> URL? {
+        let alert = NSAlert()
+        alert.messageText = "文件已存在"
+        alert.informativeText = "“\(fileName)”已存在于目标文件夹，请选择处理方式。"
+        alert.addButton(withTitle: "覆盖")
+        alert.addButton(withTitle: "重命名")
+        alert.addButton(withTitle: "跳过")
+        let remember = NSButton(checkboxWithTitle: "记住选择，应用到全部",
+                                target: nil, action: nil)
+        alert.accessoryView = remember
+
+        let policy: ConflictPolicy
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: policy = .overwrite
+        case .alertSecondButtonReturn: policy = .rename
+        default: policy = .skip
+        }
+        if remember.state == .on {
+            UserDefaults.standard.set(policy.rawValue, forKey: ConflictPolicy.defaultsKey)
+        }
+        switch policy {
+        case .overwrite:
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path.path,
+                                              isDirectory: &isDirectory),
+               !isDirectory.boolValue {
+                try? FileManager.default.removeItem(at: path)
+            }
+            return path
+        case .rename:
+            return numberedDestination(fileName, base: base, taken: taken)
+        case .skip, .ask:
+            return nil
+        }
+    }
+
+    /// 在文件名后追加 `(n)` 直到磁盘与任务列表都不冲突。
+    private func numberedDestination(_ fileName: String, base: URL,
+                                     taken: Set<String>) -> URL {
         var candidate = fileName
         var n = 1
         while taken.contains(candidate)
@@ -644,7 +748,7 @@ public final class DownloadStore: EngineDelegate {
         save()
         broadcastTask(tasks[i])
         SystemPresence.shared.refresh(tasks: tasks)
-        Task { await engines[tasks[i].protocol]?.pause(id) }
+        Task { await engine(for: tasks[i])?.pause(id) }
         // The queue's cap now has one fewer consumer; redistribute it.
         Task { await reapplyTaskCaps() }
     }
@@ -665,16 +769,19 @@ public final class DownloadStore: EngineDelegate {
     public func remove(_ id: UUID) {
         if let t = tasks.first(where: { $0.id == id }) {
             broadcastTask(t, stateOverride: "removed")
-            Task { await engines[t.protocol]?.remove(id) }
+            Task { await engine(for: t)?.remove(id) }
         }
         submitted.remove(id)
         taskSpeedLimits.removeValue(forKey: id)
         checksumVerifying.remove(id)
         checksumFailed.remove(id)
         PreviewRegistry.shared.unregister(taskID: id)
+        boostPausedIDs.remove(id)
+        statsLastBytes.removeValue(forKey: id)
         tasks.removeAll { $0.id == id }
         save()
         SystemPresence.shared.refresh(tasks: tasks)
+        enforceBoost()
     }
 
     /// 移除任务并删除磁盘上的文件（成品、未完成的 .part、续传 sidecar）。
@@ -759,6 +866,11 @@ public final class DownloadStore: EngineDelegate {
     }
 
     // MARK: - scheduling
+    /// 任务 → 引擎：yt-dlp 任务走专用引擎，其余按协议路由。
+    private func engine(for task: DownloadTask) -> (any DownloadEngine)? {
+        task.ytdlp ? ytdlpEngine : engines[task.protocol]
+    }
+
     /// Start pending tasks up to available slots (queue-aware). A task that was already
     /// submitted is *resumed*, never re-submitted. Re-entrant calls (engine callbacks
     /// arrive while we are awaiting `submit`) are coalesced into one follow-up pass.
@@ -779,19 +891,22 @@ public final class DownloadStore: EngineDelegate {
             $0.queueName
         }.mapValues(\.count)
         var startingByQueue: [String: Int] = [:]
+        // 独占带宽生效时只允许 Boost 任务占用新槽位。
+        let boostID = tasks.first(where: { $0.boost && $0.state == .active })?.id
         for id in ids {
+            if let boostID, boostID != id { continue }
             guard let i = tasks.firstIndex(where: { $0.id == id }) else { continue }
             let task = tasks[i]
-            guard let engine = engines[task.protocol] else {
+            guard let eng = engine(for: task) else {
                 tasks[i].state = .error
                 tasks[i].errorDescription = "没有可处理 \(task.protocol.displayName) 的引擎"
                 continue
             }
             do {
                 if submitted.contains(id) {
-                    await engine.resume(id)
+                    await eng.resume(id)
                 } else {
-                    try await engine.submit(task)
+                    try await eng.submit(task)
                     submitted.insert(id)
                 }
                 // Re-apply the saved per-task cap, folded under the queue's
@@ -800,7 +915,7 @@ public final class DownloadStore: EngineDelegate {
                                        activeInQueue: activeByQueue[task.queueName] ?? 0,
                                        starting: startingByQueue[task.queueName] ?? 0)
                 if let cap {
-                    await engine.setTaskSpeedLimit(id, bytesPerSec: cap)
+                    await eng.setTaskSpeedLimit(id, bytesPerSec: cap)
                 }
                 startingByQueue[task.queueName, default: 0] += 1
                 tasks[i].state = .active
@@ -832,11 +947,11 @@ public final class DownloadStore: EngineDelegate {
             $0.queueName
         }.mapValues(\.count)
         for task in tasks where task.state == .active {
-            guard let engine = engines[task.protocol] else { continue }
+            guard let eng = engine(for: task) else { continue }
             let cap = effectiveCap(for: task,
                                    activeInQueue: max(0, (activeByQueue[task.queueName] ?? 1) - 1),
                                    starting: 0)
-            await engine.setTaskSpeedLimit(task.id, bytesPerSec: cap)
+            await eng.setTaskSpeedLimit(task.id, bytesPerSec: cap)
         }
     }
 
@@ -869,6 +984,12 @@ public final class DownloadStore: EngineDelegate {
             indexByID = Dictionary(uniqueKeysWithValues: tasks.enumerated().map { ($1.id, $0) })
         }
         guard let i else { return }
+        // 持久化传输统计：只累计本次会话新增的字节（首次见到该任务时以当前值为基线）。
+        let previous = statsLastBytes[taskID] ?? progress.downloadedBytes
+        if progress.downloadedBytes > previous {
+            TransferStats.shared.addDownloaded(progress.downloadedBytes - previous)
+        }
+        statsLastBytes[taskID] = progress.downloadedBytes
         tasks[i].progress = progress
         // Feed the streaming server: it may only serve up to the bytes the engine
         // reports as downloaded (preallocated `.part` files are full-size from byte 0).
@@ -959,6 +1080,8 @@ public final class DownloadStore: EngineDelegate {
         // Persist `.error` too: otherwise the last saved record still says
         // "active", and the auto-resume-on-launch feature would retry a task
         // that had already failed.
+        if state == .completed { TransferStats.shared.recordCompletion(success: true) }
+        else if state == .error { TransferStats.shared.recordCompletion(success: false) }
         if state.isTerminal || state == .error { save() }
         // Task-event webhook: fire on every terminal transition (FluxDown model).
         if state == .completed || state == .error || state == .removed {
@@ -973,6 +1096,7 @@ public final class DownloadStore: EngineDelegate {
         broadcastTask(tasks[i])
         SystemPresence.shared.taskStateChanged(tasks[i])
         SystemPresence.shared.refresh(tasks: tasks)
+        enforceBoost()
         if state.isTerminal {
             // A finished/paused task frees its share of the queue cap.
             Task { await reapplyTaskCaps() }
@@ -1047,7 +1171,7 @@ public final class DownloadStore: EngineDelegate {
         SpeedLimitController.shared.setLimit(effective)
         Task {
             var seen = Set<ObjectIdentifier>()
-            for engine in engines.values {
+            for engine in Array(engines.values) + [ytdlpEngine] {
                 if seen.insert(ObjectIdentifier(engine)).inserted {
                     await engine.setGlobalSpeedLimit(effective)
                 }
@@ -1073,7 +1197,7 @@ public final class DownloadStore: EngineDelegate {
                                 starting: 0)
         }
         Task {
-            for engine in engines.values {
+            for engine in Array(engines.values) + [ytdlpEngine] {
                 await engine.setTaskSpeedLimit(id, bytesPerSec: effective)
             }
         }
@@ -1086,6 +1210,48 @@ public final class DownloadStore: EngineDelegate {
         save()
         broadcastTask(tasks[i])
         Task { await schedule() }
+    }
+
+    /// 切换独占带宽。整个任务列表里同时最多只有一个 Boost 任务。
+    public func setBoost(_ id: UUID, _ on: Bool) {
+        guard tasks.contains(where: { $0.id == id }) else { return }
+        for i in tasks.indices {
+            tasks[i].boost = on && tasks[i].id == id
+        }
+        if !on { restoreBoostPaused() }
+        save()
+        if let i = tasks.firstIndex(where: { $0.id == id }) { broadcastTask(tasks[i]) }
+        enforceBoost()
+        Task { await schedule() }
+    }
+
+    /// 每任务并发连接数（1...32）。运行中的任务会在下一次续传/重试时采用新值。
+    public func setTaskConnections(_ id: UUID, _ connections: Int) {
+        guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[i].connections = min(32, max(1, connections))
+        save()
+        broadcastTask(tasks[i])
+    }
+
+    /// HLS 画质：按 BANDWIDTH 选择；`nil` 为最高画质。下次开始/续传生效。
+    public func setHLSBandwidth(_ id: UUID, _ bandwidth: Int?) {
+        guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[i].hlsBandwidth = bandwidth
+        save()
+        broadcastTask(tasks[i])
+    }
+
+    /// 读取 HLS 主播放列表里的画质档位（检查器按需调用）。
+    public func hlsVariants(for task: DownloadTask)
+        async -> [(url: URL, bandwidth: Int)] {
+        (try? await HLSEngine.variants(for: task.source, options: task.options)) ?? []
+    }
+
+    /// 活跃任务的分段快照（仅原生 HTTP 引擎提供；其他引擎返回空）。
+    public func segmentSnapshot(for id: UUID) -> [SegmentSnapshot] {
+        guard let task = tasks.first(where: { $0.id == id }),
+              let eng = engine(for: task) else { return [] }
+        return eng.segmentSnapshot(for: id)
     }
 
     // MARK: - integrations
@@ -1406,6 +1572,11 @@ private struct TaskRecord: Codable {
     var pieceLength: Int64?
     var speedLimit: Int64?
     var priority: Int?
+    var boost: Bool?
+    var connections: Int?
+    var ytdlp: Bool?
+    var ytdlpFormat: String?
+    var hlsBandwidth: Int?
     /// True when the task was active/pending at save time, i.e. it was interrupted
     /// by an app quit rather than paused by the user.
     var wasActive: Bool?
@@ -1422,6 +1593,11 @@ private struct TaskRecord: Codable {
         pieceLength = t.pieceLength > 0 ? t.pieceLength : nil
         speedLimit = (limit ?? 0) > 0 ? limit : nil
         priority = t.priority != 0 ? t.priority : nil
+        boost = t.boost ? true : nil
+        connections = t.connections != 8 ? t.connections : nil
+        ytdlp = t.ytdlp ? true : nil
+        ytdlpFormat = t.ytdlpFormat
+        hlsBandwidth = t.hlsBandwidth
         // Only an in-flight task counts as interrupted; an explicit pause or a
         // terminal task must not be auto-restarted on the next launch.
         let inFlight = t.state == .active || t.state == .pending
@@ -1443,7 +1619,12 @@ private struct TaskRecord: Codable {
                              mirrors: mirrors ?? [],
                              pieceHashes: pieceHashes ?? [],
                              pieceLength: pieceLength ?? 0,
-                             priority: priority ?? 0)
+                             priority: priority ?? 0,
+                             boost: boost ?? false,
+                             connections: connections ?? 8,
+                             ytdlp: ytdlp ?? false,
+                             ytdlpFormat: ytdlpFormat,
+                             hlsBandwidth: hlsBandwidth)
         t.protocol = DownloadProtocol(rawValue: proto) ?? .https
         // Engine-side GIDs / segment state do not survive an app restart, so
         // restore non-terminal tasks as paused and let the user resume explicitly.

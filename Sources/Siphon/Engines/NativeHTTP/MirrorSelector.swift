@@ -46,9 +46,11 @@ final class MirrorSelector: @unchecked Sendable {
     }
 
     private func score(_ url: URL, now: Date) -> Double {
-        guard let e = table[url], now.timeIntervalSince(e.updated) < ttl else { return 0 }
-        guard e.failures == 0 else { return -Double(e.failures) }
-        return e.ewma
+        // 主机级失败先验（跨任务、跨重启）参与排序：连续失败过的源明显降权。
+        let health = HostHealthStore.shared.penalty(host: url.host ?? "") * 1_000_000_000
+        guard let e = table[url], now.timeIntervalSince(e.updated) < ttl else { return health }
+        guard e.failures == 0 else { return health - Double(e.failures) }
+        return health + e.ewma
     }
 
     func record(_ url: URL, bytes: Int64, duration: TimeInterval) {

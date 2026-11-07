@@ -127,6 +127,15 @@ public enum HLSParser {
         pl.variants.max(by: { $0.bandwidth < $1.bandwidth })?.url
     }
 
+    /// 按目标带宽挑选变体；没有精确值时选最接近的一档。`nil` = 最高画质。
+    public static func variant(_ pl: HLSPlaylist, bandwidth: Int?) -> URL? {
+        guard let bandwidth else { return bestVariant(pl) }
+        let closest = pl.variants.min {
+            abs($0.bandwidth - bandwidth) < abs($1.bandwidth - bandwidth)
+        }
+        return closest?.url ?? bestVariant(pl)
+    }
+
     // MARK: - helpers
     /// `"<length>@<offset>"`, with offset defaulting to 0.
     private static func parseByteRange(_ body: String) -> (Int, Int)? {

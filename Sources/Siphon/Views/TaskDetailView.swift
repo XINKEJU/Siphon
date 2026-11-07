@@ -48,7 +48,41 @@ struct TaskDetailView: View {
                     BTFilesSection(task: task)
                 }
 
-                Section("任务信息") {                    LabeledContent("队列", value: task.queueName)
+                if task.state == .active,
+                   task.protocol.transport == .native,
+                   task.protocol != .hls, task.protocol != .dash, task.protocol != .ed2k {
+                    Section("分段") {
+                        SegmentBars(taskID: task.id)
+                        Text("每段颜色越满表示越接近完成；慢速段的尾部会被其他连接“偷取”并重新划分。")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+
+                Section("引擎选项") {
+                    Toggle("独占带宽（Boost）", isOn: Binding(
+                        get: { task.boost },
+                        set: { store.setBoost(task.id, $0) }))
+                    Text("开启后其他活动任务会暂时让位暂停，本任务结束后自动恢复。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Stepper(value: Binding(
+                        get: { task.connections },
+                        set: { store.setTaskConnections(task.id, $0) }), in: 1...32) {
+                        Text("并发连接：\(task.connections)")
+                    }
+                    if task.connections > 16 {
+                        Text("并发超过 16 可能被服务器限流或拒绝（403 / 429），建议保持在 8 左右。")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    Text("连接数与画质修改会在下一次开始或续传时生效。")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+
+                if task.protocol == .hls {
+                    HLSQualitySection(task: task)
+                }
+
+                Section("任务信息") {
+                    LabeledContent("队列", value: task.queueName)
                     Picker("优先级", selection: Binding(
                         get: { task.priority },
                         set: { store.setTaskPriority(task.id, $0) })) {
@@ -56,7 +90,10 @@ struct TaskDetailView: View {
                         Text("普通").tag(0)
                         Text("高").tag(1)
                     }
-                    LabeledContent("引擎", value: task.protocol.transport.displayName)
+                    LabeledContent("引擎", value: task.ytdlp ? "yt-dlp" : task.protocol.transport.displayName)
+                    if task.ytdlp {
+                        LabeledContent("下载画质", value: task.ytdlpFormat ?? "自动")
+                    }
                     LabeledContent("创建时间", value: task.createdAt.formatted(date: .abbreviated, time: .shortened))
                     VStack(alignment: .leading, spacing: 4) {
                         Text("来源（规范化后）").font(.caption).foregroundStyle(.secondary)
@@ -190,5 +227,83 @@ private struct BTFilesSection: View {
         let ok = await store.applyBTFileSelection(task.id, indexes: checked.sorted())
         status = ok ? "已应用" : "应用失败（需至少选择一个文件，且元数据已加载）"
         if ok { await load() }
+    }
+}
+
+/// HLS 主播放列表的画质档位（借鉴 FluxDown `select_hls_quality`）：
+/// 读取所有 `EXT-X-STREAM-INF` 变体，按 BANDWIDTH 让用户选择；改动在下次续传生效。
+private struct HLSQualitySection: View {
+    @Environment(DownloadStore.self) private var store
+    let task: DownloadTask
+    @State private var variants: [(url: URL, bandwidth: Int)] = []
+    @State private var loading = false
+
+    var body: some View {
+        Section("HLS 画质") {
+            if loading {
+                ProgressView().controlSize(.small)
+            } else if variants.isEmpty {
+                Text(task.hlsBandwidth == nil
+                     ? "最高画质（未发现多档变体）"
+                     : "已选 \(Self.label(task.hlsBandwidth ?? 0))，但播放列表当前未提供多档变体")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("读取画质列表") { Task { await load() } }
+            } else {
+                Picker("画质", selection: Binding(
+                    get: { task.hlsBandwidth },
+                    set: { store.setHLSBandwidth(task.id, $0) })) {
+                    Text("最高（自动）").tag(Int?.none)
+                    ForEach(Array(variants.enumerated()), id: \.offset) { _, v in
+                        Text(Self.label(v.bandwidth)).tag(Int?.some(v.bandwidth))
+                    }
+                }
+                Text("切换后在下一次开始或续传时生效。")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .task(id: task.id) { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        variants = await store.hlsVariants(for: task)
+        loading = false
+    }
+
+    private static func label(_ bandwidth: Int) -> String {
+        bandwidth > 0 ? String(format: "%.1f Mbps", Double(bandwidth) / 1_000_000)
+                      : "未知码率"
+    }
+}
+
+/// 分段条形图：每 0.5 秒从引擎拉一次快照（引擎不推送分段事件）。
+private struct SegmentBars: View {
+    @Environment(DownloadStore.self) private var store
+    let taskID: UUID
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            let segments = store.segmentSnapshot(for: taskID).filter(\.knownEnd)
+            if segments.isEmpty {
+                Text("等待分段数据…").font(.caption).foregroundStyle(.secondary)
+            } else {
+                let total = max(1, segments.reduce(0) { $0 + Double($1.span) })
+                GeometryReader { geo in
+                    HStack(spacing: 1) {
+                        ForEach(segments) { s in
+                            let width = max(2, geo.size.width * Double(s.span) / total)
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.secondary.opacity(0.15))
+                                Capsule().fill(Color.accentColor)
+                                    .frame(width: width * s.fraction)
+                            }
+                            .frame(width: width)
+                        }
+                    }
+                }
+                .frame(height: 10)
+                LabeledContent("活动分段", value: "\(segments.count)")
+            }
+        }
     }
 }

@@ -25,6 +25,7 @@ HTTP_EXTRA=(Sources/Siphon/Engines/Shared/NetFailure.swift
             Sources/Siphon/Protocols/NetRC.swift
             Sources/Siphon/Protocols/CredentialScope.swift
             Sources/Siphon/Engines/NativeHTTP/MirrorSelector.swift
+            Sources/Siphon/Engines/NativeHTTP/HostHealthStore.swift
             Sources/Siphon/Engines/NativeHTTP/NetworkInterfaces.swift
             Sources/Siphon/Protocols/ProtocolSettings.swift
             Sources/Siphon/Managers/Keychain.swift

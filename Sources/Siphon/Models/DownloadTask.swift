@@ -33,6 +33,17 @@ public struct DownloadTask: Identifiable, Sendable {
     /// Scheduling priority: higher starts first within a queue. `0` is normal,
     /// `1` high, `-1` low. Persisted and editable from the inspector / context menu.
     public var priority: Int
+    /// 独占带宽（Boost）：该任务活动期间，其他活动任务让位暂停，结束后按原状态恢复。
+    /// 持久化，重启后仍然独占。
+    public var boost: Bool
+    /// 该任务的并发连接数（1...32）。默认 8；修改在下一次开始/续传时生效。
+    public var connections: Int
+    /// 由 yt-dlp 负责下载（页面链接 + 格式选择），而不是先解析成直链再走 HTTP 引擎。
+    public var ytdlp: Bool
+    /// yt-dlp 的格式选择表达式，如 `bv*[height<=1080]+ba/b[height<=1080]`。
+    public var ytdlpFormat: String?
+    /// HLS 任务选择的画质（按 BANDWIDTH 匹配）；`nil` 表示最高画质。
+    public var hlsBandwidth: Int?
 
     public init(
         id: UUID = UUID(),
@@ -47,6 +58,11 @@ public struct DownloadTask: Identifiable, Sendable {
         pieceHashes: [String] = [],
         pieceLength: Int64 = 0,
         priority: Int = 0,
+        boost: Bool = false,
+        connections: Int = 8,
+        ytdlp: Bool = false,
+        ytdlpFormat: String? = nil,
+        hlsBandwidth: Int? = nil,
         protoOverride: DownloadProtocol? = nil
     ) {
         let proto = DownloadProtocol.detect(from: source)
@@ -67,6 +83,11 @@ public struct DownloadTask: Identifiable, Sendable {
         self.pieceHashes = pieceHashes
         self.pieceLength = pieceLength
         self.priority = priority
+        self.boost = boost
+        self.connections = min(32, max(1, connections))
+        self.ytdlp = ytdlp
+        self.ytdlpFormat = ytdlpFormat
+        self.hlsBandwidth = hlsBandwidth
     }
 
     /// Human-readable fallback name. Custom schemes carry their filename in

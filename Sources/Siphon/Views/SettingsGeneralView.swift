@@ -6,6 +6,7 @@ struct GeneralSettingsView: View {
     @Environment(DownloadStore.self) private var store
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
     @State private var launchError: String?
+    @State private var stats = TransferStats.shared
 
     var body: some View {
         Form {
@@ -78,6 +79,13 @@ struct GeneralSettingsView: View {
                     Text("全局最大同时下载：\(store.queues.globalConcurrent)")
                 }
                 Text("每个队列还可单独设置并发数与下载时段（见「队列」标签页）。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("传输统计") {
+                LabeledContent("今日", value: "\(Formatting.bytes(stats.todayBytes)) · \(stats.todayCompleted) 个完成")
+                LabeledContent("近 7 天", value: Formatting.bytes(stats.last7DaysBytes))
+                LabeledContent("累计", value: "\(Formatting.bytes(stats.totalBytes)) · \(stats.totalCompleted) 个完成")
+                Text("按天累计并持久化在本地，保留最近 90 天。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section("自动化") {

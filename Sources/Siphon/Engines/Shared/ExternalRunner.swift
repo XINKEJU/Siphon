@@ -18,6 +18,9 @@ public final class ExternalRunner {
     private let arguments: [String]
     private let destination: URL?
     private let onBytes: (@Sendable (Int64) -> Void)?
+    /// 读取 stdout 的最新尾部内容（yt-dlp 进度行等）；仅在内容变化时回调。
+    private let onOutput: (@Sendable (String) -> Void)?
+    private var lastOutput = ""
     private let process = Process()
     private let outURL: URL
     private let errURL: URL
@@ -26,11 +29,13 @@ public final class ExternalRunner {
     private var errHandle: FileHandle?
 
     public init(executable: URL, arguments: [String], destination: URL?,
-                onBytes: (@Sendable (Int64) -> Void)? = nil) {
+                onBytes: (@Sendable (Int64) -> Void)? = nil,
+                onOutput: (@Sendable (String) -> Void)? = nil) {
         self.executable = executable
         self.arguments = arguments
         self.destination = destination
         self.onBytes = onBytes
+        self.onOutput = onOutput
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("Siphon-External-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -67,6 +72,7 @@ public final class ExternalRunner {
         while process.isRunning {
             if cancelled { process.terminate(); break }
             reportBytes()
+            reportOutput()
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
         return reapQueue.sync { self.reap() }
@@ -103,6 +109,15 @@ public final class ExternalRunner {
     }
 
     public var isCancelled: Bool { cancelled }
+
+    private func reportOutput() {
+        guard let onOutput else { return }
+        guard let text = try? String(contentsOf: outURL, encoding: .utf8),
+              text != lastOutput else { return }
+        // 只需要最新几行进度；避免长任务把整个日志搬进内存。
+        lastOutput = text
+        onOutput(String(text.suffix(4096)))
+    }
 
     private func reportBytes() {
         guard let destination,

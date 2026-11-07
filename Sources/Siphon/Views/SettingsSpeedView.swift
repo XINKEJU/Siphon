@@ -4,6 +4,7 @@ import SwiftUI
 struct SpeedSettingsView: View {
     @Environment(DownloadStore.self) private var store
     @State private var limitText = ""
+    @State private var lowSpeedText = ""
 
     var body: some View {
         Form {
@@ -57,6 +58,19 @@ struct SpeedSettingsView: View {
                 Text("同时作用于 aria2（--max-overall-download-limit）与原生 HLS/DASH 引擎（令牌桶）。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("低速熔断") {
+                HStack {
+                    TextField("字节/秒", text: $lowSpeedText, prompt: Text("0 = 关闭"))
+                        .textFieldStyle(.roundedBorder)
+                    Text("B/s").foregroundStyle(.secondary)
+                    Button("应用") {
+                        LowSpeedPolicy.limit = Int64(lowSpeedText.trimmingCharacters(in: .whitespaces)) ?? 0
+                        lowSpeedText = "\(LowSpeedPolicy.limit)"
+                    }
+                }
+                Text("连接持续 10 秒低于该速度时，自动断开并尝试下一来源（aria2 lowest-speed-limit 模型）。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("快速设置") {
                 GlassGroup(spacing: 8) {
                     ForEach(["", "524288", "1048576", "5242880"], id: \.self) { v in
@@ -71,6 +85,9 @@ struct SpeedSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { limitText = store.speedLimitText }
+        .onAppear {
+            limitText = store.speedLimitText
+            lowSpeedText = "\(LowSpeedPolicy.limit)"
+        }
     }
 }

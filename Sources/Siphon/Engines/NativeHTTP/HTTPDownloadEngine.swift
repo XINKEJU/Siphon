@@ -47,10 +47,14 @@ public final class HTTPDownloadEngine: DownloadEngine {
     /// Last state reported (or about to be reported) to the delegate.
     public var lastState: DownloadState { diagnostics.withLock { $0.state } }
 
+    /// 当前传输的分段快照（包含尚未开始与正在写的位置）。
+    public func segmentSnapshot(for id: UUID) -> [SegmentSnapshot] {
+        coordinators.withLock { $0[id] }?.snapshot() ?? []
+    }
+
     // Tuning constants (FluxDown segment_advisor.rs, ABD DEFAULT_MIN_PART_SIZE).
     private static let minSplit: Int64 = 1_048_576        // a split is only worth ≥ 1 MiB
     private static let stealThreshold: Int64 = 2_097_152  // stolen tail must be ≥ 2 MiB
-    private static let maxConnections = 8
     private static let flushThreshold = 1 << 16           // 64 KiB
     private static let maxRetriesPerPart = 5
     private static let maxResumeAttempts = 3              // circuit breaker (aria2)
@@ -148,6 +152,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
         private var _handle: Task<Void, Never>?
         private var _cancelled = false
         private var _lastOutcome: Outcome?
+        private var _lowSpeedSince: Date?
 
         var handle: Task<Void, Never>? {
             get { stateLock.lock(); defer { stateLock.unlock() }; return _handle }
@@ -164,6 +169,12 @@ public final class HTTPDownloadEngine: DownloadEngine {
             set { stateLock.lock(); defer { stateLock.unlock() }; _lastOutcome = newValue }
         }
 
+        /// 低速计时起点；任一 worker 报告恢复速度后清空。
+        var lowSpeedSince: Date? {
+            get { stateLock.lock(); defer { stateLock.unlock() }; return _lowSpeedSince }
+            set { stateLock.lock(); defer { stateLock.unlock() }; _lowSpeedSince = newValue }
+        }
+
         init(_ t: DownloadTask) {
             task = t
             effectiveHeaders = t.options
@@ -173,6 +184,8 @@ public final class HTTPDownloadEngine: DownloadEngine {
     /// Async-safe job table (OSAllocatedUnfairLock instead of NSLock because these
     /// methods are called from async contexts).
     private let jobsState = OSAllocatedUnfairLock<[UUID: Job]>(initialState: [:])
+    /// 正在传输的分段协调器，供检查器读取实时分段快照。
+    private let coordinators = OSAllocatedUnfairLock<[UUID: SegmentCoordinator]>(initialState: [:])
     private let writeQueue = DispatchQueue(label: "siphon.nativehttp.write")
     private let session: URLSession = CredentialScope.makeSession { c in
         c.httpMaximumConnectionsPerHost = 8
@@ -389,9 +402,11 @@ public final class HTTPDownloadEngine: DownloadEngine {
                     }
                 }
                 job.lastOutcome = .completed
+                HostHealthStore.shared.markHealthy(host: job.source.host ?? "")
                 await report(.completed, for: job.task.id)
                 return
             case .failed(let error):
+                HostHealthStore.shared.recordFailure(host: job.source.host ?? "")
                 if failover {
                     job.lastOutcome = .failed
                     // Swallow this source's failure; the caller tries the next
@@ -595,8 +610,10 @@ public final class HTTPDownloadEngine: DownloadEngine {
         defer { try? handle.close() }
         if canRange && info.total > 0 { try? handle.truncate(atOffset: UInt64(info.total)) }
 
+        // 每任务并发连接数（默认 8，可在任务检查器中调整 1...32）。
+        let requestedConnections = max(1, min(32, job.task.connections))
         let coordinator = SegmentCoordinator(parts: parts,
-                                             maxConnections: Self.maxConnections,
+                                             maxConnections: requestedConnections,
                                              minSplit: Self.minSplit,
                                              stealThreshold: Self.stealThreshold)
         // Resume accounting: bytes already on disk from previous sessions count
@@ -604,8 +621,11 @@ public final class HTTPDownloadEngine: DownloadEngine {
         let alreadyWritten = parts.reduce(Int64(0)) { $0 + max(0, $1.cursor - $1.start) }
         // Slow start: honour a learned per-domain cap and a positive hint ramp.
         let host = job.source.host ?? ""
-        coordinator.effectiveCap = DomainConnPolicy.shared.effectiveMax(host: host,
-                                                                       requested: Self.maxConnections)
+        var cap = DomainConnPolicy.shared.effectiveMax(host: host,
+                                                       requested: requestedConnections)
+        // 主机健康度熔断：反复失败或历史吞吐很差时先降到 1~2 条连接。
+        cap = HostHealthStore.shared.suggestedConnections(host: host, requested: cap)
+        coordinator.effectiveCap = cap
         // Per-host connection cap / speed limit overrides (AB DM per-host model).
         if let ph = perHost {
             coordinator.effectiveCap = max(1, min(coordinator.effectiveCap, ph.maxConnections))
@@ -624,12 +644,14 @@ public final class HTTPDownloadEngine: DownloadEngine {
         dbg("transfer: active reported")
 
         var resumeFailure = sidecar?.resumeAttempts ?? 0
+        coordinators.withLock { $0[task.id] = coordinator }
         let result = await coordinateWorkers(job, url: job.source, handle: handle,
                                              coordinator: coordinator, tracker: tracker,
                                              total: info.total, canRange: canRange,
                                              sidecarSaver: sidecarSaver,
                                              sizePlan: sizePlan,
                                              endpoints: endpoints)
+        _ = coordinators.withLock { $0.removeValue(forKey: task.id) }
 
         // Persist learnings for the domain.
         if case .done = result {
@@ -672,7 +694,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
                         start: tail.range.lowerBound, cursor: tail.range.lowerBound,
                         end: tail.range.upperBound - 1)]
                     let tailCoord = SegmentCoordinator(parts: tailParts,
-                                                       maxConnections: Self.maxConnections,
+                                                       maxConnections: requestedConnections,
                                                        minSplit: Self.minSplit,
                                                        stealThreshold: Self.stealThreshold)
                     let tailTracker = ProgressTracker()
@@ -839,8 +861,10 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                      sidecarSaver: sidecarSaver,
                                      sizePlan: sizePlan)
                 usage[endpoint.url, default: 0] -= 1
-                MirrorSelector.shared.record(endpoint.url, bytes: bytes,
-                                             duration: Date().timeIntervalSince(started))
+                let elapsed = Date().timeIntervalSince(started)
+                MirrorSelector.shared.record(endpoint.url, bytes: bytes, duration: elapsed)
+                HostHealthStore.shared.record(host: endpoint.url.host ?? url.host ?? "",
+                                              bytes: bytes, duration: elapsed)
                 dbg("worker finished part \(part.start)..\(part.end)")
             } catch is CancellationError {
                 usage[endpoint.url, default: 0] -= 1
@@ -849,6 +873,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
             } catch {
                 usage[endpoint.url, default: 0] -= 1
                 MirrorSelector.shared.recordFailure(endpoint.url)
+                HostHealthStore.shared.recordFailure(host: endpoint.url.host ?? url.host ?? "")
                 let failure = NetFailure.classify(error)
                 coordinator.recordFailure(failure, attemptedConnections: coordinator.activeConnections,
                                           host: url.host ?? "")
@@ -1120,7 +1145,24 @@ public final class HTTPDownloadEngine: DownloadEngine {
         await job.throttle.consume(data.count)
         let advanced = try flushAndReport(data, at: offset, handle: handle,
                                           tracker: tracker, total: total, taskID: job.task.id)
-        if let p = advanced { await delegate?.engineDidUpdate(taskID: job.task.id, progress: p) }
+        if let p = advanced {
+            // 低速熔断（aria2 lowest-speed-limit）：持续低于阈值 10 秒就放弃当前来源。
+            let limit = LowSpeedPolicy.limit
+            if limit > 0 {
+                if p.speedBytesPerSec < limit {
+                    if let since = job.lowSpeedSince {
+                        if Date().timeIntervalSince(since) >= LowSpeedPolicy.sustainedSeconds {
+                            throw NetFailure.lowSpeed
+                        }
+                    } else {
+                        job.lowSpeedSince = Date()
+                    }
+                } else {
+                    job.lowSpeedSince = nil
+                }
+            }
+            await delegate?.engineDidUpdate(taskID: job.task.id, progress: p)
+        }
         sidecarSaver.maybeSave()
     }
 
@@ -1193,7 +1235,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                     end: $0.upperBound - 1)
         }
         let coordinator = SegmentCoordinator(parts: parts,
-                                             maxConnections: Self.maxConnections,
+                                             maxConnections: max(1, min(32, job.task.connections)),
                                              minSplit: Self.minSplit,
                                              stealThreshold: Self.stealThreshold)
         let tracker = ProgressTracker()
@@ -1470,6 +1512,16 @@ final class SegmentCoordinator: @unchecked Sendable {
     var remainingBytes: Int64 {
         lock.lock(); defer { lock.unlock() }
         return (pending + active).reduce(Int64(0)) { $0 + ($1.end + 1 - $1.cursor) }
+    }
+
+    /// 一致性快照：按起始字节排序，未知总大小的分段用 `end = -1` 表示。
+    func snapshot() -> [SegmentSnapshot] {
+        lock.lock(); defer { lock.unlock() }
+        return (pending + active)
+            .sorted { $0.start < $1.start }
+            .map { SegmentSnapshot(start: $0.start,
+                                   end: $0.end == Self.unknownEnd ? -1 : $0.end,
+                                   cursor: $0.cursor) }
     }
 
     init(parts: [Part], maxConnections: Int, minSplit: Int64, stealThreshold: Int64) {
@@ -1769,6 +1821,18 @@ private extension HTTPDownloadEngine {
         var written: Int64 = 0
         var lastReport = Date()
         var lastBytes: Int64 = 0
+    }
+}
+
+/// 低速熔断阈值（aria2 `lowest-speed-limit` 的最小版）。
+/// 0 = 关闭；持续低于阈值超过 `sustainedSeconds` 才判断开，避免瞬时抖动误杀。
+enum LowSpeedPolicy {
+    static let key = "Siphon.lowSpeedLimit"
+    static let sustainedSeconds: TimeInterval = 10
+
+    static var limit: Int64 {
+        get { max(0, Int64(UserDefaults.standard.integer(forKey: key))) }
+        set { UserDefaults.standard.set(Int(max(0, newValue)), forKey: key) }
     }
 }
 

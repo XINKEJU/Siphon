@@ -24,6 +24,17 @@ public final class HLSEngine: DownloadEngine {
 
     public init() {}
     public func canHandle(_ p: DownloadProtocol) -> Bool { p == .hls }
+
+    /// 供检查器读取画质列表：主播放列表返回所有变体，媒体播放列表返回空数组。
+    public static func variants(for url: URL, options: [String: String] = [:])
+        async throws -> [(url: URL, bandwidth: Int)] {
+        let data = try await fetchData(url, options: options, origin: url)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        let pl = HLSParser.parse(text, baseURL: url)
+        return pl.isMaster ? pl.variants : []
+    }
     public func setGlobalSpeedLimit(_ bytesPerSec: Int64?) async {}
 
     public func submit(_ task: DownloadTask) async throws {
@@ -33,7 +44,7 @@ public final class HLSEngine: DownloadEngine {
         var pl = HLSParser.parse(text, baseURL: task.source)
         var mediaURL = task.source
         var mediaText = text
-        if pl.isMaster, let variant = HLSParser.bestVariant(pl) {
+        if pl.isMaster, let variant = HLSParser.variant(pl, bandwidth: task.hlsBandwidth) {
             mediaText = try await playlistText(variant, options: task.options, origin: task.source)
             mediaURL = variant
             pl = HLSParser.parse(mediaText, baseURL: variant)
@@ -167,7 +178,7 @@ public final class HLSEngine: DownloadEngine {
         return t
     }
 
-    private static func fetchData(_ url: URL, options: [String: String], origin: URL) async throws -> Data {
+    static func fetchData(_ url: URL, options: [String: String], origin: URL) async throws -> Data {
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         let scoped = CredentialScope.headers(options, from: origin, to: url)
