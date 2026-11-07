@@ -10,6 +10,7 @@ ED2K=(Sources/Siphon/Engines/ED2K/MD4.swift
       Sources/Siphon/Engines/ED2K/ED2KHash.swift
       Sources/Siphon/Engines/ED2K/ED2KURI.swift)
 SHARED=(Sources/Siphon/Engines/Engine.swift
+        Sources/Siphon/Engines/Shared/NetFailure.swift
         Sources/Siphon/Engines/Shared/SegmentAssembler.swift
         Sources/Siphon/Managers/SpeedLimitController.swift
         Sources/Siphon/Protocols/NetRC.swift
@@ -17,7 +18,8 @@ SHARED=(Sources/Siphon/Engines/Engine.swift
         Sources/Siphon/Engines/HLS/HLSParser.swift
         Sources/Siphon/Engines/DASH/DASHMPDParser.swift)
 # HTTPDownloadEngine pulls in PAC/proxy routing and the per-host override store.
-HTTP_EXTRA=(Sources/Siphon/Protocols/PACResolver.swift
+HTTP_EXTRA=(Sources/Siphon/Engines/Shared/NetFailure.swift
+            Sources/Siphon/Protocols/PACResolver.swift
             Sources/Siphon/Protocols/ProxyRouter.swift
             Sources/Siphon/Protocols/PerHostSettings.swift
             Sources/Siphon/Protocols/NetRC.swift

@@ -113,12 +113,14 @@ public final class UpdateChecker: ObservableObject {
         defer { try? FileManager.default.removeItem(at: tmp) }
         let zip = tmp.appendingPathComponent("update.zip")
         do {
-            let (data, resp) = try await URLSession.shared.data(from: url)
+            // URLSession.download streams to a temp file on disk — update
+            // packages are tens of MB and must not be buffered in memory.
+            let (tmpFile, resp) = try await URLSession.shared.download(from: url)
             if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                 status = "下载更新失败：HTTP \(http.statusCode)"
                 return
             }
-            try data.write(to: zip)
+            try FileManager.default.moveItem(at: tmpFile, to: zip)
         } catch {
             status = "下载更新失败：\(error.localizedDescription)"
             return

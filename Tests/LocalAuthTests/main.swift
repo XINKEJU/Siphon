@@ -32,8 +32,9 @@ func restRequest(_ method: String, _ path: String, auth: String? = nil,
 
 // MARK: - token semantics
 
+let generated = Keychain.randomToken() ?? ""
 check("token generation is non-empty and long enough",
-      !Keychain.randomToken().isEmpty && Keychain.randomToken().count >= 40)
+      !generated.isEmpty && generated.count >= 40)
 check("constant-time equal matches", Keychain.constantTimeEqual("abc", "abc"))
 check("constant-time equal rejects", !Keychain.constantTimeEqual("abc", "abd"))
 check("constant-time equal rejects different lengths",
@@ -109,7 +110,7 @@ let mcp = MCPServer()
 mcp.configure(handlers: ["list_tasks": { _ in "a,b" }])
 let rpc = #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
 func mcpRequest(auth: String?) -> Data {
-    var head = "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: \(rpc.utf8.count)\r\n"
+    var head = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: \(rpc.utf8.count)\r\n"
     if let auth { head += "Authorization: \(auth)\r\n" }
     return Data((head + "\r\n" + rpc).utf8)
 }

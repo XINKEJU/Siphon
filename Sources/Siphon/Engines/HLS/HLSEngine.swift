@@ -27,7 +27,7 @@ public final class HLSEngine: DownloadEngine {
     public func setGlobalSpeedLimit(_ bytesPerSec: Int64?) async {}
 
     public func submit(_ task: DownloadTask) async throws {
-        if outputs[task.id] != nil { try assembler.resume(task.id); return }
+        if outputs[task.id] != nil { try await assembler.resume(task.id); return }
 
         let text = try await playlistText(task.source, options: task.options, origin: task.source)
         var pl = HLSParser.parse(text, baseURL: task.source)
@@ -101,7 +101,7 @@ public final class HLSEngine: DownloadEngine {
     public func pause(_ id: UUID) async { assembler.pause(id) }
 
     public func resume(_ id: UUID) async {
-        do { try assembler.resume(id) } catch {
+        do { try await assembler.resume(id) } catch {
             await delegate?.engineDidChangeState(taskID: id, state: .error, error: error)
         }
     }

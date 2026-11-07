@@ -124,21 +124,24 @@ public enum S3Signer {
         return (amz, stamp)
     }
 
-    /// RFC 3986 unreserved characters plus the sub-delims AWS SigV4 leaves
-    /// unencoded (matching the AWS SDK `UriEncoder`).
-    ///
-    /// Critically, `*` MUST stay literal: encoding it as `%2A` makes the locally
-    /// computed signature diverge from what S3 expects, yielding a
-    /// `403 SignatureDoesNotMatch`. The default `addingPercentEncoding` encodes
-    /// `*` (it is not in `url*Allowed`), which is the bug being fixed here.
+    /// AWS SigV4 canonical-query encoding: strictly RFC 3986 unreserved
+    /// characters (A-Za-z0-9-._~); everything else percent-encoded, per the
+    /// SigV4 canonical request spec.
     public static func rfc3986(_ s: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        allowed.insert(charactersIn: "!#$&'()*+,:;=?@[]")
+        s.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? s
+    }
+
+    /// S3 object-key path encoding: like rfc3986 but leaves `*` literal.
+    /// Encoding it as `%2A` makes the locally computed signature diverge from
+    /// what S3 expects, yielding a `403 SignatureDoesNotMatch`. Everything
+    /// else — including `?`, `#`, `&`, `=` — must be encoded, or the request
+    /// URL itself mis-parses.
+    private static func uriEncodePath(_ s: String) -> String {
+        var allowed = Self.unreserved
+        allowed.insert(charactersIn: "*")
         return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s
     }
 
-    private static func uriEncodePath(_ s: String) -> String {
-        s.components(separatedBy: "/").map { rfc3986($0) }.joined(separator: "/")
-    }
+    private static let unreserved = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 }

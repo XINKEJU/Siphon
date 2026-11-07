@@ -175,10 +175,19 @@ public final class Aria2Bootstrap {
     }
 
     private func loadOrCreateSecret() -> String {
+        let account = "aria2-rpc-secret"
+        // Migrate the legacy plaintext UserDefaults blob, then keep the secret
+        // in the Keychain only.
         let d = UserDefaults.standard
-        if let s = d.string(forKey: "Siphon.aria2RpcSecret"), !s.isEmpty { return s }
+        if let legacy = d.string(forKey: "Siphon.aria2RpcSecret"), !legacy.isEmpty {
+            Keychain.setSecret(legacy, account: account)
+            d.removeObject(forKey: "Siphon.aria2RpcSecret")
+            return legacy
+        }
+        if let s = Keychain.secret(account: account), !s.isEmpty { return s }
         let fresh = Keychain.randomToken()
-        d.set(fresh, forKey: "Siphon.aria2RpcSecret")
+            ?? UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        Keychain.setSecret(fresh, account: account)
         return fresh
     }
 

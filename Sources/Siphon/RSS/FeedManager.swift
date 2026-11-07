@@ -61,6 +61,10 @@ public final class RSSParser: NSObject, XMLParserDelegate {
         buf += string
     }
 
+    public func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+        if let s = String(data: CDATABlock, encoding: .utf8) { buf += s }
+    }
+
     public func parser(_ parser: XMLParser, didEndElement name: String,
                        namespaceURI: String?, qualifiedName: String?) {
         let tag = name.lowercased()
@@ -90,11 +94,16 @@ public final class RSSParser: NSObject, XMLParserDelegate {
         element = ""
     }
 
-    /// RFC 822 (RSS) and RFC 3339 (Atom) dates, best-effort.
+    /// RFC 822 (RSS) and RFC 3339 (Atom) dates, best-effort. Formatters are
+    /// static: creating a DateFormatter per call is notoriously expensive.
+    private static let rfc822: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return f
+    }()
+
     static func parseDate(_ s: String) -> Date? {
-        let rfc822 = DateFormatter()
-        rfc822.locale = Locale(identifier: "en_US_POSIX")
-        rfc822.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         if let d = rfc822.date(from: s) { return d }
         let iso = ISO8601DateFormatter()
         return iso.date(from: s)

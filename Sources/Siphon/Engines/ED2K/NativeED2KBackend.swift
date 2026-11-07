@@ -33,6 +33,10 @@ public final class NativeED2KBackend: ED2KBackend, @unchecked Sendable {
             lock.lock(); defer { lock.unlock() }
             set.insert(hash.lowercased())
         }
+        func resumeTransfer(_ hash: String) {
+            lock.lock(); defer { lock.unlock() }
+            set.remove(hash.lowercased())
+        }
         func contains(_ hash: String) -> Bool {
             lock.lock(); defer { lock.unlock() }
             return set.contains(hash.lowercased())
@@ -58,6 +62,10 @@ public final class NativeED2KBackend: ED2KBackend, @unchecked Sendable {
 
     public func cancel(fileHashHex: String) async {
         cancelled.cancel(fileHashHex)
+    }
+
+    public func resumeTransfer(fileHashHex: String) async {
+        cancelled.resumeTransfer(fileHashHex)
     }
 
     private func isCancelled(_ hash: String) -> Bool {

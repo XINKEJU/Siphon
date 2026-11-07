@@ -59,27 +59,42 @@ public final class ExternalRunner {
         try process.run()
     }
 
-    /// Wait for exit, reporting destination size every 250 ms.
+    /// Wait for exit, reporting destination size every 250 ms. Re-entrant:
+    /// resume() reaps the runner itself while the launch-time wait Task also
+    /// calls this — the tail (close / read / cleanup) runs exactly once on a
+    /// serial queue and the computed outcome is cached.
     public func wait() async -> Outcome {
         while process.isRunning {
             if cancelled { process.terminate(); break }
             reportBytes()
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
+        return reapQueue.sync { self.reap() }
+    }
+
+    private let reapQueue = DispatchQueue(label: "siphon.external.reap")
+    private var cachedOutcome: Outcome?
+
+    private func reap() -> Outcome {
+        if let cached = cachedOutcome { return cached }
         // Let the kernel flush the child's file descriptors before reading.
         try? outHandle?.synchronize()
         try? errHandle?.synchronize()
         try? outHandle?.close()
         try? errHandle?.close()
+        outHandle = nil
+        errHandle = nil
         reportBytes()
 
         let out = (try? String(contentsOf: outURL, encoding: .utf8)) ?? ""
         let err = (try? String(contentsOf: errURL, encoding: .utf8)) ?? ""
         try? FileManager.default.removeItem(at: outURL.deletingLastPathComponent())
-        return Outcome(exitCode: process.terminationStatus,
-                       stdout: out.trimmingCharacters(in: .whitespacesAndNewlines),
-                       stderr: err.trimmingCharacters(in: .whitespacesAndNewlines),
-                       wasCancelled: cancelled)
+        let outcome = Outcome(exitCode: process.terminationStatus,
+                              stdout: out.trimmingCharacters(in: .whitespacesAndNewlines),
+                              stderr: err.trimmingCharacters(in: .whitespacesAndNewlines),
+                              wasCancelled: cancelled)
+        cachedOutcome = outcome
+        return outcome
     }
 
     public func cancel() {

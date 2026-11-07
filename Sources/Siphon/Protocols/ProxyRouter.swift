@@ -72,8 +72,15 @@ public final class ProxyRouter: @unchecked Sendable {
         guard let host = url.host, !host.isEmpty else { return nil }
         if Self.isLoopback(host) { return nil }
 
+        // loadPAC takes the same lock — release around it (NSLock is not
+        // reentrant; calling it while held would deadlock).
         lock.lock()
-        let resolver = ensureResolver()
+        if pacResolver == nil {
+            lock.unlock()
+            _ = loadPAC()
+            lock.lock()
+        }
+        let resolver = pacResolver
         lock.unlock()
 
         // Prefer PAC resolution when a script is available.
@@ -111,27 +118,62 @@ public final class ProxyRouter: @unchecked Sendable {
     }
 
     /// (Re)load the PAC script. Reads the system PAC URL unless a custom URL is
-    /// supplied (for testing / manual override).
+    /// supplied (for testing / manual override). Remote (http/https) PAC URLs
+    /// are fetched off-thread and cached — a synchronous `Data(contentsOf:)`
+    /// here used to block engine session setup on a network round-trip.
+    @discardableResult
     public func loadPAC(from url: URL? = nil, scriptText: String? = nil) -> Bool {
-        lock.lock(); defer { lock.unlock() }
         if let scriptText {
+            lock.lock()
             pacResolver = PACResolver(script: scriptText)
             pacURLString = url?.absoluteString
             loadedPacURLString = url?.absoluteString
+            lock.unlock()
             return true
         }
         guard let pacURL = url ?? systemPACURL else { return false }
-        guard let data = try? Data(contentsOf: pacURL),
-              let script = String(data: data, encoding: .utf8) else { return false }
-        pacResolver = PACResolver(script: script)
-        pacURLString = pacURL.absoluteString
-        loadedPacURLString = pacURL.absoluteString
-        return true
+        switch pacURL.scheme?.lowercased() {
+        case "http", "https":
+            lock.lock()
+            pacURLString = pacURL.absoluteString
+            let needsFetch = loadedPacURLString != pacURL.absoluteString
+                || Date().timeIntervalSince(lastPACFetch) > Self.pacRefreshInterval
+            lock.unlock()
+            if needsFetch { Task { await refreshRemotePAC(pacURL) } }
+            let haveScript = pacResolver != nil
+            lock.unlock()
+            return haveScript
+        default:
+            // file:// and custom schemes: local read, safe inline.
+            guard let data = try? Data(contentsOf: pacURL),
+                  let script = String(data: data, encoding: .utf8) else { return false }
+            lock.lock()
+            pacResolver = PACResolver(script: script)
+            pacURLString = pacURL.absoluteString
+            loadedPacURLString = pacURL.absoluteString
+            lock.unlock()
+            return true
+        }
     }
 
-    private func ensureResolver() -> PACResolver? {
-        if pacResolver == nil { _ = loadPAC() }
-        return pacResolver
+    private static let pacRefreshInterval: TimeInterval = 300
+    private var lastPACFetch = Date.distantPast
+
+    private func refreshRemotePAC(_ url: URL) async {
+        guard let (data, resp) = try? await URLSession.shared.data(from: url),
+              let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode),
+              let script = String(data: data, encoding: .utf8) else { return }
+        storeRemotePAC(script, urlString: url.absoluteString)
+    }
+
+    /// Lock application lives in a sync method: an async context resuming on an
+    /// arbitrary executor may not lock/unlock across threads.
+    private func storeRemotePAC(_ script: String, urlString: String) {
+        lock.lock()
+        pacResolver = PACResolver(script: script)
+        loadedPacURLString = urlString
+        lastPACFetch = Date()
+        lock.unlock()
     }
 
     /// Non-blocking system proxy read via `CFNetworkCopySystemProxySettings`,

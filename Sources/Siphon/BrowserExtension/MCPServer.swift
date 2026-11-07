@@ -87,6 +87,7 @@ public final class MCPServer {
               let cl = header.range(of: "Content-Length: "),
               let len = Int(header[cl.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines))
         else { return true }
+        if len > 10 << 20 { return true }   // reject oversized bodies, cap buffer growth
         return (data.count - headerEnd.upperBound) >= len
     }
 
@@ -97,7 +98,24 @@ public final class MCPServer {
         }
         // Bearer token on every call — MCP clients are configured once with the
         // token from Settings, and drive-by pages must not reach the tool surface.
-        let authorized = raw[..<bodyStart].components(separatedBy: "\r\n").dropFirst()
+        let headerLines = raw[..<bodyStart].components(separatedBy: "\r\n")
+        // DNS-rebinding guard: only loopback Host names are ours (see the REST
+        // server for the full rationale).
+        let host = headerLines.first { $0.lowercased().hasPrefix("host:") }
+            .map { String($0.dropFirst("host:".count)).trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        let hostName: String
+        if host.hasPrefix("[") {                       // [::1]:8080
+            hostName = String(host.prefix(while: { $0 != "]" }))
+        } else {
+            hostName = String(host.split(separator: ":").first ?? "")
+        }
+        if !hostName.isEmpty,
+           hostName != "127.0.0.1", hostName != "localhost",
+           hostName != "[::1", hostName != "::1" {
+            return http("403 Forbidden",
+                        Self.jsonRPCError(id: nil, code: -32000, message: "Forbidden"))
+        }
+        let authorized = headerLines.dropFirst()
             .first { $0.lowercased().hasPrefix("authorization:") }
             .map { String($0.dropFirst("authorization:".count)).trimmingCharacters(in: .whitespaces) }
         guard LocalAuthToken.verify(authorized) else {

@@ -28,7 +28,7 @@ public struct SegmentRequest: Sendable {
 public final class SegmentAssembler {
     private final class Active {
         var requests: [SegmentRequest]
-        let handle: FileHandle
+        var handle: FileHandle
         let outURL: URL
         let headers: [String: String]
         /// URL the headers were captured for (the playlist / manifest). Segments
@@ -47,6 +47,20 @@ public final class SegmentAssembler {
         var lastBytes: Int64 = 0
         var lastTime = Date()
         var task: Task<Void, Never>?
+
+        private let appendLock = NSLock()
+        private var pendingAppends: [[SegmentRequest]] = []
+        func queueAppend(_ new: [SegmentRequest]) {
+            appendLock.lock(); defer { appendLock.unlock() }
+            pendingAppends.append(new)
+        }
+        /// Run-loop only: folds queued live-refresh segments into `requests`.
+        func drainAppends() -> [SegmentRequest] {
+            appendLock.lock(); defer { appendLock.unlock() }
+            let out = pendingAppends.flatMap { $0 }
+            pendingAppends.removeAll()
+            return out
+        }
 
         init(requests: [SegmentRequest], handle: FileHandle, outURL: URL,
              headers: [String: String], credentialOrigin: URL,
@@ -105,15 +119,31 @@ public final class SegmentAssembler {
         active[id]?.task?.cancel()
     }
 
-    /// Re-arm after a pause. The file handle is kept open in append mode.
-    public func resume(_ id: UUID) throws {
+    /// Re-arm after a pause. The previous run closed the handle on unwind, so
+    /// this waits for it to fully exit, then reopens the file in append mode —
+    /// starting a second run against the old (still-open or just-closed) handle
+    /// would interleave two writers on the same output.
+    public func resume(_ id: UUID) async throws {
         guard let s = active[id] else { return }
         s.cancelled = false
-        try s.handle.seekToEnd()
-        s.task?.cancel()
+        let old = s.task
         s.task = Task.detached(priority: .utility) { [weak self] in
-            await self?.run(s, taskID: id)
+            _ = await old?.value
+            await self?.reopenAndRun(s, taskID: id)
         }
+    }
+
+    private func reopenAndRun(_ s: Active, taskID: UUID) async {
+        let h: FileHandle
+        do {
+            h = try FileHandle(forWritingTo: s.outURL)
+            try h.seekToEnd()
+        } catch {
+            await delegate?.engineDidChangeState(taskID: taskID, state: .error, error: error)
+            return
+        }
+        s.handle = h
+        await run(s, taskID: taskID)
     }
 
     public func remove(_ id: UUID) {
@@ -135,8 +165,11 @@ public final class SegmentAssembler {
     /// Append new segments for a live playlist refresh. New requests are appended to
     /// the end of the request list; the in-flight run loop picks them up on its next
     /// pump. Safe to call from a different task than the one running `run`.
+    /// Live refresh: appends are queued behind a lock; the run loop drains them
+    /// itself, so `requests` is only ever mutated on the run-loop task (no
+    /// cross-thread CoW racing with the fetch pump).
     public func appendSegments(_ new: [SegmentRequest]) {
-        active.values.forEach { $0.requests.append(contentsOf: new) }
+        active.values.forEach { $0.queueAppend(new) }
     }
 
     // MARK: - ordered, bounded-concurrency assembly
@@ -150,6 +183,7 @@ public final class SegmentAssembler {
             // to add new requests. For VOD the loop runs once and exits — behaviour
             // is identical to before `live` was introduced.
             while !s.cancelled {
+                s.requests.append(contentsOf: s.drainAppends())
                 guard nextToFetch < s.requests.count else {
                     if s.live {
                         try await Task.sleep(nanoseconds: 2_000_000_000)
@@ -242,7 +276,12 @@ public final class SegmentAssembler {
         for (k, v) in scoped where !["dir", "out"].contains(k.lowercased()) {
             r.setValue(v, forHTTPHeaderField: k)
         }
-        let (data, _) = try await session.data(for: r)
+        let (data, response) = try await session.data(for: r)
+        // A 404/403 error page must never be concatenated into the output as a
+        // media segment.
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw NetFailure.httpStatus(http.statusCode)
+        }
         return data
     }
 }

@@ -19,6 +19,7 @@ final class CaptureBackend: ED2KBackend {
         lastDestination = destination
     }
     func cancel(fileHashHex: String) async {}
+    func resumeTransfer(fileHashHex: String) async {}
 }
 
 let link = "ed2k://|file|movie.avi|123456789|ABCDEF0123456789ABCDEF0123456789|/"

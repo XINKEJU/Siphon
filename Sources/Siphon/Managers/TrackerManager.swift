@@ -66,14 +66,20 @@ public final class TrackerManager: @unchecked Sendable {
                 collected.insert(t)
             }
         }
+        apply(collected)
+        save()
+        onUpdate?(lastTrackers)
+    }
+
+    /// Lock application lives in a sync method: refresh() resumes on an
+    /// arbitrary executor after each network await.
+    private func apply(_ collected: Set<String>) {
         lock.lock()
         let black = blacklist
         let merged = collected.filter { !black.contains($0) }.sorted()
         lastTrackers = merged
         lastError = collected.isEmpty ? "所有 Tracker 源均未返回数据（可能离线或被拦截）" : nil
         lock.unlock()
-        save()
-        onUpdate?(merged)
     }
 
     // MARK: - persistence

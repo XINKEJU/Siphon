@@ -167,11 +167,16 @@ public final class PluginHost: @unchecked Sendable {
         guard let dict = out?.toDictionary() as? [String: Any],
               let newURL = dict["url"] as? String, !newURL.isEmpty,
               URL(string: newURL)?.scheme != nil else { return nil }
+        // Sanitize BEFORE parsing: the CRLF guard keeps spaces, and URL(string:)
+        // rejects them — checking the raw string then unwrapping the cleaned one
+        // could force-unwrap nil and crash on a space-bearing plugin URL.
+        let cleanedURLString = Self.sanitize(newURL)
+        guard let resolved = URL(string: cleanedURLString), resolved.scheme != nil else { return nil }
         let newHeaders = (dict["headers"] as? [String: String]) ?? headers
         // CRLF injection guard on everything a plugin produced.
         let cleanHeaders = newHeaders.mapValues { Self.sanitize($0) }
         let name = (dict["name"] as? String).map { Self.sanitize($0) }
-        return Resolved(url: URL(string: Self.sanitize(newURL))!, headers: cleanHeaders,
+        return Resolved(url: resolved, headers: cleanHeaders,
                         name: (name?.isEmpty == false) ? name : nil)
     }
 

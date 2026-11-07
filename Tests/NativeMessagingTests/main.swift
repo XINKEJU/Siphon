@@ -26,7 +26,7 @@ check(!s.hasCompleteRequest(Data(hdr.utf8)), "split header-only request is incom
 check(s.hasCompleteRequest(full), "full request (header + body) is complete")
 
 // GET has no body; headers alone are enough.
-let getReq = "GET /ping HTTP/1.1\r\nHost: x\r\n\r\n"
+let getReq = "GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
 check(s.hasCompleteRequest(Data(getReq.utf8)), "GET request is complete from headers")
 
 // End-to-end parsing still works.

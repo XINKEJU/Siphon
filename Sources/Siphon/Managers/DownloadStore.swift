@@ -47,7 +47,20 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     private var aria2: Aria2Engine?
     private var nativeMessaging: NativeMessagingServer?
     private var mcpServer: MCPServer?
+    /// id→index cache for engineDidUpdate. Progress ticks are high-frequency;
+    /// a shifted array (insert/delete) is caught by the id check and rebuilt.
+    private var indexByID: [UUID: Int] = [:]
     private let defaultsKey = "Siphon.tasks"
+    /// Auto-categorize on when enabled: route the file into a type subfolder.
+    private func categorizedDirectory(for fileName: String) -> URL {
+        var dir = downloadDirectory
+        if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
+           let sub = AutoCategorizer.subdirectory(for: fileName) {
+            dir = dir.appendingPathComponent(sub, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
     private enum PrefKey {
         static let clipboard = "Siphon.clipboardEnabled"
         static let browser = "Siphon.browserCaptureEnabled"
@@ -165,13 +178,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
             let title = item.title.isEmpty ? url.lastPathComponent : item.title
             let fileName = title.replacingOccurrences(of: "/", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            var dir = downloadDirectory
-            if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
-               let sub = AutoCategorizer.subdirectory(for: fileName) {
-                dir = dir.appendingPathComponent(sub, isDirectory: true)
-                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            let destination = uniqueDestination(for: fileName, in: dir)
+            let destination = uniqueDestination(for: fileName, in: categorizedDirectory(for: fileName))
             add(DownloadTask(name: fileName, source: url, destination: destination,
                              queueName: "Default", options: [:],
                              origin: "rss:\(feed.title)", checksum: nil))
@@ -337,13 +344,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
             let fileName = resolved.name ?? name
                 ?? URL(string: trimmed)?.lastPathComponent
             ?? "download"
-            var dir = downloadDirectory
-            if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
-               let sub = AutoCategorizer.subdirectory(for: fileName) {
-                dir = dir.appendingPathComponent(sub, isDirectory: true)
-                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            let destination = uniqueDestination(for: fileName, in: dir)
+            let destination = uniqueDestination(for: fileName, in: categorizedDirectory(for: fileName))
             add(DownloadTask(name: fileName, source: resolved.url,
                              destination: destination, queueName: queueName,
                              options: opts, origin: "plugin", checksum: checksum))
@@ -381,14 +382,8 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
                                              protoOverride: req.proto)
                     fileName = probe.name
                 }
-                // Auto-categorize: route into a subfolder by file type when enabled.
-                var dir = downloadDirectory
-                if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
-                   let sub = AutoCategorizer.subdirectory(for: fileName) {
-                    dir = dir.appendingPathComponent(sub, isDirectory: true)
-                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                }
-                let destination = uniqueDestination(for: fileName, in: dir)
+                let destination = uniqueDestination(for: fileName,
+                                                    in: categorizedDirectory(for: fileName))
                 let task = DownloadTask(name: fileName, source: req.url,
                                         destination: destination,
                                         queueName: queueName, options: req.options,
@@ -424,13 +419,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
             if medias.count == 1, let customName, !customName.isEmpty {
                 fileName = customName
             }
-            var dir = downloadDirectory
-            if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
-               let sub = AutoCategorizer.subdirectory(for: fileName) {
-                dir = dir.appendingPathComponent(sub, isDirectory: true)
-                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            let destination = uniqueDestination(for: fileName, in: dir)
+            let destination = uniqueDestination(for: fileName, in: categorizedDirectory(for: fileName))
             guard let src = URL(string: media.url) else { continue }
             let task = DownloadTask(name: fileName,
                                     source: src,
@@ -541,7 +530,14 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
 
     // MARK: - EngineDelegate
     public func engineDidUpdate(taskID: UUID, progress: DownloadProgress) {
-        guard let i = tasks.firstIndex(where: { $0.id == taskID }) else { return }
+        let i: Int?
+        if let cached = indexByID[taskID], cached < tasks.count, tasks[cached].id == taskID {
+            i = cached
+        } else {
+            i = tasks.firstIndex(where: { $0.id == taskID })
+            indexByID = Dictionary(uniqueKeysWithValues: tasks.enumerated().map { ($1.id, $0) })
+        }
+        guard let i else { return }
         tasks[i].progress = progress
     }
 
@@ -636,6 +632,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     public func setTaskSpeedLimit(_ id: UUID, _ bytesPerSec: Int64?) {
         if let v = bytesPerSec { taskSpeedLimits[id] = v }
         else { taskSpeedLimits.removeValue(forKey: id) }
+        save()
         Task {
             var seen = Set<ObjectIdentifier>()
             for engine in engines.values {
@@ -792,16 +789,35 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     }
 
     // MARK: - persistence (metadata only; file data stays on disk)
+    private var tasksFileURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Siphon", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("tasks.json")
+    }
+
     private func save() {
-        let codable = tasks.map { TaskRecord($0) }
+        let codable = tasks.map { TaskRecord($0, limit: taskSpeedLimits[$0.id]) }
         guard let d = try? JSONEncoder().encode(codable) else { return }
-        UserDefaults.standard.set(d, forKey: defaultsKey)
+        try? d.write(to: tasksFileURL, options: .atomic)
     }
 
     private func load() {
-        guard let d = UserDefaults.standard.data(forKey: defaultsKey),
-              let records = try? JSONDecoder().decode([TaskRecord].self, from: d) else { return }
+        let records: [TaskRecord]?
+        if let d = try? Data(contentsOf: tasksFileURL) {
+            records = try? JSONDecoder().decode([TaskRecord].self, from: d)
+        } else if let d = UserDefaults.standard.data(forKey: defaultsKey) {
+            // One-time migration from the old UserDefaults blob.
+            records = try? JSONDecoder().decode([TaskRecord].self, from: d)
+            save()
+        } else {
+            records = nil
+        }
+        guard let records else { return }
         tasks = records.map { $0.task }
+        taskSpeedLimits = Dictionary(uniqueKeysWithValues: records.compactMap { r in
+            r.speedLimit.map { (r.id, $0) }
+        })
     }
 }
 
@@ -815,8 +831,9 @@ private struct TaskRecord: Codable {
     var mirrors: [URL]?
     var pieceHashes: [String]?
     var pieceLength: Int64?
+    var speedLimit: Int64?
 
-    init(_ t: DownloadTask) {
+    init(_ t: DownloadTask, limit: Int64? = nil) {
         id = t.id; name = t.name; source = t.source; destination = t.destination
         proto = t.protocol.rawValue; state = t.state.rawValue; queueName = t.queueName
         downloaded = t.progress.downloadedBytes; total = t.progress.totalBytes
@@ -826,6 +843,7 @@ private struct TaskRecord: Codable {
         mirrors = t.mirrors.isEmpty ? nil : t.mirrors
         pieceHashes = t.pieceHashes.isEmpty ? nil : t.pieceHashes
         pieceLength = t.pieceLength > 0 ? t.pieceLength : nil
+        speedLimit = (limit ?? 0) > 0 ? limit : nil
     }
 
     var task: DownloadTask {

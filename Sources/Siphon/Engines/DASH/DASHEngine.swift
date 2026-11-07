@@ -27,7 +27,7 @@ public final class DASHEngine: @preconcurrency DownloadEngine {
 
     public func submit(_ task: DownloadTask) async throws {
         if outputs[task.id] != nil {
-            do { try assembler.resume(task.id) } catch {
+            do { try await assembler.resume(task.id) } catch {
                 delegate?.engineDidChangeState(taskID: task.id, state: .error, error: error)
             }
             return
@@ -60,7 +60,7 @@ public final class DASHEngine: @preconcurrency DownloadEngine {
     public func pause(_ id: UUID) async { assembler.pause(id) }
 
     public func resume(_ id: UUID) async {
-        do { try assembler.resume(id) } catch {
+        do { try await assembler.resume(id) } catch {
             delegate?.engineDidChangeState(taskID: id, state: .error, error: error)
         }
     }
@@ -98,18 +98,22 @@ extension DASHEngine: EngineDelegate {
 
     /// Replace the fragmented-MP4 byte stream with one flattened, seekable MP4 using
     /// AVFoundation's passthrough export (no re-encode, no ffmpeg dependency).
+    /// Uses the async `export(to:as:)` API — the configure-then-`export()` form
+    /// (mutable outputURL/outputFileType) is deprecated on macOS 15+.
     private static func flatten(_ fragmented: URL) async {
         let asset = AVURLAsset(url: fragmented)
+        let flat = fragmented.deletingLastPathComponent()
+            .appendingPathComponent(fragmented.deletingPathExtension().lastPathComponent + "_flat.mp4")
         guard let session = AVAssetExportSession(asset: asset,
                                                  presetName: AVAssetExportPresetPassthrough),
               session.supportedFileTypes.contains(.mp4) else { return }
-        let flat = fragmented.deletingLastPathComponent()
-            .appendingPathComponent(fragmented.deletingPathExtension().lastPathComponent + "_flat.mp4")
-        session.outputURL = flat
-        session.outputFileType = .mp4
-        await session.export()
-        if session.status == .completed,
-           let size = try? FileManager.default.attributesOfItem(atPath: flat.path)[.size],
+        do {
+            try await session.export(to: flat, as: .mp4)
+        } catch {
+            try? FileManager.default.removeItem(at: flat)
+            return
+        }
+        if let size = try? FileManager.default.attributesOfItem(atPath: flat.path)[.size],
            (size as? NSNumber)?.int64Value ?? 0 > 0 {
             try? FileManager.default.removeItem(at: fragmented)
             try? FileManager.default.moveItem(at: flat, to: fragmented)

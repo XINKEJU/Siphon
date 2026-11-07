@@ -27,8 +27,12 @@ public final class CurlEngine: DownloadEngine {
     public func setTaskSpeedLimit(_ id: UUID, bytesPerSec: Int64?) async {
         perTaskLimit[id] = bytesPerSec
         // Relaunch to apply; `launch` re-reads `effectiveLimit(for:)`.
-        if tasks[id] != nil {
-            launch(tasks[id]!, resume: true)
+        if let task = tasks[id] {
+            if let old = runners[id] {
+                old.cancel()
+                _ = await old.wait()
+            }
+            launch(task, resume: true)
         }
     }
 
@@ -52,6 +56,12 @@ public final class CurlEngine: DownloadEngine {
 
     public func resume(_ id: UUID) async {
         guard let task = tasks[id] else { return }
+        // Reap the previous runner fully before relaunching — two curl
+        // processes appending to the same destination corrupt the file.
+        if let old = runners[id] {
+            old.cancel()
+            _ = await old.wait()
+        }
         launch(task, resume: true)
     }
 
@@ -115,12 +125,17 @@ public final class CurlEngine: DownloadEngine {
         Task { [weak self] in
             guard let self else { return }
             let outcome = await runner.wait()
-            await self.finish(task: task, outcome: outcome)
+            await self.finish(task: task, runner: runner, outcome: outcome)
         }
     }
 
     @MainActor
-    private func finish(task: DownloadTask, outcome: ExternalRunner.Outcome) {
+    private func finish(task: DownloadTask, runner: ExternalRunner,
+                        outcome: ExternalRunner.Outcome) {
+        // A relaunch (speed-limit change / resume) replaces runners[id]; a
+        // stale finish from the old runner must not remove the new one or
+        // report a state the new runner contradicts.
+        guard runners[task.id] === runner else { return }
         runners.removeValue(forKey: task.id)
         if outcome.wasCancelled {
             delegate?.engineDidChangeState(taskID: task.id, state: .paused, error: nil)

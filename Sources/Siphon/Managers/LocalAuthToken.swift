@@ -27,7 +27,7 @@ public enum LocalAuthToken {
             cached = stored
             return stored
         }
-        let fresh = Keychain.randomToken()
+        let fresh = Keychain.randomToken() ?? UUID().uuidString
         cached = fresh
         Keychain.setSecret(fresh, account: account)
         return fresh
@@ -37,7 +37,7 @@ public enum LocalAuthToken {
     @discardableResult
     public static func rotate() -> String {
         lock.lock(); defer { lock.unlock() }
-        let fresh = Keychain.randomToken()
+        let fresh = Keychain.randomToken() ?? UUID().uuidString
         if testingToken == nil {
             Keychain.setSecret(fresh, account: account)
         } else {

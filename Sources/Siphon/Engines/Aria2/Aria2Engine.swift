@@ -11,8 +11,40 @@ public final class Aria2Engine: DownloadEngine {
     public weak var delegate: (any EngineDelegate)?
 
     private let rpc: Aria2RPC
-    private var taskToGid: [UUID: String] = [:]
-    private var gidToTask: [String: UUID] = [:]
+    /// GID ↔ task bindings. Touched from submit/adopt (caller context), the
+    /// WebSocket notification handler and the poll loop — all different
+    /// concurrency domains — so access is serialized by a lock instead of
+    /// racing bare dictionaries across actors.
+    private final class GidMap: @unchecked Sendable {
+        private let lock = NSLock()
+        private var byTask: [UUID: String] = [:]
+        private var byGid: [String: UUID] = [:]
+
+        func bind(task: UUID, gid: String) {
+            lock.lock(); defer { lock.unlock() }
+            if let old = byTask[task] { byGid.removeValue(forKey: old) }
+            byTask[task] = gid
+            byGid[gid] = task
+        }
+        func gid(forTask id: UUID) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            return byTask[id]
+        }
+        func task(forGid gid: String) -> UUID? {
+            lock.lock(); defer { lock.unlock() }
+            return byGid[gid]
+        }
+        func unbind(task: UUID) {
+            lock.lock(); defer { lock.unlock() }
+            if let gid = byTask.removeValue(forKey: task) { byGid.removeValue(forKey: gid) }
+        }
+        func snapshot() -> [String: UUID] {
+            lock.lock(); defer { lock.unlock() }
+            return byGid
+        }
+    }
+
+    private let gidMap = GidMap()
     private var pollTask: Task<Void, Never>?
     /// WebSocket event listener (aria2.onDownloadComplete / …). Best-effort: the
     /// 1s poll remains the source of truth, this just shortens the latency between a
@@ -98,7 +130,7 @@ public final class Aria2Engine: DownloadEngine {
               method.hasPrefix("aria2.on"),
               let params = obj["params"] as? [Any],
               let gid = params.first as? String,
-              gidToTask[gid] != nil else { return }
+              gidMap.task(forGid: gid) != nil else { return }
         Task { _ = await self.poll() }
     }
 
@@ -120,8 +152,7 @@ public final class Aria2Engine: DownloadEngine {
         } else {
             gid = try await rpc.addUri(uri, options: opts)
         }
-        taskToGid[task.id] = gid
-        gidToTask[gid] = task.id
+        gidMap.bind(task: task.id, gid: gid)
     }
 
     /// After a relaunch, aria2 reloaded its session file (`--input-file`): the
@@ -160,8 +191,7 @@ public final class Aria2Engine: DownloadEngine {
             guard let taskID = sourcesByTask.first(where: {
                 $0.value == uri || (hash != nil && hash == Self.btih(of: $0.value))
             })?.key else { continue }
-            taskToGid[taskID] = gid
-            gidToTask[gid] = taskID
+            gidMap.bind(task: taskID, gid: gid)
             adopted.insert(taskID)
         }
         return adopted
@@ -202,20 +232,19 @@ public final class Aria2Engine: DownloadEngine {
     }
 
     public func pause(_ id: UUID) async {
-        guard let gid = taskToGid[id] else { return }
+        guard let gid = gidMap.gid(forTask: id) else { return }
         try? await rpc.pause(gid)
     }
 
     public func resume(_ id: UUID) async {
-        guard let gid = taskToGid[id] else { return }
+        guard let gid = gidMap.gid(forTask: id) else { return }
         try? await rpc.unpause(gid)
     }
 
     public func remove(_ id: UUID) async {
-        guard let gid = taskToGid[id] else { return }
+        guard let gid = gidMap.gid(forTask: id) else { return }
         try? await rpc.forceRemove(gid)
-        taskToGid.removeValue(forKey: id)
-        gidToTask.removeValue(forKey: gid)
+        gidMap.unbind(task: id)
     }
 
     public func setGlobalSpeedLimit(_ bytesPerSec: Int64?) async {
@@ -226,7 +255,7 @@ public final class Aria2Engine: DownloadEngine {
     /// Per-task cap via `aria2.changeOption` (`max-download-limit`), keyed off the
     /// task's GID. Folds under the global limit on the aria2 side.
     public func setTaskSpeedLimit(_ id: UUID, bytesPerSec: Int64?) async {
-        guard let gid = taskToGid[id] else { return }
+        guard let gid = gidMap.gid(forTask: id) else { return }
         try? await rpc.setPerDownloadLimit(gid, bytesPerSec ?? 0)
     }
 
@@ -249,7 +278,7 @@ public final class Aria2Engine: DownloadEngine {
     /// Files of a BT task. Empty when the task is not on aria2 or its metadata
     /// has not been resolved yet (magnet still fetching the torrent).
     public func listFiles(taskID: UUID) async -> [BTFile] {
-        guard let gid = taskToGid[taskID] else { return [] }
+        guard let gid = gidMap.gid(forTask: taskID) else { return [] }
         guard let files = try? await rpc.getFiles(gid) else { return [] }
         return files.compactMap { f in
             guard let index = (f["index"] as? String).flatMap(Int.init) else { return nil }
@@ -265,7 +294,7 @@ public final class Aria2Engine: DownloadEngine {
     /// rejects an empty selection.
     @discardableResult
     public func selectFiles(taskID: UUID, indexes: [Int]) async -> Bool {
-        guard let gid = taskToGid[taskID], !indexes.isEmpty else { return false }
+        guard let gid = gidMap.gid(forTask: taskID), !indexes.isEmpty else { return false }
         do {
             try await rpc.changeOption(gid,
                 ["select-file": indexes.sorted().map(String.init).joined(separator: ",")])
@@ -304,7 +333,7 @@ public final class Aria2Engine: DownloadEngine {
         // `submit`/`remove` mutate `gidToTask` on the main actor; this loop runs on a
         // background Task. Snapshot the value-type map so this tick reads a consistent
         // view instead of racing the writer (and never tears mid-iteration).
-        let gidToTask = self.gidToTask
+        let gidToTask = gidMap.snapshot()
         var hasActive = false
         for s in statuses {
             guard let gid = s["gid"] as? String, let taskID = gidToTask[gid] else { continue }

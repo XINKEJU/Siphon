@@ -38,9 +38,10 @@ public enum Keychain {
     }
 
     /// CSPRNG token, 32 bytes, base64.
-    public static func randomToken() -> String {
+    public static func randomToken() -> String? {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess
+        else { return nil }
         return Data(bytes).base64EncodedString()
     }
 

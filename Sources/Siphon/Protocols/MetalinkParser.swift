@@ -118,6 +118,14 @@ public enum MetalinkParser {
             }
         }
 
+        func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+            guard capture != nil, let s = String(data: CDATABlock, encoding: .utf8) else { return }
+            buffer += s
+            if case .url = capture, let last = urls.indices.last {
+                urls[last].url += s
+            }
+        }
+
         func parser(_ parser: XMLParser, didEndElement elementName: String,
                     namespaceURI: String?, qualifiedName qName: String?) {
             switch local(elementName) {

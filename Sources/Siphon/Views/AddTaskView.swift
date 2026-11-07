@@ -16,6 +16,7 @@ struct AddTaskView: View {
     @State private var referer = ""
     @State private var checksumText = ""
     @State private var detected: DownloadProtocol = .https
+    @State private var clipboardLink: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -37,6 +38,7 @@ struct AddTaskView: View {
             .glassCard(cornerRadius: 16)
             .padding(.horizontal, 16)
             .padding(.top, 16)
+            .onAppear(perform: loadClipboard)
 
             Divider().padding(.top, 14)
 
@@ -102,10 +104,9 @@ struct AddTaskView: View {
             // One lens system for the whole action row, so adjacent glass
             // buttons merge rather than stacking separate blurs.
             GlassGroup(spacing: 10) {
-                if let clip = NSPasteboard.general.string(forType: .string),
-                   clip.trimmingCharacters(in: .whitespacesAndNewlines).contains("://") {
+                if let clip = clipboardLink {
                     Button("粘贴剪贴板链接") {
-                        urlString = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                        urlString = clip
                         updateDetection(urlString)
                     }
                     .controlSize(.small)
@@ -130,6 +131,13 @@ struct AddTaskView: View {
         guard !t.isEmpty else { return false }
         if t.contains("\n") { return !PlaylistImporter.parse(t).isEmpty }
         return URL(string: t)?.scheme != nil
+    }
+
+    /// Read the pasteboard once on appear, not on every body evaluation.
+    private func loadClipboard() {
+        guard let raw = NSPasteboard.general.string(forType: .string) else { return }
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.contains("://") { clipboardLink = t }
     }
 
     private func updateDetection(_ v: String) {

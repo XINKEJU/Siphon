@@ -40,6 +40,8 @@ public protocol ED2KBackend: AnyObject {
     func download(_ link: ED2KLink, destination: URL,
                   onProgress: @escaping @Sendable (DownloadProgress) -> Void) async throws
     func cancel(fileHashHex: String) async
+    /// Clear a previously-requested cancellation so the transfer can restart.
+    func resumeTransfer(fileHashHex: String) async
 }
 
 /// Opt-out backend: explicitly refuses every transfer. Only used when a caller
@@ -52,6 +54,7 @@ public final class UnavailableED2KBackend: ED2KBackend {
         throw ED2KError.backendUnavailable
     }
     public func cancel(fileHashHex: String) async {}
+    public func resumeTransfer(fileHashHex: String) async {}
 }
 
 /// UI-facing eD2K engine. Parses links, tracks GIDs, and delegates the actual transfer.
@@ -113,17 +116,28 @@ public final class ED2KEngine: DownloadEngine {
             await delegate?.engineDidChangeState(taskID: task.id, state: .completed, error: nil)
         } catch {
             running.remove(task.id)
-            await delegate?.engineDidChangeState(taskID: task.id, state: .error, error: error)
+            if case ED2KTransportError.cancelled = error {
+                await delegate?.engineDidChangeState(taskID: task.id, state: .paused, error: nil)
+            } else {
+                await delegate?.engineDidChangeState(taskID: task.id, state: .error, error: error)
+            }
         }
     }
 
     public func pause(_ id: UUID) async {
         running.remove(id)
+        // Actually stop the wire transfer, not just the bookkeeping — otherwise
+        // the download keeps running at full speed while marked paused, and a
+        // later resume spawns a second concurrent writer on the same file.
+        if let link = links[id] {
+            await backend.cancel(fileHashHex: link.hashHex)
+        }
         await delegate?.engineDidChangeState(taskID: id, state: .paused, error: nil)
     }
 
     public func resume(_ id: UUID) async {
         guard let link = links[id], let destination = destinations[id] else { return }
+        await backend.resumeTransfer(fileHashHex: link.hashHex)
         running.insert(id)
         do {
             try await backend.download(link, destination: destination) { _ in }

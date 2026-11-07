@@ -109,6 +109,9 @@ public final class NativeMessagingServer {
             // Non-POST (e.g. GET) or missing Content-Length: header completeness suffices.
             return true
         }
+        // Absurd Content-Length must not grow `buffer` unbounded until OOM:
+        // complete immediately and let the JSON parse reject the truncated body.
+        if len > 10 << 20 { return true }
         let bodyBytes = data.count - headerEnd.upperBound
         return bodyBytes >= len
     }
@@ -116,6 +119,22 @@ public final class NativeMessagingServer {
     func process(_ data: Data) -> Data {
         guard let raw = String(data: data, encoding: .utf8) else { return http("400 Bad Request", #"{"ok":false}"#) }
         let lines = raw.components(separatedBy: "\r\n")
+        // DNS-rebinding guard: a rebound attacker page resolves its own domain
+        // to 127.0.0.1 and talks to us with a foreign Host header. CORS alone
+        // is not enough because /ping is a simple GET the page CAN read once
+        // the socket is "same-origin". Only loopback names are ours.
+        let host = (header(named: "Host", in: lines) ?? "").lowercased()
+        let hostName: String
+        if host.hasPrefix("[") {                       // [::1]:8080
+            hostName = String(host.prefix(while: { $0 != "]" }))
+        } else {
+            hostName = String(host.split(separator: ":").first ?? "")
+        }
+        if !hostName.isEmpty,
+           hostName != "127.0.0.1", hostName != "localhost",
+           hostName != "[::1", hostName != "::1" {
+            return http("403 Forbidden", #"{"ok":false,"error":"invalid host"}"#)
+        }
         let requestLine = lines.first ?? ""
         let parts = requestLine.split(separator: " ")
         let method = parts.count > 0 ? String(parts[0]) : ""

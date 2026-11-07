@@ -67,16 +67,17 @@ public final class QueueManager: ObservableObject {
         guard remaining > 0 else { return [] }
 
         var result: [UUID] = []
+        var queuedByQueue: [String: Int] = [:]
         let pending = tasks.filter { $0.state == .pending }.sorted { $0.createdAt < $1.createdAt }
         for task in pending {
             guard remaining > 0 else { break }
             guard let q = queue(named: task.queueName), q.isActive() else { continue }
             let limit = q.isSequential ? 1 : q.maxConcurrent
-            let running = activeByQueue[task.queueName, default: 0] + result.filter { id in
-                tasks.first(where: { $0.id == id })?.queueName == task.queueName
-            }.count
+            let running = activeByQueue[task.queueName, default: 0]
+                + (queuedByQueue[task.queueName] ?? 0)
             if running < limit {
                 result.append(task.id)
+                queuedByQueue[task.queueName, default: 0] += 1
                 remaining -= 1
             }
         }

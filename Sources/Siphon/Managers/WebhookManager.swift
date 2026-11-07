@@ -17,19 +17,27 @@ public final class WebhookManager: @unchecked Sendable {
     /// One endpoint. `secret` signs the payload with HMAC-SHA256 when non-empty
     /// (sent as `X-Siphon-Signature: sha256=<hex>`), matching the common
     /// "webhook secret" convention used by GitHub / Slack / Discord webhooks.
+    /// Secrets live in the Keychain, keyed by endpoint id — never in UserDefaults.
     public struct Endpoint: Codable, Identifiable, Equatable {
         public var id: UUID = UUID()
         public var url: String
         public var secret: String = ""
 
-        public init(url: String, secret: String = "") {
+        public init(id: UUID = UUID(), url: String, secret: String = "") {
+            self.id = id
             self.url = url
             self.secret = secret
         }
     }
 
+    /// What actually hits UserDefaults — the secret lives in the Keychain.
+    private struct StoredEndpoint: Codable {
+        var id: UUID, url: String
+    }
+
+    private static func secretAccount(_ id: UUID) -> String { "webhook-secret-\(id.uuidString)" }
+
     private static let defaultsKey = "Siphon.webhooks"
-    private let queue = DispatchQueue(label: "Siphon.WebhookManager", qos: .utility)
     private let lock = NSLock()
 
     private var _endpoints: [Endpoint]
@@ -39,9 +47,26 @@ public final class WebhookManager: @unchecked Sendable {
     }
 
     private init() {
-        if let data = UserDefaults.standard.data(forKey: Self.defaultsKey),
-           let decoded = try? JSONDecoder().decode([Endpoint].self, from: data) {
-            _endpoints = decoded
+        let d = UserDefaults.standard
+        if let data = d.data(forKey: Self.defaultsKey) {
+            if let legacy = try? JSONDecoder().decode([Endpoint].self, from: data) {
+                // One-time migration: lift secrets into the Keychain.
+                for ep in legacy where !ep.secret.isEmpty {
+                    Keychain.setSecret(ep.secret, account: Self.secretAccount(ep.id))
+                }
+                let stored = legacy.map { StoredEndpoint(id: $0.id, url: $0.url) }
+                if let out = try? JSONEncoder().encode(stored) {
+                    d.set(out, forKey: Self.defaultsKey)
+                }
+                _endpoints = legacy
+            } else if let list = try? JSONDecoder().decode([StoredEndpoint].self, from: data) {
+                _endpoints = list.map {
+                    Endpoint(id: $0.id, url: $0.url,
+                             secret: Keychain.secret(account: Self.secretAccount($0.id)) ?? "")
+                }
+            } else {
+                _endpoints = []
+            }
         } else {
             _endpoints = []
         }
@@ -49,8 +74,16 @@ public final class WebhookManager: @unchecked Sendable {
 
     public func setEndpoints(_ list: [Endpoint]) {
         lock.lock(); _endpoints = list; lock.unlock()
-        if let data = try? JSONEncoder().encode(list) {
+        let stored = list.map { StoredEndpoint(id: $0.id, url: $0.url) }
+        if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        }
+        let newIDs = Set(list.map(\.id))
+        for old in endpoints where !newIDs.contains(old.id) {
+            Keychain.setSecret("", account: Self.secretAccount(old.id))
+        }
+        for ep in list {
+            Keychain.setSecret(ep.secret, account: Self.secretAccount(ep.id))
         }
     }
 
@@ -65,13 +98,17 @@ public final class WebhookManager: @unchecked Sendable {
     }
 
     /// Queue a terminal-state event for delivery. Safe to call from any context.
+    /// Endpoints are POSTed concurrently — a semaphore-serial loop let one slow
+    /// endpoint delay every other subscriber by its full 5 s timeout.
     public func deliver(task: TaskSnapshot) {
         let targets = endpoints
         guard !targets.isEmpty else { return }
         let payload = task.payload
-        queue.async {
-            for ep in targets {
-                Self.post(payload, to: ep)
+        Task.detached(priority: .utility) {
+            await withTaskGroup(of: Void.self) { group in
+                for ep in targets {
+                    group.addTask { await Self.post(payload, to: ep) }
+                }
             }
         }
     }
@@ -112,7 +149,7 @@ public final class WebhookManager: @unchecked Sendable {
         }
     }
 
-    private static func post(_ payload: Data, to ep: Endpoint) {
+    private static func post(_ payload: Data, to ep: Endpoint) async {
         guard let url = URL(string: ep.url), url.scheme != nil else { return }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
                              timeoutInterval: 5)
@@ -123,9 +160,7 @@ public final class WebhookManager: @unchecked Sendable {
             req.setValue("sha256=\(Self.hmacSHA256(payload, key: ep.secret))",
                          forHTTPHeaderField: "X-Siphon-Signature")
         }
-        let sem = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
-        _ = sem.wait(timeout: .now() + 5)
+        _ = try? await URLSession.shared.data(for: req)
     }
 
     /// HMAC-SHA256 hex digest (CommonCrypto), the standard webhook signing scheme.

@@ -12,7 +12,12 @@ struct TaskListView: View {
     @EnvironmentObject private var store: DownloadStore
     @Binding var selection: SidebarItem
     let searchText: String
-    @State private var selectedID: UUID?
+
+    /// Two-way derived binding: local @State + onChange only flowed changes out,
+    /// so programmatic selection (notifications, MCP) never reached the list.
+    private var selectionBinding: Binding<UUID?> {
+        Binding(get: { store.selectedTaskID }, set: { store.selectedTaskID = $0 })
+    }
 
     private var visible: [DownloadTask] {
         let base: [DownloadTask]
@@ -36,9 +41,6 @@ struct TaskListView: View {
 
     var body: some View {
         listContent
-            .onChange(of: selectedID) { _, newValue in
-                store.selectedTaskID = newValue
-            }
     }
 
     @ViewBuilder
@@ -54,7 +56,7 @@ struct TaskListView: View {
                          : "换个关键词，或清除顶部搜索框中的文字。")
                 }
             } else {
-                List(selection: $selectedID) {
+                List(selection: selectionBinding) {
                     ForEach(visible) { task in
                         TaskRowView(task: task)
                             .tag(task.id)

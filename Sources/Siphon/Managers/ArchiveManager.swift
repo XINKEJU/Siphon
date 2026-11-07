@@ -114,12 +114,15 @@ public final class ArchiveManager: @unchecked Sendable {
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
             proc.arguments = ["-xf", file, "-C", dir]
         case .gzip:
-            // Single-file .gz: decompress into the destination folder.
+            // Single-file .gz: decompress into the destination folder. The output
+            // name may collide or the file may not exist yet — create fresh.
             let outName = archive.deletingPathExtension().lastPathComponent
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
             proc.arguments = ["-c", file]
-            proc.standardOutput = try? FileHandle(forWritingTo:
-                dest.appendingPathComponent(outName))
+            let outURL = dest.appendingPathComponent(outName)
+            try? FileManager.default.removeItem(at: outURL)
+            FileManager.default.createFile(atPath: outURL.path, contents: nil)
+            proc.standardOutput = try? FileHandle(forWritingTo: outURL)
         case .sevenZip:
             guard let seven = resolve7z() else { return false }
             proc.executableURL = seven

@@ -198,17 +198,25 @@ public final class HTTPDownloadEngine: DownloadEngine {
         dbg("pause \(id)")
         let job = jobsState.withLock { $0[id] }
         job?.cancelled = true
-        job?.handle?.cancel()
+        let handle = job?.handle
+        handle?.cancel()
+        // Unwind the old run fully before reporting: the unwind path writes the
+        // sidecar checkpoint, and coordinator cursors must not be saved while a
+        // writeChunk is still in flight (they run ahead of the disk).
+        await handle?.value
         await report(.paused, for: id)
     }
 
     public func resume(_ id: UUID) async {
         dbg("resume \(id)")
-        let job = jobsState.withLock { $0[id] }
-        guard let job else { return }
+        guard let job = jobsState.withLock({ $0[id] }) else { return }
         job.cancelled = false
-        job.handle?.cancel()
+        let old = job.handle
         job.handle = Task { [weak self] in
+            // The previous run must fully unwind before a new coordinator
+            // touches the same .part file — two concurrent writers corrupt the
+            // sidecar bookkeeping and each other's bytes.
+            await old?.value
             await self?.run(job)
         }
     }
@@ -270,6 +278,11 @@ public final class HTTPDownloadEngine: DownloadEngine {
             attempt.throttle = job.throttle
             attempt.sourceOverride = source
             attempt.mirrorIndex = index
+            // Keep the run-task handle on the attempt: pause()/resume() look the
+            // Job up by id and cancel/await that handle. A fresh Job here would
+            // carry handle == nil and pause would return while the old run was
+            // still streaming.
+            attempt.handle = job.handle
             jobsState.withLock { $0[task.id] = attempt }
             await runWithChecksumRetry(attempt, destination: out, failover: index < candidates.count - 1)
             // runWithChecksumRetry reports its own terminal state; stop on success.
@@ -482,6 +495,22 @@ public final class HTTPDownloadEngine: DownloadEngine {
             dbg("mirror probe: \(probed.count)/\(task.mirrors.count) usable")
         }
 
+        // Known-zero-length body: there is nothing for the coordinator to
+        // observe — a 0-byte part never advances `cursor`, so the worker loop
+        // would spin forever. Publish an empty file and complete immediately.
+        if info.knownTotal, info.total == 0 {
+            dbg("probe: known 0-byte body, completing immediately")
+            if !FileManager.default.fileExists(atPath: finalURL.path) {
+                FileManager.default.createFile(atPath: finalURL.path, contents: nil)
+            }
+            try? FileManager.default.removeItem(at: out)
+            Sidecar.clear(for: out)
+            Sidecar.clear(for: finalURL)
+            let p = DownloadProgress()
+            await delegate?.engineDidUpdate(taskID: task.id, progress: p)
+            return .completed
+        }
+
         var parts: [SegmentCoordinator.Part]
         var multiNicTail: SecondaryPath?
         if canRange, let sc = sidecar, !sc.parts.isEmpty {
@@ -594,6 +623,11 @@ public final class HTTPDownloadEngine: DownloadEngine {
                 } else {
                     try? FileManager.default.removeItem(at: tail.tmp)
                     dbg("multi-NIC tail failed; native fallback pass")
+                    // Head parts are 100% done here: persist the main sidecar
+                    // now and keep the tail's bookkeeping in a separate file,
+                    // so a crash mid-tail never clobbers head progress.
+                    sidecarSaver.forceSave()
+                    let tailDest = URL(fileURLWithPath: out.path + ".tail-meta")
                     let tailParts = [SegmentCoordinator.Part(
                         start: tail.range.lowerBound, cursor: tail.range.lowerBound,
                         end: tail.range.upperBound - 1)]
@@ -602,7 +636,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                                        minSplit: Self.minSplit,
                                                        stealThreshold: Self.stealThreshold)
                     let tailTracker = ProgressTracker()
-                    let tailSaver = SidecarSaver(destination: out, coordinator: tailCoord,
+                    let tailSaver = SidecarSaver(destination: tailDest, coordinator: tailCoord,
                                                  etag: info.etag, lastModified: info.lastModified,
                                                  total: info.total)
                     _ = await coordinateWorkers(job, url: job.source, handle: handle,
@@ -610,7 +644,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                                     total: info.total, canRange: true,
                                                     sidecarSaver: tailSaver, sizePlan: sizePlan,
                                                     endpoints: endpoints)
-                    Sidecar.clear(for: out)
+                    Sidecar.clear(for: tailDest)
                     if let f = tailCoord.fatalError { return .failed(f) }
                     guard tailCoord.remainingBytes == 0 else {
                         return .failed(NetFailure.incompleteBody)
@@ -837,22 +871,108 @@ public final class HTTPDownloadEngine: DownloadEngine {
 
     // MARK: - single part streaming
 
+    /// Streaming chunk pump for part bodies. `URLSession.AsyncBytes` exposes
+    /// byte-wise iteration only, which dominated CPU at high throughput; this
+    /// yields network-sized chunks instead. Delegate methods not implemented
+    /// here keep URLSession's default behavior (redirect follow, auth reuse),
+    /// and the session configuration is copied from the engine's proxied
+    /// session so per-host settings still apply.
+    private final class ChunkedSource: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        let chunks: AsyncThrowingStream<Data, Error>
+        private let chunkCont: AsyncThrowingStream<Data, Error>.Continuation
+        private var responseCont: CheckedContinuation<URLResponse, Error>?
+        private var session: URLSession?
+        private var dataTask: URLSessionDataTask?
+
+        private override init() {
+            var cont: AsyncThrowingStream<Data, Error>.Continuation!
+            chunks = AsyncThrowingStream { cont = $0 }
+            chunkCont = cont
+            super.init()
+            // When the consuming task is cancelled (pause/remove), the stream
+            // terminates; kill the underlying dataTask so a stalled read wakes
+            // up instead of waiting for data that never comes.
+            cont.onTermination = { [weak self] _ in
+                self?.dataTask?.cancel()
+                self?.invalidate()
+            }
+        }
+
+        static func connect(request: URLRequest, baseSession: URLSession) async throws
+            -> (ChunkedSource, URLResponse) {
+            let src = ChunkedSource()
+            let session = URLSession(configuration: baseSession.configuration,
+                                     delegate: src, delegateQueue: nil)
+            src.session = session
+            let task = session.dataTask(with: request)
+            src.dataTask = task
+            let response: URLResponse = try await withCheckedThrowingContinuation { k in
+                src.responseCont = k
+                task.resume()
+            }
+            return (src, response)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                        didReceive response: URLResponse,
+                        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+            completionHandler(.allow)
+            responseCont?.resume(returning: response)
+            responseCont = nil
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            // Split delivery bursts: one giant didReceive (localhost can hand
+            // over hundreds of KB at once) would hold a single writeChunk for
+            // many seconds under throttling, delaying pause response.
+            var start = data.startIndex
+            while start < data.endIndex {
+                let end = data.index(start, offsetBy: 16 << 10, limitedBy: data.endIndex)
+                    ?? data.endIndex
+                chunkCont.yield(data[start..<end])
+                start = end
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            if let responseCont {
+                responseCont.resume(throwing: error ?? URLError(.unknown))
+                return
+            }
+            if let error { chunkCont.finish(throwing: error) } else { chunkCont.finish() }
+        }
+
+        func invalidate() {
+            session?.invalidateAndCancel()
+            session = nil
+        }
+    }
+
     private func streamPart(_ part: SegmentCoordinator.Part, url: URL,
                             headers: [String: String], handle: FileHandle,
                             tracker: ProgressTracker, total: Int64, job: Job,
                             coordinator: SegmentCoordinator, canRange: Bool,
                             sidecarSaver: SidecarSaver,
                             sizePlan: SizePlan) async throws -> Int64 {
-        let singleStream = !canRange || (total <= 0 && part.start == 0 && part.end == 0)
+        // No Range header only when the server cannot range at all. A
+        // size-unknown part still ranges — open-ended `bytes=N-` — so a
+        // resumed unknown-total download continues from its cursor; the old
+        // `bytes=N-2^62` sentinel end was an invalid header.
+        let singleStream = !canRange
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         req.httpMethod = "GET"
         for (k, v) in headers where !["dir", "out"].contains(k.lowercased()) {
             req.setValue(v, forHTTPHeaderField: k)
         }
         if !singleStream {
-            req.setValue("bytes=\(part.cursor)-\(part.end)", forHTTPHeaderField: "Range")
+            if part.end == SegmentCoordinator.unknownEnd {
+                req.setValue("bytes=\(part.cursor)-", forHTTPHeaderField: "Range")
+            } else {
+                req.setValue("bytes=\(part.cursor)-\(part.end)", forHTTPHeaderField: "Range")
+            }
         }
-        let (asyncBytes, response) = try await session(for: url).bytes(for: req)
+        let (source, response) = try await ChunkedSource.connect(request: req, baseSession: session(for: url))
+        defer { source.invalidate() }
         dbg("stream \(part.cursor)-\(part.end): status \((response as? HTTPURLResponse)?.statusCode ?? -1)")
 
         if !singleStream, let http = response as? HTTPURLResponse {
@@ -901,10 +1021,10 @@ public final class HTTPDownloadEngine: DownloadEngine {
         var buffer = Data()
         var offset = part.cursor
         var byteCount = Int64(0)
-        for try await byte in asyncBytes {
+        for try await chunk in source.chunks {
             if job.cancelled { throw CancellationError() }
-            byteCount += 1
-            buffer.append(byte)
+            byteCount += Int64(chunk.count)
+            buffer.append(chunk)
             if buffer.count >= Self.flushThreshold {
                 let requested = Int64(buffer.count)
                 let approved = coordinator.approveWrite(offset: offset, requested: requested)
@@ -923,6 +1043,9 @@ public final class HTTPDownloadEngine: DownloadEngine {
                 if approved < requested { return byteCount }
             }
         }
+        // Cancellation surfaced as a clean stream end, not a throw: stop here so
+        // the unwind forceSave records exactly the bytes already on disk.
+        if job.cancelled { throw CancellationError() }
         if !buffer.isEmpty {
             let requested = Int64(buffer.count)
             let approved = coordinator.approveWrite(offset: offset, requested: requested)
@@ -935,6 +1058,11 @@ public final class HTTPDownloadEngine: DownloadEngine {
             }
         }
         dbg("stream \(part.start): body ended, got \(byteCount) bytes, offset now \(offset)")
+        if part.end == SegmentCoordinator.unknownEnd {
+            // EOF on a size-unknown stream is the completion signal: remaining
+            // is the sentinel, so completePart alone would never retire it.
+            coordinator.completeUnknownPart()
+        }
         coordinator.completePart(through: offset)
         sidecarSaver.requestSave()
         return byteCount
@@ -1068,6 +1196,9 @@ public final class HTTPDownloadEngine: DownloadEngine {
         var canRange = false
         var etag: String?
         var lastModified: String?
+        /// True when the server explicitly reported the size (Content-Length or
+        /// a Content-Range total). total == 0 alone is ambiguous with "unknown".
+        var knownTotal = false
     }
 
     private func probe(url: URL, headers: [String: String]) async throws -> ProbeInfo {
@@ -1080,6 +1211,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
         if let (_, resp) = try? await session(for: url).data(for: head),
            let http = resp as? HTTPURLResponse,
            (200...299).contains(http.statusCode) {
+            if http.value(forHTTPHeaderField: "Content-Length") != nil { result.knownTotal = true }
             result.total = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "0") ?? 0
             result.canRange = (http.value(forHTTPHeaderField: "Accept-Ranges")?
                 .lowercased().contains("bytes")) ?? false
@@ -1097,13 +1229,19 @@ public final class HTTPDownloadEngine: DownloadEngine {
                 result.canRange = true
                 let cr = http.value(forHTTPHeaderField: "Content-Range") ?? ""
                 if let slash = cr.firstIndex(of: "/") {
-                    result.total = Int64(cr[cr.index(after: slash)...]) ?? 0
+                    let denom = String(cr[cr.index(after: slash)...])
+                        .trimmingCharacters(in: .whitespaces)
+                    if denom != "*" {
+                        result.knownTotal = true
+                        result.total = Int64(denom) ?? 0
+                    }
                 }
                 result.etag = http.value(forHTTPHeaderField: "ETag")
                 result.lastModified = http.value(forHTTPHeaderField: "Last-Modified")
             } else if (200...299).contains(http.statusCode) {
                 result.total = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "0") ?? 0
                 result.canRange = false
+                result.knownTotal = http.value(forHTTPHeaderField: "Content-Length") != nil
             }
         }
         return result
@@ -1154,84 +1292,6 @@ public final class HTTPDownloadEngine: DownloadEngine {
 private extension Data {
     mutating func truncatePrefix(_ n: Int) {
         if n < count { self = prefix(n) }
-    }
-}
-
-// MARK: - typed network failures (FluxDown net_failure.rs model)
-
-enum NetFailure: Error {
-    case timeout
-    case connectFailed
-    case dns
-    case connectionReset
-    case httpStatus(Int)          // includes 403 / 429 / 503 …
-    case rangeMismatch            // 206 Content-Range start ≠ requested
-    case serverIgnoredRanges      // 200 to a Range request
-    case checksumMismatch
-    case unsupportedChecksum(String)
-    case incompleteBody
-    case resumeUnsupported
-    case sizeExpansionExhausted
-    case cancelled
-    case unknown(String)
-
-    static func classify(_ error: Error) -> NetFailure {
-        if let f = error as? NetFailure { return f }
-        if let ue = error as? URLError {
-            switch ue.code {
-            case .timedOut: return .timeout
-            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed: return .dns
-            case .cannotLoadFromNetwork: return .connectFailed
-            case .networkConnectionLost: return .connectionReset
-            case .cancelled: return .cancelled
-            default: return .unknown(ue.code.rawValue.description)
-            }
-        }
-        if error is POSIXError { return .connectFailed }
-        return .unknown("\(error)")
-    }
-
-    /// Whether retrying is pointless for this failure class.
-    var isFatal: Bool {
-        switch self {
-        case .checksumMismatch, .unsupportedChecksum, .dns: return true
-        default: return false
-        }
-    }
-
-    /// Fixed wait only for rate-limiting / timeouts (aria2: only 503 waits).
-    func retryDelay(jittered: Bool) -> TimeInterval? {
-        let base: TimeInterval?
-        switch self {
-        case .timeout, .connectionReset: base = 0.5
-        case .httpStatus(503): base = 1.0
-        case .httpStatus(429): base = 2.0
-        default: base = nil
-        }
-        guard var d = base else { return nil }
-        if jittered { d += Double.random(in: 0...(d * 0.25)) }
-        return d
-    }
-}
-
-extension NetFailure: LocalizedError {
-    public var errorDescription: String? {
-        switch self {
-        case .timeout: return "连接超时"
-        case .connectFailed: return "无法连接服务器"
-        case .dns: return "域名解析失败"
-        case .connectionReset: return "连接被重置"
-        case .httpStatus(let code): return "服务器返回 HTTP \(code)"
-        case .rangeMismatch: return "服务器返回的 Range 与请求不一致"
-        case .serverIgnoredRanges: return "服务器不支持分段下载（忽略 Range）"
-        case .checksumMismatch: return "校验和不匹配：下载内容与预期不符"
-        case .unsupportedChecksum(let a): return "不支持的校验算法：\(a)"
-        case .incompleteBody: return "下载不完整"
-        case .resumeUnsupported: return "服务器不支持断点续传"
-        case .sizeExpansionExhausted: return "文件大小持续增长，无法完成下载"
-        case .cancelled: return "已取消"
-        case .unknown(let s): return "网络错误：\(s)"
-        }
     }
 }
 
@@ -1489,6 +1549,16 @@ final class SegmentCoordinator: @unchecked Sendable {
         }
     }
 
+    /// EOF on a size-unknown single stream: retire its sentinel part outright.
+    func completeUnknownPart() {
+        lock.lock(); defer { lock.unlock() }
+        for idx in active.indices.reversed() where active[idx].end == Self.unknownEnd {
+            speeds.removeValue(forKey: active[idx].start)
+            active.remove(at: idx)
+        }
+        pending.removeAll { $0.end == Self.unknownEnd }
+    }
+
     /// Network error: put the un-fetched remainder back into the pending queue.
     /// A retry without byte progress bumps the failure counter (ABD semantics);
     /// too many fruitless retries is a hard stop for the whole download.
@@ -1500,12 +1570,16 @@ final class SegmentCoordinator: @unchecked Sendable {
         if let idx {
             let p = active.remove(at: idx)
             remainder = (p.end + 1 > p.cursor)
-                ? Part(start: p.cursor, cursor: p.cursor, end: p.end) : nil
+                ? Part(start: p.start, cursor: p.cursor, end: p.end) : nil
         } else if part.end + 1 > part.cursor {
-            remainder = Part(start: part.cursor, cursor: part.cursor, end: part.end)
+            remainder = Part(start: part.start, cursor: part.cursor, end: part.end)
         } else {
             remainder = nil
         }
+        // Keep the original `start` on a requeued part: the sidecar's byte
+        // accounting (alreadyWritten = Σ cursor−start) relies on start marking
+        // the beginning of the covered region. Resetting start to cursor made
+        // every pause look like zero progress for the prefix already on disk.
         guard let rem = remainder else { return }
         let progressed = rem.cursor > part.cursor
         if progressed {
@@ -1602,15 +1676,10 @@ enum Sidecar {
     }
 
     static func save(_ sc: DownloadSidecar, for destination: URL) {
-        // Atomic: write to .tmp then rename (never a half-written sidecar).
-        let target = path(for: destination)
-        let tmp = target.deletingLastPathComponent()
-            .appendingPathComponent(".\(target.lastPathComponent).tmp-\(UUID().uuidString)")
+        // Atomic: .atomic writes a temp file then renames it over the target —
+        // never a half-written sidecar, and never a window with no sidecar.
         guard let data = try? JSONEncoder().encode(sc) else { return }
-        if (try? data.write(to: tmp, options: .atomic)) != nil {
-            try? FileManager.default.removeItem(at: target)
-            try? FileManager.default.moveItem(at: tmp, to: target)
-        }
+        try? data.write(to: path(for: destination), options: .atomic)
     }
 
     static func clear(for destination: URL) {

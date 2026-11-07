@@ -22,6 +22,11 @@ public final class RemotePairing: @unchecked Sendable {
         public var pairedAt: Date
     }
 
+    /// What actually hits UserDefaults — the token lives in the Keychain.
+    private struct StoredDevice: Codable {
+        var id: UUID, name: String, pairedAt: Date
+    }
+
     public enum State: Equatable {
         case idle
         case awaiting(code: String, expiresAt: Date)
@@ -33,14 +38,34 @@ public final class RemotePairing: @unchecked Sendable {
     private var _devices: [PairedDevice]
 
     private static let devicesKey = "Siphon.pairedDevices"
+    private static func tokenAccount(_ id: UUID) -> String { "pairing-token-\(id.uuidString)" }
     /// A pending code is intentionally not persisted: it is short-lived (5 min) and
     /// losing it across a relaunch simply means the user regenerates it.
     private static let codeTTL: TimeInterval = 300
 
     private init() {
-        if let data = UserDefaults.standard.data(forKey: Self.devicesKey),
-           let list = try? JSONDecoder().decode([PairedDevice].self, from: data) {
-            _devices = list
+        let d = UserDefaults.standard
+        if let data = d.data(forKey: Self.devicesKey) {
+            if let legacy = try? JSONDecoder().decode([PairedDevice].self, from: data) {
+                // One-time migration: lift tokens into the Keychain and strip
+                // them from the persisted blob.
+                for dev in legacy {
+                    Keychain.setSecret(dev.token, account: Self.tokenAccount(dev.id))
+                }
+                let stored = legacy.map { StoredDevice(id: $0.id, name: $0.name, pairedAt: $0.pairedAt) }
+                if let out = try? JSONEncoder().encode(stored) {
+                    d.set(out, forKey: Self.devicesKey)
+                }
+                _devices = legacy
+            } else if let list = try? JSONDecoder().decode([StoredDevice].self, from: data) {
+                _devices = list.map {
+                    PairedDevice(id: $0.id, name: $0.name,
+                                 token: Keychain.secret(account: Self.tokenAccount($0.id)) ?? "",
+                                 pairedAt: $0.pairedAt)
+                }
+            } else {
+                _devices = []
+            }
         } else {
             _devices = []
         }
@@ -95,6 +120,7 @@ public final class RemotePairing: @unchecked Sendable {
         _state = .paired
         let snapshot = _devices
         lock.unlock()
+        Keychain.setSecret(device.token, account: Self.tokenAccount(device.id))
         persist(snapshot)
         return device
     }
@@ -104,11 +130,13 @@ public final class RemotePairing: @unchecked Sendable {
         _devices.removeAll { $0.id == deviceID }
         let snapshot = _devices
         lock.unlock()
+        Keychain.setSecret("", account: Self.tokenAccount(deviceID))
         persist(snapshot)
     }
 
     private func persist(_ devices: [PairedDevice]) {
-        if let data = try? JSONEncoder().encode(devices) {
+        let stored = devices.map { StoredDevice(id: $0.id, name: $0.name, pairedAt: $0.pairedAt) }
+        if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: Self.devicesKey)
         }
     }
