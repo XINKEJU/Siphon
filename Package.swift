@@ -20,9 +20,22 @@ let package = Package(
     name: "Siphon",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "Siphon", targets: ["Siphon"])
+        .executable(name: "Siphon", targets: ["Siphon"]),
+        // Native Messaging gateway spawned by Chrome/Edge/Brave.
+        .executable(name: "SiphonNM", targets: ["SiphonNM"]),
+        .library(name: "SiphonBridge", targets: ["SiphonBridge"])
     ],
     targets: [
+        // Shared stdio framing for the gateway (tests compile this file directly).
+        .target(
+            name: "SiphonBridge",
+            path: "Sources/SiphonBridge"
+        ),
+        .executableTarget(
+            name: "SiphonNM",
+            dependencies: ["SiphonBridge"],
+            path: "Sources/SiphonNM"
+        ),
         .executableTarget(
             name: "Siphon",
             path: "Sources/Siphon",

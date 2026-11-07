@@ -215,6 +215,27 @@ public final class Aria2Engine: DownloadEngine {
                 opts[lower] = v
             }
         }
+        // BitTorrent streaming: `geom` picks the piece closest to the previously
+        // completed one, so the beginning of a video arrives first and the
+        // preview server can start playback while the swarm is still working.
+        if [.bittorrent, .magnet, .metalink].contains(task.protocol),
+           opts["stream-piece-selector"] == nil {
+            opts["stream-piece-selector"] = "geom"
+        }
+        // Whole-file integrity: aria2 verifies HTTP/FTP payloads itself as bytes
+        // arrive, so a mismatch fails the task before Siphon ever sees a file.
+        // Metalink/BT keep their native per-piece verification instead.
+        if let spec = task.checksum, !spec.isEmpty,
+           let aria2Spec = ChecksumVerifier.aria2Spec(spec) {
+            opts["checksum"] = aria2Spec
+        }
+        // The store already made the name unique; in overwrite mode it also
+        // removed the stale file, so tell aria2 not to append " (1)" and to
+        // accept the reused path.
+        if ConflictPolicy.current == .overwrite {
+            opts["auto-file-renaming"] = "false"
+            opts["allow-overwrite"] = "true"
+        }
         // CRLF injection guard: option values land inside aria2's config surface
         // (and header values are echoed into requests). Control characters must
         // never travel with them (Motrix aria2-config-builder lesson).

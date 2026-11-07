@@ -145,12 +145,10 @@ public final class UpdateChecker {
         guard ditto.terminationStatus == 0 else { status = "解压更新失败（ditto exit=\(ditto.terminationStatus)）"; return }
         // The zip may contain the .app at its root or nested one level down.
         let stagedApp: URL
-        if (try? FileManager.default.contentsOfDirectory(at: staging,
-                includingPropertiesForKeys: nil))?.first(where: {
-                    $0.pathExtension == "app" }) ?? nil != nil {
-            stagedApp = (try! FileManager.default.contentsOfDirectory(
-                at: staging, includingPropertiesForKeys: nil))
-                .first { $0.pathExtension == "app" }!
+        let stagedContents = (try? FileManager.default.contentsOfDirectory(
+            at: staging, includingPropertiesForKeys: nil)) ?? []
+        if let app = stagedContents.first(where: { $0.pathExtension == "app" }) {
+            stagedApp = app
         } else {
             status = "更新包内未找到 .app"
             return

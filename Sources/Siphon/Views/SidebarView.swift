@@ -22,6 +22,7 @@ struct SidebarView: View {
     @Binding var selection: SidebarItem
     @State private var showingNewQueue = false
     @State private var newQueueName = ""
+    @State private var queueToDelete: DownloadQueue?
 
     var body: some View {
         List(selection: $selection) {
@@ -40,6 +41,12 @@ struct SidebarView: View {
                     row(q.name, q.isSequential ? "list.number" : "square.stack.3d.up",
                         .queue(q.name),
                         count: store.tasks.filter { $0.queueName == q.name }.count)
+                        .contextMenu {
+                            // The Default queue anchors task reassignment and cannot go away.
+                            if q.name != "Default" {
+                                Button("删除队列…", role: .destructive) { queueToDelete = q }
+                            }
+                        }
                 }
                 Button {
                     showingNewQueue = true
@@ -124,6 +131,20 @@ struct SidebarView: View {
             }
         } message: {
             Text("队列可设置并发数、顺序模式和下载时段。")
+        }
+        .alert("删除队列“\(queueToDelete?.name ?? "")”？", isPresented: Binding(
+            get: { queueToDelete != nil },
+            set: { if !$0 { queueToDelete = nil } })) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) {
+                if let q = queueToDelete {
+                    if case .queue(let n) = selection, n == q.name { selection = .all }
+                    store.deleteQueue(id: q.id)
+                }
+                queueToDelete = nil
+            }
+        } message: {
+            Text("队列内的任务将移回 Default 队列，任务本身不受影响。")
         }
     }
 

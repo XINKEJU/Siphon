@@ -30,6 +30,7 @@ HTTP_EXTRA=(Sources/Siphon/Engines/Shared/NetFailure.swift
             Sources/Siphon/Managers/Keychain.swift
             Sources/Siphon/Protocols/S3Signer.swift
             Sources/Siphon/Engines/Shared/ExternalRunner.swift
+            Sources/Siphon/Engines/Shared/ChecksumVerifier.swift
             Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift)
 
 TMP="$(mktemp -d)"
@@ -61,6 +62,12 @@ done
 swiftc -parse-as-library -o "$TMP/segments" Tests/SegmentTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/segments"
 
+echo "== 4b/29 segmented resume sidecar (fingerprint + skip) =="
+# Reuses the :18765 fixture server started above.
+swiftc -parse-as-library -o "$TMP/resume-sidecar" Tests/ResumeTests/main.swift \
+    "${MODELS[@]}" "${SHARED[@]}"
+"$TMP/resume-sidecar"
+
 KEYCHAIN=(Sources/Siphon/Managers/Keychain.swift
           Sources/Siphon/Managers/LocalAuthToken.swift)
 
@@ -77,10 +84,12 @@ if command -v aria2c >/dev/null 2>&1; then
     swiftc -o "$TMP/aria2e2e" Tests/Aria2RPCTests/main.swift \
         "${MODELS[@]}" Sources/Siphon/Engines/Engine.swift \
         "${KEYCHAIN[@]}" \
+        Sources/Siphon/Engines/Shared/NetFailure.swift \
+        Sources/Siphon/Engines/Shared/ChecksumVerifier.swift \
         Sources/Siphon/Engines/Aria2/Aria2Bootstrap.swift \
         Sources/Siphon/Engines/Aria2/Aria2RPC.swift \
         Sources/Siphon/Engines/Aria2/Aria2Engine.swift
-    "$TMP/aria2e2e"
+    SIPHON_ARIA2_RPC_SECRET="verify-only-aria2-secret" "$TMP/aria2e2e"
     kill "$SERVER2_PID" 2>/dev/null || true
 else
     echo "SKIP  aria2c not installed (brew install aria2 to enable)"
@@ -103,6 +112,8 @@ PROTOCOL_SOURCES=(
     Sources/Siphon/Protocols/FTPDirectoryLister.swift
     Sources/Siphon/Engines/HLS/HLSParser.swift
     Sources/Siphon/Engines/Shared/ExternalRunner.swift
+    Sources/Siphon/Engines/Shared/NetFailure.swift
+    Sources/Siphon/Engines/Shared/ChecksumVerifier.swift
     Sources/Siphon/Managers/SpeedLimitController.swift
     Sources/Siphon/Engines/Local/LocalEngine.swift
     Sources/Siphon/Engines/External/CurlEngine.swift
@@ -348,6 +359,29 @@ swiftc -framework AppKit -o "$TMP/updater" Tests/UpdateCheckerTests/main.swift \
 echo "== 25/25 netrc parsing + host lookup (offline) =="
 swiftc -o "$TMP/netrc" Tests/NetRCTests/main.swift Sources/Siphon/Protocols/NetRC.swift
 "$TMP/netrc"
+
+echo "== 26/27 streaming preview server (Range + live watermark) =="
+swiftc -framework Network -o "$TMP/preview" \
+    Tests/PreviewServerTests/main.swift \
+    Sources/Siphon/Managers/PreviewServer.swift
+"$TMP/preview"
+
+echo "== 27/28 native messaging framing (4-byte LE length + caps) =="
+swiftc -o "$TMP/nmframing" Tests/NMFramingTests/main.swift \
+    Sources/SiphonBridge/NativeMessagingFraming.swift
+"$TMP/nmframing"
+
+echo "== 28/28 MDXP JSON-RPC bridge (dispatch + error codes) =="
+swiftc -o "$TMP/mdxp" Tests/MDXPBridgeTests/main.swift \
+    Sources/Siphon/Managers/MDXPBridge.swift
+"$TMP/mdxp"
+
+# Heavy and GUI-dependent: launches the real app, SIGKILLs it mid-download and
+# relaunches it. Opt-in so the normal suite stays headless.
+if [[ "${SIPHON_GUI_RESTART_E2E:-0}" == "1" ]]; then
+    echo "== 29/29 GUI restart E2E (A1 auto-resume) =="
+    "$ROOT/scripts/verify-restart.sh"
+fi
 
 echo
 echo "ALL CHECKS PASSED"

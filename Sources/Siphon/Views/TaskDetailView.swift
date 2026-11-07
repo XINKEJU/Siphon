@@ -7,6 +7,7 @@ import AppKit
 struct TaskDetailView: View {
     @Environment(DownloadStore.self) private var store
     let task: DownloadTask
+    @State private var previewTask: DownloadTask?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +29,19 @@ struct TaskDetailView: View {
                     if task.progress.connectedPeers > 0 {
                         LabeledContent("连接数", value: "\(task.progress.connectedPeers)")
                     }
+                    if task.state == .completed {
+                        Button {
+                            store.openWithDefaultApp(task)
+                        } label: {
+                            Label("用默认应用打开", systemImage: "arrow.up.forward.app")
+                        }
+                    } else if store.isPreviewable(task) {
+                        Button {
+                            previewTask = task
+                        } label: {
+                            Label("边下边播", systemImage: "play.rectangle.fill")
+                        }
+                    }
                 }
 
                 if task.protocol == .bittorrent || task.protocol == .magnet {
@@ -35,6 +49,13 @@ struct TaskDetailView: View {
                 }
 
                 Section("任务信息") {                    LabeledContent("队列", value: task.queueName)
+                    Picker("优先级", selection: Binding(
+                        get: { task.priority },
+                        set: { store.setTaskPriority(task.id, $0) })) {
+                        Text("低").tag(-1)
+                        Text("普通").tag(0)
+                        Text("高").tag(1)
+                    }
                     LabeledContent("引擎", value: task.protocol.transport.displayName)
                     LabeledContent("创建时间", value: task.createdAt.formatted(date: .abbreviated, time: .shortened))
                     VStack(alignment: .leading, spacing: 4) {
@@ -71,6 +92,9 @@ struct TaskDetailView: View {
             .formStyle(.grouped)
         }
         .frame(minWidth: 280)
+        .sheet(item: $previewTask) { task in
+            StreamingPreviewView(task: task)
+        }
         // No nested toolbar: a second .toolbar here injects an ungrouped item
         // into the window's unified toolbar. "在访达中显示所选文件" lives in
         // ContentView's More menu instead.

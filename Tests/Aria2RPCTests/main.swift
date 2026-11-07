@@ -12,6 +12,9 @@ func check(_ label: String, _ ok: Bool, _ detail: String = "") {
 }
 
 let bootstrap = Aria2Bootstrap.shared
+// Dedicated port: a running Siphon.app already owns the default 6800, and
+// connecting to its aria2 (different secret) would fail as "Unauthorized".
+bootstrap.port = 6817
 // Session persistence is tested below; isolate the session file so tests never
 // read or clobber the real app's session.
 let sessionPath = NSTemporaryDirectory() + "siphon-aria2-session-\(UUID().uuidString).a2"

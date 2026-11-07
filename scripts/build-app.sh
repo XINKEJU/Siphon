@@ -115,6 +115,17 @@ cp "$ARIA2C" "$CONTENTS/Resources/aria2c"
 chmod +x "$CONTENTS/Resources/aria2c"
 relink "$CONTENTS/Resources/aria2c"
 echo "==> Bundled aria2c from $ARIA2C ($RELINK_COUNT image(s) relinked)"
+
+# Native Messaging gateway + unpacked browser extension. Chrome spawns the
+# gateway from the path written by Settings → 集成 → 安装原生网关.
+cp "$ROOT/.build/release/SiphonNM" "$CONTENTS/Resources/SiphonNM"
+chmod +x "$CONTENTS/Resources/SiphonNM"
+SIPHON_NM_RELINK_BEFORE="$RELINK_COUNT"
+relink "$CONTENTS/Resources/SiphonNM"
+echo "==> Bundled SiphonNM gateway (relinked $((RELINK_COUNT - SIPHON_NM_RELINK_BEFORE)) image(s))"
+rm -rf "$CONTENTS/Resources/BrowserExtension"
+cp -R "$ROOT/Resources/BrowserExtension" "$CONTENTS/Resources/BrowserExtension"
+echo "==> Bundled browser extension (v2)"
 echo "    Frameworks: $(ls -1 "$FRAMEWORKS" | tr '\n' ' ')"
 
 # Re-sign every nested Mach-O explicitly. `--deep` alone does NOT reliably
@@ -123,6 +134,7 @@ echo "    Frameworks: $(ls -1 "$FRAMEWORKS" | tr '\n' ' ')"
 # by the kernel at launch.
 echo "==> Signing nested binaries"
 for img in "$CONTENTS/Resources/aria2c" \
+           "$CONTENTS/Resources/SiphonNM" \
            "$FRAMEWORKS"/*.dylib; do
     [[ -f "$img" ]] && codesign --force --sign - "$img" 2>/dev/null || true
 done

@@ -7,15 +7,24 @@ import JavaScriptCore
 /// containing:
 ///
 /// ```
-/// manifest.json  { "name": "…", "version": "…", "match": ["host.example/*"] }
-/// main.js        function resolve(url, headers) -> { url, headers?, name? }
+/// manifest.json  { "name": "…", "version": "1.0", "apiVersion": 2,
+///                  "priority": 0, "match": ["host.example/*"] }
+/// main.js        function resolve(url, headers) -> {
+///                    url, headers?, name?, mirrors?, checksum?, queue?
+///                }
 /// ```
 ///
 /// When a submitted URL matches a plugin's `match` wildcard, the plugin's
 /// `resolve` function may rewrite it into a direct download URL (rename it,
-/// attach headers). Plugins run in an isolated `JSContext` with **no** network
-/// or filesystem access — they are pure URL rewriters, which keeps the trust
-/// model simple: a malicious plugin can at worst misdirect one download.
+/// attach headers, add mirrors / checksum / queue). Plugins run in an isolated
+/// `JSContext` with **no** network or filesystem access — they are pure URL
+/// rewriters, which keeps the trust model simple: a malicious plugin can at
+/// worst misdirect one download.
+///
+/// API v2 additions are all optional, so v1 plugins keep working unchanged:
+/// `apiVersion` (default 1, values > 2 are refused), `priority` (higher runs
+/// first), and the extra `resolve` result fields above. Enable/disable state
+/// is persisted per plugin name; disabled plugins stay listed but never run.
 ///
 /// `SIPHON_PLUGINS_DIR` overrides the directory (tests inject fixtures).
 public final class PluginHost: @unchecked Sendable {
@@ -24,10 +33,43 @@ public final class PluginHost: @unchecked Sendable {
         public let url: URL
         public let headers: [String: String]
         public let name: String?
+        /// API v2: alternate sources for the same file.
+        public let mirrors: [URL]
+        /// API v2: expected integrity hash (`sha256:…` or bare hex).
+        public let checksum: String?
+        /// API v2: destination queue name.
+        public let queueName: String?
+    }
+
+    /// User-facing snapshot of one plugin directory, including load failures.
+    public struct PluginInfo: Identifiable, Equatable, Sendable {
+        public var id: String { name }
+        public let name: String
+        public let version: String
+        public let apiVersion: Int
+        public let priority: Int
+        public let matches: [String]
+        public let enabled: Bool
+        /// Non-nil when the directory was skipped; shown in Settings.
+        public let error: String?
+
+        public init(name: String, version: String, apiVersion: Int, priority: Int,
+                    matches: [String], enabled: Bool, error: String? = nil) {
+            self.name = name
+            self.version = version
+            self.apiVersion = apiVersion
+            self.priority = priority
+            self.matches = matches
+            self.enabled = enabled
+            self.error = error
+        }
     }
 
     struct Plugin {
         let name: String
+        let version: String
+        let apiVersion: Int
+        let priority: Int
         let matches: [String]
         let context: JSContext
     }
@@ -36,7 +78,10 @@ public final class PluginHost: @unchecked Sendable {
 
     private let lock = NSLock()
     private var plugins: [Plugin] = []
+    private var infos: [PluginInfo] = []
     private var loaded = false
+
+    public static let maxAPIVersion = 2
 
     private init() {}
 
@@ -50,38 +95,114 @@ public final class PluginHost: @unchecked Sendable {
         return support.appendingPathComponent("Siphon/plugins", isDirectory: true)
     }
 
+    /// Create the plugin directory if it does not exist yet.
+    @discardableResult
+    public func ensurePluginsDirectory() -> URL {
+        let dir = Self.pluginsDirectory()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     /// Scan + compile. Safe to call repeatedly; re-reads from disk. A plugin
-    /// with a broken manifest or script is skipped (never fatal to the app).
+    /// with a broken manifest or script is skipped (never fatal to the app),
+    /// but still appears in `pluginInfos` with an `error` so the user can fix it.
     public func reload() {
         let dir = Self.pluginsDirectory()
         var found: [Plugin] = []
+        var foundInfos: [PluginInfo] = []
         if let entries = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil) {
-            for entry in entries {
-                guard entry.isDirectoryFallback,
-                      let manifest = Self.loadManifest(at: entry) else { continue }
+            for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                guard entry.isDirectoryFallback else { continue }
+                let dirName = entry.lastPathComponent
+                let manifestURL = entry.appendingPathComponent("manifest.json")
+                guard manifestURL.existsAsFile != nil else {
+                    foundInfos.append(PluginInfo(name: dirName, version: "—", apiVersion: 1,
+                                                 priority: 0, matches: [],
+                                                 enabled: Self.isEnabled(dirName),
+                                                 error: "缺少 manifest.json"))
+                    continue
+                }
+                guard let manifest = Self.loadManifest(at: entry) else {
+                    foundInfos.append(PluginInfo(name: dirName, version: "—", apiVersion: 1,
+                                                 priority: 0, matches: [],
+                                                 enabled: Self.isEnabled(dirName),
+                                                 error: "manifest.json 无效或缺少 match 规则"))
+                    continue
+                }
+                let enabled = Self.isEnabled(manifest.name)
+                // Version gate: only API 1 / 2 exist. Refuse future versions
+                // upfront instead of silently running them with old semantics.
+                guard manifest.apiVersion <= Self.maxAPIVersion else {
+                    foundInfos.append(PluginInfo(name: manifest.name, version: manifest.version,
+                                                 apiVersion: manifest.apiVersion,
+                                                 priority: manifest.priority,
+                                                 matches: manifest.match, enabled: enabled,
+                                                 error: "不支持的 apiVersion \(manifest.apiVersion)"))
+                    continue
+                }
                 // Least-privilege gate: the sandbox can only honour pure URL
                 // rewriting, so any plugin that asks for more is refused up front.
                 if !manifest.permissions.isEmpty {
-                    Self.log("插件 \"\(manifest.name)\" 请求了沙箱不支持的权限 \(manifest.permissions)，已拒绝加载")
+                    let msg = "请求了沙箱不支持的权限 \(manifest.permissions.joined(separator: ", "))"
+                    Self.log("插件 \"\(manifest.name)\" \(msg)，已拒绝加载")
+                    foundInfos.append(PluginInfo(name: manifest.name, version: manifest.version,
+                                                 apiVersion: manifest.apiVersion,
+                                                 priority: manifest.priority,
+                                                 matches: manifest.match, enabled: enabled,
+                                                 error: msg))
                     continue
                 }
                 guard let scriptURL = entry.appendingPathComponent(manifest.script)
-                        .existsAsFile else { continue }
+                        .existsAsFile else {
+                    foundInfos.append(PluginInfo(name: manifest.name, version: manifest.version,
+                                                 apiVersion: manifest.apiVersion,
+                                                 priority: manifest.priority,
+                                                 matches: manifest.match, enabled: enabled,
+                                                 error: "缺少脚本 \(manifest.script)"))
+                    continue
+                }
                 guard let ctx = JSContext() else { continue }
                 Self.harden(ctx)
                 let source = (try? String(contentsOf: scriptURL, encoding: .utf8)) ?? ""
                 ctx.evaluateScript(source)
+                if let exception = ctx.exception {
+                    let msg = exception.toString() ?? "未知错误"
+                    foundInfos.append(PluginInfo(name: manifest.name, version: manifest.version,
+                                                 apiVersion: manifest.apiVersion,
+                                                 priority: manifest.priority,
+                                                 matches: manifest.match, enabled: enabled,
+                                                 error: "脚本加载失败：\(msg)"))
+                    continue
+                }
                 // The script must define a global `resolve`; anything else is
                 // unusable and skipped.
                 guard ctx.objectForKeyedSubscript("resolve")?.isObject == true else {
+                    foundInfos.append(PluginInfo(name: manifest.name, version: manifest.version,
+                                                 apiVersion: manifest.apiVersion,
+                                                 priority: manifest.priority,
+                                                 matches: manifest.match, enabled: enabled,
+                                                 error: "脚本未定义 resolve(url, headers)"))
                     continue
                 }
-                found.append(Plugin(name: manifest.name, matches: manifest.match,
-                                    context: ctx))
+                found.append(Plugin(name: manifest.name, version: manifest.version,
+                                    apiVersion: manifest.apiVersion,
+                                    priority: manifest.priority,
+                                    matches: manifest.match, context: ctx))
+                foundInfos.append(PluginInfo(name: manifest.name, version: manifest.version,
+                                             apiVersion: manifest.apiVersion,
+                                             priority: manifest.priority,
+                                             matches: manifest.match, enabled: enabled))
             }
         }
-        lock.lock(); plugins = found; loaded = true; lock.unlock()
+        // Higher priority first; ties fall back to name for deterministic order.
+        found.sort { $0.priority != $1.priority ? $0.priority > $1.priority : $0.name < $1.name }
+        foundInfos.sort { $0.priority != $1.priority ? $0.priority > $1.priority : $0.name < $1.name }
+        lock.lock()
+        plugins = found
+        infos = foundInfos
+        loaded = true
+        lock.unlock()
     }
 
     /// Remove every JS global that could reach the network or the filesystem, and
@@ -114,6 +235,32 @@ public final class PluginHost: @unchecked Sendable {
     public var pluginNames: [String] {
         ensureLoaded()
         return lock.withLock { plugins.map { $0.name } }
+    }
+
+    /// All discovered plugin directories (loaded or failed), sorted by priority.
+    public var pluginInfos: [PluginInfo] {
+        ensureLoaded()
+        return lock.withLock { infos }
+    }
+
+    private static func enabledKey(_ name: String) -> String { "Siphon.pluginEnabled.\(name)" }
+
+    static func isEnabled(_ name: String) -> Bool {
+        let d = UserDefaults.standard
+        guard d.object(forKey: enabledKey(name)) != nil else { return true }
+        return d.bool(forKey: enabledKey(name))
+    }
+
+    /// Persist the enable flag. Resolution reads it live; no recompile required.
+    public func setEnabled(name: String, on: Bool) {
+        UserDefaults.standard.set(on, forKey: Self.enabledKey(name))
+        lock.lock()
+        infos = infos.map {
+            PluginInfo(name: $0.name, version: $0.version, apiVersion: $0.apiVersion,
+                       priority: $0.priority, matches: $0.matches,
+                       enabled: $0.name == name ? on : $0.enabled, error: $0.error)
+        }
+        lock.unlock()
     }
 
     private func ensureLoaded() {
@@ -150,15 +297,15 @@ public final class PluginHost: @unchecked Sendable {
         return subject.range(of: regex, options: .regularExpression) != nil
     }
 
-    /// Run the first matching plugin's `resolve`. Returns nil when no plugin
-    /// matches or the script returns nothing usable — the caller then proceeds
-    /// with the original URL.
+    /// Run the highest-priority matching, enabled plugin's `resolve`. Returns nil
+    /// when no plugin matches or the script returns nothing usable — the caller
+    /// then proceeds with the original URL.
     public func resolve(urlString: String, headers: [String: String]) -> Resolved? {
         guard let url = URL(string: urlString), url.scheme != nil else { return nil }
         ensureLoaded()
         let current = lock.withLock { plugins }
-        guard let plugin = current.first(where: {
-            $0.matches.contains { Self.patternMatches($0, url: url) }
+        guard let plugin = current.first(where: { p in
+            Self.isEnabled(p.name) && p.matches.contains { Self.patternMatches($0, url: url) }
         }) else { return nil }
 
         let resolveFn = plugin.context.objectForKeyedSubscript("resolve")
@@ -176,18 +323,77 @@ public final class PluginHost: @unchecked Sendable {
         // CRLF injection guard on everything a plugin produced.
         let cleanHeaders = newHeaders.mapValues { Self.sanitize($0) }
         let name = (dict["name"] as? String).map { Self.sanitize($0) }
+        let mirrorStrings = (dict["mirrors"] as? [String]) ?? []
+        let mirrors = mirrorStrings
+            .map { Self.sanitize($0) }
+            .filter { URL(string: $0)?.scheme != nil }
+            .compactMap { URL(string: $0) }
+        let checksum = (dict["checksum"] as? String).map { Self.sanitize($0) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let queueRaw = (dict["queue"] as? String) ?? (dict["queueName"] as? String)
+        let queueName = queueRaw.map { Self.sanitize($0) }.flatMap { $0.isEmpty ? nil : $0 }
         return Resolved(url: resolved, headers: cleanHeaders,
-                        name: (name?.isEmpty == false) ? name : nil)
+                        name: (name?.isEmpty == false) ? name : nil,
+                        mirrors: mirrors, checksum: checksum, queueName: queueName)
     }
 
     static func sanitize(_ s: String) -> String {
         String(s.unicodeScalars.filter { $0.value > 0x1F || $0 == " " })
     }
 
+    // MARK: - example plugin
+
+    /// Write a commented example plugin (API v2) into the plugin directory and
+    /// reload. Existing files are left untouched. Returns the directory URL.
+    @discardableResult
+    public func createExamplePlugin() -> URL? {
+        let dir = ensurePluginsDirectory().appendingPathComponent("example-rewriter",
+                                                                  isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let manifest = """
+        {
+          "name": "示例：直链改写",
+          "version": "1.0",
+          "apiVersion": 2,
+          "priority": 10,
+          "match": ["example.com/download/*"],
+          "script": "main.js"
+        }
+        """
+        let script = """
+        // 示例插件（API v2）：把页面链接改写成 CDN 直链，并附带请求头、
+        // 备用镜像、校验和与目标队列。返回值里的所有字段都是可选的。
+        function resolve(url, headers) {
+          var direct = url.replace("/download/", "/cdn/");
+          return {
+            url: direct,
+            headers: Object.assign({}, headers, { Referer: "https://example.com/" }),
+            name: "example.bin",
+            mirrors: [direct + "?mirror=1", direct + "?mirror=2"],
+            checksum: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            queue: "Default"
+          };
+        }
+        """
+        let manifestURL = dir.appendingPathComponent("manifest.json")
+        let scriptURL = dir.appendingPathComponent("main.js")
+        if !FileManager.default.fileExists(atPath: manifestURL.path) {
+            try? manifest.write(to: manifestURL, atomically: true, encoding: .utf8)
+        }
+        if !FileManager.default.fileExists(atPath: scriptURL.path) {
+            try? script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        }
+        reload()
+        return dir
+    }
+
     // MARK: - manifest
 
     struct Manifest {
         let name: String
+        let version: String
+        let apiVersion: Int
+        let priority: Int
         let match: [String]
         let script: String
         /// Declared privileges. The sandbox only supports pure URL rewriting, so any
@@ -206,7 +412,13 @@ public final class PluginHost: @unchecked Sendable {
         guard !match.isEmpty else { return nil }
         let script = (json["script"] as? String) ?? "main.js"
         let permissions = (json["permissions"] as? [String])?.filter { !$0.isEmpty } ?? []
-        return Manifest(name: name, match: match, script: script, permissions: permissions)
+        // Older manifests omit these; defaults keep API v1 plugins working.
+        let version = (json["version"] as? String) ?? "1.0"
+        let apiVersion = (json["apiVersion"] as? NSNumber)?.intValue ?? 1
+        let priority = (json["priority"] as? NSNumber)?.intValue ?? 0
+        return Manifest(name: name, version: version, apiVersion: apiVersion,
+                        priority: priority, match: match, script: script,
+                        permissions: permissions)
     }
 }
 

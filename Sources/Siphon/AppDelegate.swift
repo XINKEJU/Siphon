@@ -18,7 +18,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // Background residency (menu-bar download manager), off by default.
+        return !UserDefaults.standard.bool(forKey: "Siphon.backgroundRun")
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if UserDefaults.standard.bool(forKey: "Siphon.menuBarOnly") {
+            // Menu-bar-only mode keeps residency even without a Dock icon.
+            UserDefaults.standard.set(true, forKey: "Siphon.backgroundRun")
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showMainWindow() }
+        return true
+    }
+
+    private func showMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        let main = NSApp.windows.first { $0.identifier?.rawValue.contains("main-window") == true }
+            ?? NSApp.windows.first { $0.canBecomeMain }
+        main?.makeKeyAndOrderFront(nil)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

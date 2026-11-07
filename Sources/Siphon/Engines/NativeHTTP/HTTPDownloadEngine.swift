@@ -34,10 +34,18 @@ public final class HTTPDownloadEngine: DownloadEngine {
         Set(DownloadProtocol.allCases.filter { $0.transport == .native })
     public weak var delegate: (any EngineDelegate)?
 
-    /// Peak concurrent connections used by the last `submit`. Exposed for tests.
-    public var lastSegmentCount: Int = 0
-    /// Last state reported (or about to be reported) to the delegate. Polled by tests.
-    public var lastState: DownloadState = .pending
+    /// 仅用于测试轮询的诊断字段。worker 会写、测试线程会读，所以统一放进
+    /// 一个锁里，避免无保护的跨线程读写。
+    private struct DiagnosticState {
+        var segmentCount = 0
+        var state: DownloadState = .pending
+    }
+    private let diagnostics = OSAllocatedUnfairLock(initialState: DiagnosticState())
+
+    /// Peak concurrent connections used by the last `submit`.
+    public var lastSegmentCount: Int { diagnostics.withLock { $0.segmentCount } }
+    /// Last state reported (or about to be reported) to the delegate.
+    public var lastState: DownloadState { diagnostics.withLock { $0.state } }
 
     // Tuning constants (FluxDown segment_advisor.rs, ABD DEFAULT_MIN_PART_SIZE).
     private static let minSplit: Int64 = 1_048_576        // a split is only worth ≥ 1 MiB
@@ -116,9 +124,8 @@ public final class HTTPDownloadEngine: DownloadEngine {
         let headers: [String: String]
     }
 
-    private final class Job {        let task: DownloadTask
-        var handle: Task<Void, Never>?
-        var cancelled = false
+    private final class Job {
+        let task: DownloadTask
         /// Per-task speed limit (bytes/s); `nil` = unlimited. Hot-updatable.
         var throttle: TaskThrottler = TaskThrottler()
         /// Active source URL for this attempt (primary or a mirror). Defaults to
@@ -126,18 +133,42 @@ public final class HTTPDownloadEngine: DownloadEngine {
         var sourceOverride: URL?
         /// Position of this source in the [primary] + mirrors list (diagnostics).
         var mirrorIndex: Int = 0
-    /// Terminal outcome of the last transfer, so the failover loop can decide
-    /// whether to continue to the next mirror or stop.
-    enum Outcome { case completed, failed, paused }
-    var lastOutcome: Outcome?
-    /// Headers actually sent, after per-host overrides (User-Agent, …) are merged.
-    var effectiveHeaders: [String: String] = [:]
-    var source: URL { sourceOverride ?? task.source }
-    init(_ t: DownloadTask) {
-        task = t
-        effectiveHeaders = t.options
+        /// Headers actually sent, after per-host overrides (User-Agent, …) are merged.
+        /// Only written before workers start, so no lock is needed.
+        var effectiveHeaders: [String: String]
+        var source: URL { sourceOverride ?? task.source }
+
+        /// Terminal outcome of the last transfer, so the failover loop can decide
+        /// whether to continue to the next mirror or stop.
+        enum Outcome { case completed, failed, paused }
+
+        /// 控制字段会被主线程（pause/resume/remove）与各下载 worker 同时读写，
+        /// 必须加锁：否则取消标志可能读到旧值、lastOutcome 可能在判空时撕裂。
+        private let stateLock = NSLock()
+        private var _handle: Task<Void, Never>?
+        private var _cancelled = false
+        private var _lastOutcome: Outcome?
+
+        var handle: Task<Void, Never>? {
+            get { stateLock.lock(); defer { stateLock.unlock() }; return _handle }
+            set { stateLock.lock(); defer { stateLock.unlock() }; _handle = newValue }
+        }
+
+        var cancelled: Bool {
+            get { stateLock.lock(); defer { stateLock.unlock() }; return _cancelled }
+            set { stateLock.lock(); defer { stateLock.unlock() }; _cancelled = newValue }
+        }
+
+        var lastOutcome: Outcome? {
+            get { stateLock.lock(); defer { stateLock.unlock() }; return _lastOutcome }
+            set { stateLock.lock(); defer { stateLock.unlock() }; _lastOutcome = newValue }
+        }
+
+        init(_ t: DownloadTask) {
+            task = t
+            effectiveHeaders = t.options
+        }
     }
-}
 
     /// Async-safe job table (OSAllocatedUnfairLock instead of NSLock because these
     /// methods are called from async contexts).
@@ -226,11 +257,15 @@ public final class HTTPDownloadEngine: DownloadEngine {
         if let job {
             job.cancelled = true
             job.handle?.cancel()
-            try? FileManager.default.removeItem(at: job.task.destination)
-            let writing = writingURL(for: job.task.destination)
-            try? FileManager.default.removeItem(at: writing)
-            Sidecar.clear(for: writing)
-            Sidecar.clear(for: job.task.destination)
+            // 已完成的任务只从列表移除，成品文件必须保留；只有未完成的中途数据
+            // （.part / 续传 sidecar）才随任务一起清理。
+            if job.lastOutcome != .completed {
+                try? FileManager.default.removeItem(at: job.task.destination)
+                let writing = writingURL(for: job.task.destination)
+                try? FileManager.default.removeItem(at: writing)
+                Sidecar.clear(for: writing)
+                Sidecar.clear(for: job.task.destination)
+            }
         }
     }
 
@@ -469,9 +504,14 @@ public final class HTTPDownloadEngine: DownloadEngine {
         // --- resume validation: pin the remote file identity ---
         var sidecar = Sidecar.load(for: out)
         if let sc = sidecar {
+            // Sidecar sanity: every recorded cursor must be backed by bytes on
+            // disk (preallocated file when the size is known, high-water mark
+            // otherwise). A cursor beyond the file size means the sidecar was
+            // written by a buggy build — discard it rather than resume into
+            // astronomical offsets.
             let unchanged = sc.total == info.total
                 && sc.etag == info.etag && sc.lastModified == info.lastModified
-                && (info.total <= 0 || (fileSize(out) ?? 0) >= maxPartCursor(sc) )
+                && (fileSize(out) ?? 0) >= maxPartCursor(sc)
             if !unchanged {
                 // Remote changed or sidecar is junk: start over, cleanly.
                 Sidecar.clear(for: out)
@@ -655,7 +695,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
             if tracker.written != finalTotal && finalTotal > 0 {
                 return .failed(NetFailure.incompleteBody)
             }
-            lastSegmentCount = coordinator.peakConnections
+            diagnostics.withLock { $0.segmentCount = coordinator.peakConnections }
             Sidecar.clear(for: out)
             // Publish: .part → final name via atomic rename.
             if out != finalURL {
@@ -855,14 +895,18 @@ public final class HTTPDownloadEngine: DownloadEngine {
         var written: Int64 = 0
         var failed = false
         writeQueue.sync {
-            try? handle.seek(toOffset: UInt64(offset))
-            while true {
-                let chunk: Data
-                do { chunk = try src.read(upToCount: 1 << 20) ?? Data() }
-                catch { failed = true; break }
-                if chunk.isEmpty { break }
-                handle.write(chunk)
-                written += Int64(chunk.count)
+            do {
+                try handle.seek(toOffset: UInt64(offset))
+                while true {
+                    let chunk: Data
+                    do { chunk = try src.read(upToCount: 1 << 20) ?? Data() }
+                    catch { failed = true; break }
+                    if chunk.isEmpty { break }
+                    try handle.write(contentsOf: chunk)
+                    written += Int64(chunk.count)
+                }
+            } catch {
+                failed = true
             }
             tracker.written += written
         }
@@ -1074,31 +1118,42 @@ public final class HTTPDownloadEngine: DownloadEngine {
                             sidecarSaver: SidecarSaver) async throws {
         await SpeedLimitController.shared.consume(data.count)
         await job.throttle.consume(data.count)
-        let advanced = flushAndReport(data, at: offset, handle: handle,
-                                      tracker: tracker, total: total, taskID: job.task.id)
+        let advanced = try flushAndReport(data, at: offset, handle: handle,
+                                          tracker: tracker, total: total, taskID: job.task.id)
         if let p = advanced { await delegate?.engineDidUpdate(taskID: job.task.id, progress: p) }
         sidecarSaver.maybeSave()
     }
 
     /// Serialised write + throttled progress snapshot (250 ms window).
+    /// Uses the throwing FileHandle APIs exclusively: the legacy `write(_:)` /
+    /// `seek(toFileOffset:)` raise NSExceptions, which cannot unwind through a
+    /// dispatch barrier sync and abort the process (the 2026-11 crash).
     private func flushAndReport(_ data: Data, at offset: Int64, handle: FileHandle,
                                 tracker: ProgressTracker, total: Int64,
-                                taskID: UUID) -> DownloadProgress? {
-        writeQueue.sync {
-            handle.seek(toFileOffset: UInt64(offset))
-            handle.write(data)
-            tracker.written += Int64(data.count)
+                                taskID: UUID) throws -> DownloadProgress? {
+        // 计数与测速快照全部放进 writeQueue：多个 worker 并发写入时，
+        // 在锁外读 written/lastBytes/lastReport 会把速度算成重复的尖峰。
+        var progress: DownloadProgress?
+        do {
+            try writeQueue.sync {
+                try handle.seek(toOffset: UInt64(offset))
+                try handle.write(contentsOf: data)
+                tracker.written += Int64(data.count)
+                let now = Date()
+                let dt = now.timeIntervalSince(tracker.lastReport)
+                guard dt >= 0.25 else { return }
+                var p = DownloadProgress()
+                p.downloadedBytes = tracker.written
+                p.totalBytes = total
+                p.speedBytesPerSec = Int64(Double(tracker.written - tracker.lastBytes) / dt)
+                tracker.lastBytes = tracker.written
+                tracker.lastReport = now
+                progress = p
+            }
+        } catch {
+            throw NetFailure.diskWrite("\(error)")
         }
-        let now = Date()
-        let dt = now.timeIntervalSince(tracker.lastReport)
-        guard dt >= 0.25 else { return nil }
-        var p = DownloadProgress()
-        p.downloadedBytes = tracker.written
-        p.totalBytes = total
-        p.speedBytesPerSec = Int64(Double(tracker.written - tracker.lastBytes) / dt)
-        tracker.lastBytes = tracker.written
-        tracker.lastReport = now
-        return p
+        return progress
     }
 
     // MARK: - piece verification (aria2 ChunkChecksum model)
@@ -1161,32 +1216,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
     // MARK: - checksum
 
     private func verifyChecksum(fileAt url: URL, spec: String) throws -> Bool {
-        let s = spec.trimmingCharacters(in: .whitespaces)
-        let (algo, expected): (String, String)
-        if let colon = s.firstIndex(of: ":") {
-            algo = String(s[s.startIndex..<colon]).lowercased()
-            expected = String(s[s.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-        } else {
-            algo = "sha256" // bare hex defaults to SHA-256
-            expected = s
-        }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hasher: any HashFunction
-        switch algo {
-        case "md5": hasher = Insecure.MD5()
-        case "sha1", "sha-1": hasher = Insecure.SHA1()
-        case "sha256", "sha-256": hasher = SHA256()
-        default: throw NetFailure.unsupportedChecksum(algo)
-        }
-        while true {
-            let chunk = try handle.read(upToCount: 1 << 20) ?? Data()
-            if chunk.isEmpty { break }
-            hasher.update(data: chunk)
-        }
-        let digest = hasher.finalize()
-        let actual = digest.map { String(format: "%02x", $0) }.joined()
-        return actual.lowercased() == expected.lowercased()
+        try ChecksumVerifier.verify(fileAt: url, spec: spec)
     }
 
     // MARK: - probe
@@ -1282,7 +1312,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
     }
 
     private func report(_ state: DownloadState, for id: UUID, error: Error? = nil) async {
-        lastState = state
+        diagnostics.withLock { $0.state = state }
         await delegate?.engineDidChangeState(taskID: id, state: state, error: error)
     }
 }
@@ -1475,7 +1505,12 @@ final class SegmentCoordinator: @unchecked Sendable {
         }
         // Slow start beyond the first connection: steal from the slowest part.
         guard active.count < rampTarget, active.count < effectiveCap else { return nil }
-        let splittable = active.indices.filter { remaining(active[$0]) >= stealThreshold * 2 }
+        // A size-unknown sentinel part (end == unknownEnd) must never be split:
+        // its "remaining" is a fictitious 2^62, and cutting it produces writes at
+        // astronomical offsets (EFBIG). Unknown sizes stay single-stream until EOF.
+        let splittable = active.indices.filter {
+            active[$0].end != Self.unknownEnd && remaining(active[$0]) >= stealThreshold * 2
+        }
         guard let idx = pickVictim(among: splittable) else { return nil }
         var victim = active[idx]
         let rem = remaining(victim)

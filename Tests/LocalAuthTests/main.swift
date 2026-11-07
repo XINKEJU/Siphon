@@ -104,6 +104,43 @@ extension Data {
 check("no CORS header on any response",
       !pingBody.contains("Access-Control-Allow-Origin"))
 
+// MARK: - MDXP route (device tokens + JSON-RPC passthrough)
+
+let mdxp = NativeMessagingServer()
+mdxp.configure(onURL: { _, _, _, _ in },
+               apiHandler: nil,
+               mdxpHandler: { body in
+                   Data(#"{"jsonrpc":"2.0","id":1,"result":{"echo":"\#(String(decoding: body, as: UTF8.self))"}}"#.utf8)
+               },
+               additionalTokenVerifier: { value in
+                   // Mirrors RemotePairing.verify: strip an optional Bearer prefix.
+                   let token = value.lowercased().hasPrefix("bearer ")
+                       ? String(value.dropFirst("bearer ".count)) : value
+                   return token == "device-token"
+               })
+let rpcBody = #"{"jsonrpc":"2.0","id":1,"method":"mdxp.ping"}"#
+
+let mdxpLocal = mdxp.process(restRequest("POST", "/mdxp", auth: "Bearer test-token", body: rpcBody))
+check("MDXP accepts the local API token", status(mdxpLocal).contains("200 OK"))
+check("MDXP passes the JSON-RPC body through",
+      (String(data: mdxpLocal, encoding: .utf8) ?? "").contains("mdxp.ping"))
+
+let mdxpDevice = mdxp.process(restRequest("POST", "/mdxp", auth: "Bearer device-token", body: rpcBody))
+check("MDXP accepts a paired device token", status(mdxpDevice).contains("200 OK"))
+
+check("MDXP rejects an unknown token",
+      status(mdxp.process(restRequest("POST", "/mdxp", auth: "Bearer nope", body: rpcBody)))
+          .contains("401 Unauthorized"))
+check("MDXP rejects a device token when no verifier is configured",
+      status(srv.process(restRequest("POST", "/mdxp", auth: "Bearer device-token", body: rpcBody)))
+          .contains("401 Unauthorized"))
+
+let mdxpDisabled = NativeMessagingServer()
+mdxpDisabled.configure(onURL: { _, _, _, _ in }, apiHandler: nil, mdxpHandler: nil)
+check("MDXP route is 404 when the bridge is off",
+      status(mdxpDisabled.process(restRequest("POST", "/mdxp", auth: "Bearer test-token",
+                                             body: rpcBody))).contains("404 Not Found"))
+
 // MARK: - MCPServer
 
 let mcp = MCPServer()

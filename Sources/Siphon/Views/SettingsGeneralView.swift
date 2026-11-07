@@ -4,6 +4,8 @@ import AppKit
 /// 通用 tab（下载位置 / 并发 / 自动化）。
 struct GeneralSettingsView: View {
     @Environment(DownloadStore.self) private var store
+    @State private var launchAtLogin = LaunchAtLogin.isEnabled
+    @State private var launchError: String?
 
     var body: some View {
         Form {
@@ -20,16 +22,75 @@ struct GeneralSettingsView: View {
                     }
                 }
             }
+            Section("后台运行") {
+                Toggle("关闭窗口后继续运行", isOn: Binding(
+                    get: { UserDefaults.standard.bool(forKey: "Siphon.backgroundRun") },
+                    set: { UserDefaults.standard.set($0, forKey: "Siphon.backgroundRun") }))
+                Text("开启后关闭主窗口不会退出下载，可从菜单栏图标重新打开。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("仅显示菜单栏（隐藏 Dock 图标）", isOn: Binding(
+                    get: { UserDefaults.standard.bool(forKey: "Siphon.menuBarOnly") },
+                    set: { on in
+                        UserDefaults.standard.set(on, forKey: "Siphon.menuBarOnly")
+                        if on {
+                            UserDefaults.standard.set(true, forKey: "Siphon.backgroundRun")
+                        }
+                        NSApp.setActivationPolicy(on ? .accessory : .regular)
+                    }))
+                Text("菜单栏图标始终可用：显示主窗口、全部暂停/恢复、打开下载目录、偏好设置与退出。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("开机自动启动", isOn: Binding(
+                    get: { launchAtLogin },
+                    set: { on in
+                        do {
+                            try LaunchAtLogin.setEnabled(on)
+                            launchAtLogin = LaunchAtLogin.isEnabled
+                            launchError = nil
+                        } catch {
+                            launchAtLogin = LaunchAtLogin.isEnabled
+                            launchError = error.localizedDescription
+                        }
+                    }))
+                Text(LaunchAtLogin.statusText)
+                    .font(.caption).foregroundStyle(.tertiary)
+                if let launchError {
+                    Text(launchError).font(.caption).foregroundStyle(.red)
+                }
+            }
+            Section("文件处理") {
+                Picker("同名文件", selection: Binding(
+                    get: { ConflictPolicy.current },
+                    set: { UserDefaults.standard.set($0.rawValue, forKey: ConflictPolicy.defaultsKey) })) {
+                    ForEach(ConflictPolicy.allCases) { Text($0.label).tag($0) }
+                }
+                Text("自动重命名：保留两份文件；跳过：不新建任务；覆盖：先删除同名文件再下载。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
             Section("并发") {
                 Stepper(value: Binding(
                     get: { store.queues.globalConcurrent },
-                    set: { store.queues.globalConcurrent = $0 }), in: 1...20) {
+                    set: {
+                        store.queues.setGlobalConcurrent($0)
+                        store.refreshQueueLimits()
+                    }), in: 1...20) {
                     Text("全局最大同时下载：\(store.queues.globalConcurrent)")
                 }
-                Text("每个队列还可单独设置并发数与下载时段。")
+                Text("每个队列还可单独设置并发数与下载时段（见「队列」标签页）。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section("自动化") {
+                Toggle("启动时自动恢复未完成任务", isOn: Binding(
+                    get: {
+                        let d = UserDefaults.standard
+                        return d.object(forKey: "Siphon.autoResumeInterrupted") == nil
+                            || d.bool(forKey: "Siphon.autoResumeInterrupted")
+                    },
+                    set: { UserDefaults.standard.set($0, forKey: "Siphon.autoResumeInterrupted") }))
+                Text("退出时正在下载的任务会在下次启动后自动继续，并从已完成的进度续传（aria2 会话 / HTTP 断点 / HLS·DASH 分段）。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
                 Toggle("按类型自动归类子文件夹", isOn: Binding(
                     get: { UserDefaults.standard.bool(forKey: "Siphon.autoCategorize") },
                     set: { UserDefaults.standard.set($0, forKey: "Siphon.autoCategorize") }))
@@ -78,7 +139,7 @@ struct GeneralSettingsView: View {
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section {
-                Button("清除已完成任务", role: .destructive) { store.removeCompleted() }
+                Button("从列表清除已完成任务") { store.removeCompleted() }
             }
         }
         .formStyle(.grouped)

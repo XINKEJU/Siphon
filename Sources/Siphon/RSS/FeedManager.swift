@@ -126,6 +126,13 @@ public final class FeedManager: @unchecked Sendable {
         public var seenGUIDs: [String]   // capped ring of processed ids
         public var lastFetched: Date?
         public var lastError: String?
+        // Optional so previously saved feeds still decode. All empty/nil means
+        // "accept everything, unlimited, Default queue, auto-category folder".
+        public var includePattern: String?
+        public var excludePattern: String?
+        public var maxItemsPerRefresh: Int?
+        public var queueName: String?
+        public var subdirectory: String?
 
         init(url: URL, title: String? = nil) {
             self.id = UUID()
@@ -135,6 +142,40 @@ public final class FeedManager: @unchecked Sendable {
             self.seenGUIDs = []
             self.lastFetched = nil
             self.lastError = nil
+        }
+
+        public var effectiveQueueName: String {
+            let q = queueName?.trimmingCharacters(in: .whitespaces) ?? ""
+            return q.isEmpty ? "Default" : q
+        }
+
+        /// Regex include/exclude on the entry title (falling back to the link).
+        /// A pattern that fails to compile is ignored rather than blocking.
+        public func accepts(_ item: FeedItem) -> Bool {
+            let haystack = item.title.isEmpty ? item.link : item.title
+            if let p = includePattern, !p.isEmpty,
+               let re = Self.regex(p),
+               re.firstMatch(in: haystack, range: NSRange(haystack.startIndex..., in: haystack)) == nil {
+                return false
+            }
+            if let p = excludePattern, !p.isEmpty,
+               let re = Self.regex(p),
+               re.firstMatch(in: haystack, range: NSRange(haystack.startIndex..., in: haystack)) != nil {
+                return false
+            }
+            return true
+        }
+
+        /// "Only the latest N" — newest published first, then cap.
+        public func limited(_ items: [FeedItem]) -> [FeedItem] {
+            guard let max = maxItemsPerRefresh, max > 0, items.count > max else { return items }
+            return Array(items.sorted {
+                ($0.published ?? .distantPast) > ($1.published ?? .distantPast)
+            }.prefix(max))
+        }
+
+        private static func regex(_ pattern: String) -> NSRegularExpression? {
+            try? NSRegularExpression(pattern: pattern, options: .caseInsensitive)
         }
     }
 
@@ -180,6 +221,13 @@ public final class FeedManager: @unchecked Sendable {
         }
     }
 
+    /// Edit a feed's download rules in place and persist immediately.
+    public func update(id: UUID, _ transform: (inout Feed) -> Void) {
+        guard let i = feeds.firstIndex(where: { $0.id == id }) else { return }
+        transform(&feeds[i])
+        save()
+    }
+
     /// Fetch every enabled feed, diff, and dispatch new items. First refresh of
     /// a feed seeds seen-GUIDs WITHOUT downloading the whole backlog (the user
     /// presumably already has what they want; new episodes arrive afterwards).
@@ -202,9 +250,12 @@ public final class FeedManager: @unchecked Sendable {
                     let fresh = items.filter { !seen.contains($0.guid) }
                     if !fresh.isEmpty {
                         let cap = Self.maxSeenGUIDs
+                        // Filtered-out entries are still marked seen: a later
+                        // rule change should not resurrect an old backlog.
                         updated.seenGUIDs = (updated.seenGUIDs + fresh.map { $0.guid })
                             .suffix(cap).map { $0 }
-                        onNewItems?(updated, fresh)
+                        let accepted = updated.limited(fresh.filter { updated.accepts($0) })
+                        if !accepted.isEmpty { onNewItems?(updated, accepted) }
                     }
                     updated.lastError = nil
                 }

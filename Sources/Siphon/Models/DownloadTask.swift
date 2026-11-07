@@ -30,6 +30,9 @@ public struct DownloadTask: Identifiable, Sendable {
     public var pieceHashes: [String]
     /// Byte length of one piece (> 0 iff pieceHashes non-empty).
     public var pieceLength: Int64
+    /// Scheduling priority: higher starts first within a queue. `0` is normal,
+    /// `1` high, `-1` low. Persisted and editable from the inspector / context menu.
+    public var priority: Int
 
     public init(
         id: UUID = UUID(),
@@ -43,6 +46,7 @@ public struct DownloadTask: Identifiable, Sendable {
         mirrors: [URL] = [],
         pieceHashes: [String] = [],
         pieceLength: Int64 = 0,
+        priority: Int = 0,
         protoOverride: DownloadProtocol? = nil
     ) {
         let proto = DownloadProtocol.detect(from: source)
@@ -62,6 +66,7 @@ public struct DownloadTask: Identifiable, Sendable {
         self.mirrors = mirrors
         self.pieceHashes = pieceHashes
         self.pieceLength = pieceLength
+        self.priority = priority
     }
 
     /// Human-readable fallback name. Custom schemes carry their filename in

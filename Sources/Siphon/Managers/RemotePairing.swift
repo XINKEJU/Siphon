@@ -134,6 +134,22 @@ public final class RemotePairing: @unchecked Sendable {
         persist(snapshot)
     }
 
+    /// Authenticate an MDXP request. Accepts `Bearer <token>` or a bare token
+    /// and compares each paired device token in constant time.
+    public func verify(presented: String?) -> Bool {
+        guard var token = presented?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else { return false }
+        if token.lowercased().hasPrefix("bearer ") {
+            token = String(token.dropFirst("bearer ".count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !token.isEmpty else { return false }
+        lock.lock()
+        let tokens = _devices.map(\.token).filter { !$0.isEmpty }
+        lock.unlock()
+        return tokens.contains { Keychain.constantTimeEqual(token, $0) }
+    }
+
     private func persist(_ devices: [PairedDevice]) {
         let stored = devices.map { StoredDevice(id: $0.id, name: $0.name, pairedAt: $0.pairedAt) }
         if let data = try? JSONEncoder().encode(stored) {

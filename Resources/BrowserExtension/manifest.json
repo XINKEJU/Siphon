@@ -1,10 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Siphon Connector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Send browser downloads to the native Siphon macOS app.",
-  "permissions": ["downloads", "contextMenus", "storage"],
-  "host_permissions": ["http://127.0.0.1:17801/*"],
+  "permissions": [
+    "downloads",
+    "contextMenus",
+    "storage",
+    "cookies",
+    "webRequest",
+    "scripting",
+    "tabs",
+    "nativeMessaging"
+  ],
+  "host_permissions": ["http://127.0.0.1/*", "*://*/*"],
   "background": { "service_worker": "background.js" },
   "action": {
     "default_title": "Siphon",

@@ -92,11 +92,29 @@ public final class Aria2Bootstrap {
             "--rpc-secret=\(secret)",
             // Motrix hardening: RPC bodies with huge magnet links need headroom.
             "--rpc-max-request-size=50M",
+            // Ignore ~/.aria2/aria2.conf so a user-level config cannot silently
+            // override the options below (deterministic engine behaviour).
+            "--no-conf=true",
             "--continue=true",
             "--max-concurrent-downloads=8",
             "--max-connection-per-server=8",
             "--split=8",
             "--min-split-size=1M",
+            // Buffer well past aria2's 16M default: multi-connection writes to
+            // APFS benefit from coalescing, and the extra memory is cheap here.
+            "--disk-cache=64M",
+            // `trunc` reserves address space without zero-filling on APFS; much
+            // faster than `prealloc` for the multi-GB files Siphon targets.
+            "--file-allocation=trunc",
+            // Preserve the server's Last-Modified timestamp and let aria2 skip
+            // unchanged files (podcast/RSS re-download, conditional GET).
+            "--remote-time=true",
+            "--conditional-get=true",
+            // Bounded retries with a pause between attempts instead of the
+            // default immediate-retry storm.
+            "--max-tries=5",
+            "--retry-wait=5",
+            "--async-dns=true",
             // Don't pre-allocate the full file for small files (less space churn),
             // keep preallocation only where it helps contiguous writes.
             "--no-file-allocation-limit=64M",
@@ -109,6 +127,15 @@ public final class Aria2Bootstrap {
             // downloads, and drop unselected pieces' files.
             "--bt-detach-seed-only=true",
             "--bt-remove-unselected-file=true",
+            // LAN peer discovery + IPv6 DHT: free throughput on networks that
+            // carry other aria2/Transmission peers, and a larger peer ceiling
+            // for well-seeded swarms.
+            "--bt-enable-lpd=true",
+            "--enable-dht6=true",
+            "--bt-max-peers=100",
+            // Non-ASCII filenames from Content-Disposition (RFC 6266) should
+            // land as UTF-8 rather than mojibake.
+            "--content-disposition-default-utf8=true",
             // Transmission-flavoured peer identity: trackers and peers handle a
             // mainstream BT client better than an unknown "aria2" agent.
             "--peer-agent=Transmission/3.00",
@@ -175,6 +202,13 @@ public final class Aria2Bootstrap {
     }
 
     private func loadOrCreateSecret() -> String {
+        // Test seam: a throw-away binary has a different code signature than the
+        // app, so reading the app's Keychain item triggers an ACL prompt and
+        // blocks headless CI. verify.sh injects a deterministic secret instead.
+        if let injected = ProcessInfo.processInfo.environment["SIPHON_ARIA2_RPC_SECRET"],
+           !injected.isEmpty {
+            return injected
+        }
         let account = "aria2-rpc-secret"
         // Migrate the legacy plaintext UserDefaults blob, then keep the secret
         // in the Keychain only.

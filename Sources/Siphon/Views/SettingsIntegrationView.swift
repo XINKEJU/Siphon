@@ -34,7 +34,7 @@ struct IntegrationSettingsView: View {
     @State private var natResult = ""
 
     // Plugin sandbox
-    @State private var pluginList: [String] = []
+    @State private var pluginItems: [PluginHost.PluginInfo] = []
 
     // Remote pairing (MDXP)
     @State private var pairingCode = ""
@@ -44,6 +44,15 @@ struct IntegrationSettingsView: View {
 
     // Local API token
     @State private var apiToken = LocalAuthToken.current()
+
+    // Browser extension v2 (native messaging)
+    @State private var extensionID = NativeMessagingHostInstaller.extensionID
+    @State private var gatewayStatus = ""
+
+    // Site rules + cookie cache
+    @State private var siteRules: [SiteRule] = []
+    @State private var newSiteHost = ""
+    @State private var cookieHostCount = 0
 
     var body: some View {
         Form {
@@ -103,6 +112,93 @@ struct IntegrationSettingsView: View {
                 Text("所有请求（除 /ping）需带 Authorization: Bearer <令牌>，防止任意网页跨站调用本机接口。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("浏览器扩展 v2（Chrome / Edge / Brave）") {
+                TextField("扩展 ID（chrome://extensions 中的 32 位 ID）", text: $extensionID)
+                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 10) {
+                    Button("安装原生网关") {
+                        do {
+                            let written = try NativeMessagingHostInstaller.install(extensionID: extensionID)
+                            gatewayStatus = "已写入 \(written.count) 份清单"
+                                + "；网关：\(NativeMessagingHostInstaller.gatewayPath()?.lastPathComponent ?? "未找到")"
+                        } catch {
+                            gatewayStatus = error.localizedDescription
+                        }
+                    }
+                    .disabled(extensionID.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("卸载网关", role: .destructive) {
+                        NativeMessagingHostInstaller.uninstall()
+                        gatewayStatus = "已卸载"
+                    }
+                    if let folder = NativeMessagingHostInstaller.extensionFolderURL() {
+                        Button("打开扩展目录") { NSWorkspace.shared.open(folder) }
+                    }
+                }
+                if !gatewayStatus.isEmpty {
+                    Text(gatewayStatus).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("扩展 v2 会按标签页嗅探媒体地址（m3u8 / mpd / mp4 / mp3…），透传页面 Cookie，并优先通过原生消息直连；未安装网关时自动回退到本地接口。安装后在 chrome://extensions 以「加载已解压的扩展程序」选择上面的目录。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("站点规则（Referer / 文件名 / 请求头）") {
+                ForEach($siteRules) { $rule in
+                    DisclosureGroup($rule.wrappedValue.host.isEmpty
+                                    ? "未命名站点" : $rule.wrappedValue.host) {
+                        TextField("主机（example.com 或 *.example.com）", text: $rule.host)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Referer（可选，防盗链）", text: $rule.referer)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("User-Agent（可选）", text: $rule.userAgent)
+                            .textFieldStyle(.roundedBorder)
+                        HStack {
+                            TextField("文件名前缀", text: $rule.filenamePrefix)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("后缀（扩展名前）", text: $rule.filenameSuffix)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        TextField("附加请求头（每行 Key: Value）", text: Binding(
+                            get: { Self.headerText($rule.wrappedValue.extraHeaders) },
+                            set: { $rule.wrappedValue.extraHeaders = Self.parseHeaders($0) }),
+                                  axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(2...4)
+                        HStack {
+                            Button("保存并应用") {
+                                SiteRuleStore.shared.replaceAll(siteRules)
+                            }
+                            Button("删除", role: .destructive) {
+                                let id = $rule.wrappedValue.id
+                                siteRules.removeAll { $0.id == id }
+                                SiteRuleStore.shared.replaceAll(siteRules)
+                            }
+                        }
+                    }
+                }
+                HStack {
+                    TextField("新增站点规则（主机）", text: $newSiteHost)
+                        .textFieldStyle(.roundedBorder)
+                    Button("添加") {
+                        let host = newSiteHost.trimmingCharacters(in: .whitespaces)
+                        guard !host.isEmpty else { return }
+                        siteRules.append(SiteRule(host: host))
+                        SiteRuleStore.shared.replaceAll(siteRules)
+                        newSiteHost = ""
+                    }
+                    .disabled(newSiteHost.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                HStack {
+                    Text("已缓存 Cookie 主机：\(cookieHostCount)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("清空 Cookie 缓存", role: .destructive) {
+                        CookieJar.shared.clear()
+                        cookieHostCount = 0
+                    }
+                    .controlSize(.small)
+                }
+                Text("规则只填补调用方未显式提供的请求头，不会覆盖扩展 / 表单传入的值；前缀与后缀作用于文件名（后缀插入扩展名前）。Cookie 由扩展随链接透传，并按主机缓存复用。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
             Section("AI 客户端（MCP）") {
                 Toggle("启用 MCP 服务", isOn: Binding(
                     get: { store.mcpEnabled },
@@ -114,6 +210,19 @@ struct IntegrationSettingsView: View {
                     Spacer()
                 }
                 Text("让 Claude / Cursor 等 AI 客户端管理下载：add_download、list_tasks、pause_task、resume_task、remove_task。客户端需在请求头配置上面的本地接口令牌。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("MDXP 桥（远程设备）") {
+                Toggle("启用 MDXP 桥", isOn: Binding(
+                    get: { store.mdxpEnabled },
+                    set: { store.setMDXPEnabled($0) }))
+                HStack {
+                    Text("POST http://127.0.0.1:\(NativeMessagingServer.port)/mdxp")
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                    Spacer()
+                }
+                Text("JSON-RPC 2.0：mdxp.ping、tasks.list / get / add / pause / resume / remove / priority、config.get，事件流为 GET /mdxp/events。需在下方「远程设备配对」中完成配对，并在请求头携带 Authorization: Bearer <设备令牌>；与浏览器扩展共用同一回环端口。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section("任务事件 Webhook") {
@@ -153,29 +262,67 @@ struct IntegrationSettingsView: View {
             }
             Section("RSS 订阅下载") {
                 ForEach(store.feedManager.feeds) { feed in
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(feed.lastError == nil ? Color.green : Color.orange)
-                            .frame(width: 8, height: 8)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(feed.title).font(.body)
-                            Text(feed.lastError ?? feed.url.absoluteString)
-                                .font(.caption2.monospaced())
-                                .lineLimit(1).truncationMode(.middle)
-                                .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(feed.lastError == nil ? Color.green : Color.orange)
+                                .frame(width: 8, height: 8)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(feed.title).font(.body)
+                                Text(feed.lastError ?? feed.url.absoluteString)
+                                    .font(.caption2.monospaced())
+                                    .lineLimit(1).truncationMode(.middle)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { feed.enabled },
+                                set: { store.feedManager.setEnabled(id: feed.id, $0) }))
+                                .labelsHidden()
+                            Button(role: .destructive) {
+                                store.feedManager.remove(id: feed.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .controlSize(.small)
                         }
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { feed.enabled },
-                            set: { store.feedManager.setEnabled(id: feed.id, $0) }))
-                            .labelsHidden()
-                        Button(role: .destructive) {
-                            store.feedManager.remove(id: feed.id)
-                        } label: {
-                            Image(systemName: "trash")
+                        DisclosureGroup("下载规则") {
+                            TextField("包含正则（留空 = 全部）", text: Binding(
+                                get: { feed.includePattern ?? "" },
+                                set: { v in store.feedManager.update(id: feed.id) {
+                                    $0.includePattern = v.isEmpty ? nil : v } }))
+                                .textFieldStyle(.roundedBorder)
+                            TextField("排除正则", text: Binding(
+                                get: { feed.excludePattern ?? "" },
+                                set: { v in store.feedManager.update(id: feed.id) {
+                                    $0.excludePattern = v.isEmpty ? nil : v } }))
+                                .textFieldStyle(.roundedBorder)
+                            HStack {
+                                Text("每次最多")
+                                TextField("0 = 不限", value: Binding(
+                                    get: { feed.maxItemsPerRefresh ?? 0 },
+                                    set: { v in store.feedManager.update(id: feed.id) {
+                                        $0.maxItemsPerRefresh = v > 0 ? v : nil } }),
+                                    format: .number)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 72)
+                                Text("条").foregroundStyle(.secondary)
+                            }
+                            TextField("下载队列（默认 Default）", text: Binding(
+                                get: { feed.queueName ?? "" },
+                                set: { v in store.feedManager.update(id: feed.id) {
+                                    $0.queueName = v.isEmpty ? nil : v } }))
+                                .textFieldStyle(.roundedBorder)
+                            TextField("子目录（相对下载根目录，可留空）", text: Binding(
+                                get: { feed.subdirectory ?? "" },
+                                set: { v in store.feedManager.update(id: feed.id) {
+                                    $0.subdirectory = v.isEmpty ? nil : v } }))
+                                .textFieldStyle(.roundedBorder)
+                            Text("规则只作用于新条目；被过滤的条目会标记为已读，不会在下次刷新时重试。")
+                                .font(.caption).foregroundStyle(.tertiary)
                         }
-                        .controlSize(.small)
                     }
+                    .padding(.vertical, 2)
                 }
                 HStack {
                     TextField("RSS / Atom 订阅地址", text: $feedURLText)
@@ -335,19 +482,60 @@ struct IntegrationSettingsView: View {
                 Text("链接未内嵌 |sources,host:port| 时，原生 eD2K 后端会用这些服务器做 OP_GETSOURCES 寻源；Kad DHT 引导暂未实现，因此无内嵌源且无服务器的链接仍会报 noSources。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
-            Section("插件沙箱（JavaScript 解析器）") {
-                if pluginList.isEmpty {
+            Section("插件沙箱（JavaScript 解析器 · API v2）") {
+                if pluginItems.isEmpty {
                     Text("未加载任何插件。插件目录：~/Library/Application Support/Siphon/plugins/")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    ForEach(pluginList, id: \.self) { name in
-                        HStack {
-                            Image(systemName: "checkmark.shield.fill").foregroundStyle(.green)
-                            Text(name)
+                    ForEach(pluginItems) { info in
+                        HStack(alignment: .top) {
+                            Toggle("", isOn: Binding(
+                                get: { info.enabled },
+                                set: { on in
+                                    PluginHost.shared.setEnabled(name: info.name, on: on)
+                                    pluginItems = PluginHost.shared.pluginInfos
+                                }))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(info.name).font(.body)
+                                    Text("v\(info.version)")
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                    Text("API \(info.apiVersion)")
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                    if info.priority != 0 {
+                                        Text("优先级 \(info.priority)")
+                                            .font(.caption2).foregroundStyle(.tertiary)
+                                    }
+                                }
+                                if let error = info.error {
+                                    Text(error).font(.caption2).foregroundStyle(.red)
+                                } else {
+                                    Text(info.matches.joined(separator: " · "))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer()
                         }
                     }
                 }
-                Text("插件在隔离的 JSContext 中运行，已移除 XMLHttpRequest / fetch / WebSocket / import / require / process 等可触网或触盘 API，且仅允许纯 URL 改写；声明额外权限的插件会被拒绝加载。恶意插件最多只能误改一个下载链接。")
+                HStack(spacing: 10) {
+                    Button("重新加载") {
+                        PluginHost.shared.reload()
+                        pluginItems = PluginHost.shared.pluginInfos
+                    }
+                    Button("打开插件目录") {
+                        NSWorkspace.shared.open(PluginHost.shared.ensurePluginsDirectory())
+                    }
+                    Button("创建示例插件") {
+                        _ = PluginHost.shared.createExamplePlugin()
+                        pluginItems = PluginHost.shared.pluginInfos
+                    }
+                }
+                Text("插件在隔离的 JSContext 中运行，已移除 XMLHttpRequest / fetch / WebSocket / import / require / process 等可触网或触盘 API，且仅允许纯 URL 改写；声明额外权限的插件会被拒绝加载。API v2 支持 priority、mirrors、checksum 与 queue 字段，v1 插件保持兼容。恶意插件最多只能误改一个下载链接。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section("远程设备配对（MDXP 设备码）") {
@@ -378,7 +566,7 @@ struct IntegrationSettingsView: View {
                             }
                         }
                     }
-                    Text("将配对码在远程设备 / MDXP 中继上验证即可完成握手；此处为客户端状态机与持久化，传输层可后续接入真实中继。配对码 5 分钟内有效。")
+                    Text("将配对码在远程设备 / MDXP 中继上验证即可完成握手；配对后设备令牌可直接作为 MDXP 桥的 Bearer 令牌。配对码 5 分钟内有效。")
                         .font(.caption).foregroundStyle(.tertiary)
                 }
                 if !pairedDevices.isEmpty {
@@ -442,9 +630,31 @@ struct IntegrationSettingsView: View {
             ed2kServersText = ED2KServerList.shared.servers
                 .map { "\($0.host):\($0.port)" }.joined(separator: "\n")
             ed2kKadText = ED2KServerList.shared.kadBootstrap.joined(separator: "\n")
-            pluginList = PluginHost.shared.pluginNames
+            pluginItems = PluginHost.shared.pluginInfos
             pairedDevices = RemotePairing.shared.devices
+            siteRules = SiteRuleStore.shared.rules
+            cookieHostCount = CookieJar.shared.hostCount
+            extensionID = NativeMessagingHostInstaller.extensionID
         }
+    }
+
+    private static func headerText(_ headers: [String: String]) -> String {
+        headers.sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+            .map { "\($0.key): \($0.value)" }
+            .joined(separator: "\n")
+    }
+
+    private static func parseHeaders(_ text: String) -> [String: String] {
+        var out: [String: String] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let idx = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<idx]).trimmingCharacters(in: .whitespaces)
+            let value = String(line[line.index(after: idx)...])
+                .trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty, !value.isEmpty else { continue }
+            out[key] = value
+        }
+        return out
     }
 
     private func reloadWebhooks() {

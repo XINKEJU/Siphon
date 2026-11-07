@@ -62,7 +62,29 @@ struct SegmentTests {
         check("total matches byte count",
               spy.last?.totalBytes == 12, "\(spy.last?.totalBytes ?? -1)")
 
+        // 回归：任务完成后 `remove` 只清理状态，不能删除成品文件（旧实现会删）。
+        let keepID = UUID()
+        let keepOut = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("siphon-segment-keep.ts")
+        try? FileManager.default.removeItem(at: keepOut)
+        let keepAssembler = SegmentAssembler(concurrency: 3)
+        let keepSpy = ProgressSpy()
+        keepAssembler.delegate = keepSpy
+        do {
+            try keepAssembler.start(taskID: keepID, destination: keepOut, requests: requests)
+        } catch {
+            check("keep assembler started", false, error.localizedDescription)
+        }
+        for _ in 0..<80 {
+            if keepSpy.state == .completed { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        keepAssembler.remove(keepID)
+        check("remove after completion keeps output file",
+              FileManager.default.fileExists(atPath: keepOut.path))
+
         try? FileManager.default.removeItem(at: out)
+        try? FileManager.default.removeItem(at: keepOut)
         print(failures == 0 ? "SegmentTests: ALL PASS" : "SegmentTests: \(failures) FAILURE(S)")
         exit(failures == 0 ? 0 : 1)
     }

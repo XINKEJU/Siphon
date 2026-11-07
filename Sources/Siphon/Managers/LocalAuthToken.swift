@@ -18,10 +18,18 @@ public enum LocalAuthToken {
     /// CLI test binaries never touch the login keychain.
     nonisolated(unsafe) public static var testingToken: String?
 
+    /// GUI end-to-end seam: the restart-verification script launches the app with
+    /// this environment variable so the app never reads the login keychain (a
+    /// freshly ad-hoc-signed build would raise a system permission dialog there,
+    /// stalling the test behind a modal prompt).
+    private static let environmentOverride =
+        ProcessInfo.processInfo.environment["SIPHON_LOCAL_API_TOKEN"]
+
     /// Loads the token, generating and persisting one on first use.
     public static func current() -> String {
         lock.lock(); defer { lock.unlock() }
         if let testingToken { return testingToken }
+        if let environmentOverride, !environmentOverride.isEmpty { return environmentOverride }
         if let cached { return cached }
         if let stored = Keychain.secret(account: account), !stored.isEmpty {
             cached = stored
@@ -37,6 +45,10 @@ public enum LocalAuthToken {
     @discardableResult
     public static func rotate() -> String {
         lock.lock(); defer { lock.unlock() }
+        if let environmentOverride, !environmentOverride.isEmpty {
+            cached = environmentOverride
+            return environmentOverride
+        }
         let fresh = Keychain.randomToken() ?? UUID().uuidString
         if testingToken == nil {
             Keychain.setSecret(fresh, account: account)

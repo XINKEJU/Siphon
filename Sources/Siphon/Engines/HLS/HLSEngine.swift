@@ -83,7 +83,10 @@ public final class HLSEngine: DownloadEngine {
         })
         try assembler.start(taskID: task.id, destination: out, requests: requests,
                             headers: task.options, credentialOrigin: task.source,
-                            transform: transform)
+                            transform: transform,
+                            resumeContext: isLive ? nil
+                                : SegmentResumeContext(kind: "hls",
+                                                       source: task.source.absoluteString))
         await delegate?.engineDidChangeState(taskID: task.id, state: .active, error: nil)
 
         // A live stream (no #EXT-X-ENDLIST) is recorded by polling the playlist for new

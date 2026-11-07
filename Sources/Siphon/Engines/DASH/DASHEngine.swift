@@ -53,7 +53,9 @@ public final class DASHEngine: @preconcurrency DownloadEngine {
         requests.append(contentsOf: best.segments.map { SegmentRequest(url: $0.url) })
 
         try assembler.start(taskID: task.id, destination: out, requests: requests,
-                            headers: task.options, credentialOrigin: task.source)
+                            headers: task.options, credentialOrigin: task.source,
+                            resumeContext: SegmentResumeContext(
+                                kind: "dash", source: task.source.absoluteString))
         delegate?.engineDidChangeState(taskID: task.id, state: .active, error: nil)
     }
 

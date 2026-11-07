@@ -12,6 +12,8 @@ struct TaskListView: View {
     @Environment(DownloadStore.self) private var store
     @Binding var selection: SidebarItem
     let searchText: String
+    @State private var previewTask: DownloadTask?
+    @State private var deleteCandidate: DownloadTask?
 
     /// Two-way derived binding: local @State + onChange only flowed changes out,
     /// so programmatic selection (notifications, MCP) never reached the list.
@@ -41,6 +43,18 @@ struct TaskListView: View {
 
     var body: some View {
         listContent
+            .sheet(item: $previewTask) { task in
+                StreamingPreviewView(task: task)
+            }
+            .alert("删除任务及文件？", isPresented: Binding(
+                get: { deleteCandidate != nil },
+                set: { if !$0 { deleteCandidate = nil } }
+            ), presenting: deleteCandidate) { task in
+                Button("删除", role: .destructive) { store.removeAndDelete(task.id) }
+                Button("取消", role: .cancel) { }
+            } message: { task in
+                Text("将从列表移除「\(task.name)」，并永久删除磁盘上的文件（含未完成的分片）。此操作不可撤销。")
+            }
     }
 
     @ViewBuilder
@@ -85,7 +99,10 @@ struct TaskListView: View {
             Button("继续") { store.resume(task.id) }
         }
         if task.state == .completed {
+            Button("用默认应用打开") { store.openWithDefaultApp(task) }
             Button("在访达中显示") { reveal(task) }
+        } else if store.isPreviewable(task) {
+            Button("边下边播") { previewTask = task }
         }
         Divider()
         Menu("限速") {
@@ -94,12 +111,18 @@ struct TaskListView: View {
             Button("1 MB/s") { store.setTaskSpeedLimit(task.id, 1048576) }
             Button("5 MB/s") { store.setTaskSpeedLimit(task.id, 5242880) }
         }
+        Menu("优先级") {
+            Button(task.priority == 1 ? "✓ 高" : "高") { store.setTaskPriority(task.id, 1) }
+            Button(task.priority == 0 ? "✓ 普通" : "普通") { store.setTaskPriority(task.id, 0) }
+            Button(task.priority == -1 ? "✓ 低" : "低") { store.setTaskPriority(task.id, -1) }
+        }
         Divider()
         Button("拷贝链接") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(task.source.absoluteString, forType: .string)
         }
-        Button("移除", role: .destructive) { store.remove(task.id) }
+        Button("从列表移除（保留文件）") { store.remove(task.id) }
+        Button("删除任务及文件", role: .destructive) { deleteCandidate = task }
     }
 
     private func reveal(_ task: DownloadTask) {

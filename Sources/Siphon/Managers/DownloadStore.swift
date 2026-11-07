@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import AppKit
 
 /// Central, main-actor store. Owns the task list, routes each task to the right engine,
 /// and funnels engine callbacks into SwiftUI state.
@@ -21,6 +22,8 @@ public final class DownloadStore: EngineDelegate {
     public var clipboardEnabled = false
     public var browserCaptureEnabled = false
     public var mcpEnabled = false
+    /// MDXP bridge (paired remote devices) shares the loopback control port.
+    public var mdxpEnabled = false
     /// Per-task speed caps (bytes/s). `nil` / absent = unlimited. Folds under the
     /// global (and turtle) cap: effective = min(global, perTask).
     public var taskSpeedLimits: [UUID: Int64] = [:]
@@ -37,9 +40,21 @@ public final class DownloadStore: EngineDelegate {
             applySpeedLimit(speedLimitText) // re-fold global cap
         }
     }
+    /// 下载根目录。持久化到 UserDefaults：重启后仍沿用用户上次选择的目录，
+    /// 而不是悄悄回落到 ~/Downloads。
     public var downloadDirectory: URL = {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-    }()
+        if let raw = UserDefaults.standard.string(forKey: PrefKey.downloadDirectory),
+           !raw.isEmpty {
+            return URL(fileURLWithPath: (raw as NSString).expandingTildeInPath,
+                       isDirectory: true)
+        }
+        return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+    }() {
+        didSet {
+            guard downloadDirectory != oldValue else { return }
+            UserDefaults.standard.set(downloadDirectory.path, forKey: PrefKey.downloadDirectory)
+        }
+    }
 
     public let queues = QueueManager()
     public let clipboard = ClipboardMonitor()
@@ -48,6 +63,9 @@ public final class DownloadStore: EngineDelegate {
     private var aria2: Aria2Engine?
     private var nativeMessaging: NativeMessagingServer?
     private var mcpServer: MCPServer?
+    private var previewServer: PreviewServer?
+    /// Strong reference to the MDXP adapter; it holds the store weakly.
+    private var storeMDXPBackend: StoreMDXPBackend?
     /// id→index cache for engineDidUpdate. Progress ticks are high-frequency;
     /// a shifted array (insert/delete) is caught by the id check and rebuilt.
     private var indexByID: [UUID: Int] = [:]
@@ -66,15 +84,31 @@ public final class DownloadStore: EngineDelegate {
         static let clipboard = "Siphon.clipboardEnabled"
         static let browser = "Siphon.browserCaptureEnabled"
         static let mcp = "Siphon.mcpEnabled"
+        static let mdxp = "Siphon.mdxpEnabled"
         static let schedule = "Siphon.scheduleWindow"
         static let actionFired = "Siphon.completionActionFired"
         static let autoCategorize = "Siphon.autoCategorize"
         static let ytdlp = "Siphon.ytdlp"
         static let turtle = "Siphon.turtleConfig"
+        static let autoResumeInterrupted = "Siphon.autoResumeInterrupted"
+        static let downloadDirectory = "Siphon.downloadDirectory"
     }
     /// Tasks already handed to an engine. Resuming these must call `resume(id)`,
     /// never `submit(task)` again (that would create a duplicate aria2 GID).
     private var submitted: Set<UUID> = []
+    /// Tasks that were running (active/pending) when the previous session ended.
+    /// They are restored as paused — engines cannot keep handles across a relaunch
+    /// — and handed back to the scheduler once engines are up, if the preference
+    /// 「启动时自动恢复」is enabled.
+    private var interruptedIDs: Set<UUID> = []
+
+    /// Tasks whose finished bytes are being hashed off the main actor, and tasks
+    /// that already failed that check. Aria2/HTTP verify inline; HLS/DASH/curl/
+    /// ssh/mount never see the payload, so the store verifies once on completion.
+    private var checksumVerifying: Set<UUID> = []
+    private var checksumFailed: Set<UUID> = []
+    /// Throttles SSE progress frames to ~1 Hz per task instead of每次轮询.
+    private var lastProgressPush: [UUID: Date] = [:]
     private var didStart = false
     private var isScheduling = false
     private var needsReschedule = false
@@ -129,6 +163,7 @@ public final class DownloadStore: EngineDelegate {
             Task { await self?.aria2?.applyBtTracker(trackers) }
         }
         TrackerManager.shared.start()
+        autoResumeInterrupted()
     }
 
     /// 1 Hz sample of aggregate throughput for the live sparkline.
@@ -170,9 +205,21 @@ public final class DownloadStore: EngineDelegate {
             let title = item.title.isEmpty ? url.lastPathComponent : item.title
             let fileName = title.replacingOccurrences(of: "/", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let destination = uniqueDestination(for: fileName, in: categorizedDirectory(for: fileName))
+            let dir: URL
+            if let raw = feed.subdirectory?.trimmingCharacters(in: .whitespaces), !raw.isEmpty {
+                // Keep it inside the download root: no absolute paths, no "..".
+                let safe = raw.split(separator: "/")
+                    .filter { $0 != ".." && !$0.isEmpty }
+                    .joined(separator: "/")
+                let target = downloadDirectory.appendingPathComponent(safe, isDirectory: true)
+                try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+                dir = target
+            } else {
+                dir = categorizedDirectory(for: fileName)
+            }
+            guard let destination = uniqueDestination(for: fileName, in: dir) else { continue }
             add(DownloadTask(name: fileName, source: url, destination: destination,
-                             queueName: "Default", options: [:],
+                             queueName: feed.effectiveQueueName, options: [:],
                              origin: "rss:\(feed.title)", checksum: nil))
         }
     }
@@ -245,6 +292,10 @@ public final class DownloadStore: EngineDelegate {
                 action.run()
             }
         }
+        // A queue's time window may have just opened; give pending tasks slots.
+        if tasks.contains(where: { $0.state == .pending }) {
+            Task { await schedule() }
+        }
     }
 
     public func resetCompletionLatch() {
@@ -259,6 +310,7 @@ public final class DownloadStore: EngineDelegate {
         if d.bool(forKey: PrefKey.browser) { setBrowserCaptureEnabled(true) }
         if d.bool(forKey: PrefKey.clipboard) { setClipboardEnabled(true) }
         if d.bool(forKey: PrefKey.mcp) { setMCPEnabled(true) }
+        if d.bool(forKey: PrefKey.mdxp) { setMDXPEnabled(true) }
     }
 
     public func restartAria2() async {
@@ -298,6 +350,26 @@ public final class DownloadStore: EngineDelegate {
         }
     }
 
+    /// Hand tasks that were running at the last shutdown back to the scheduler.
+    /// Called after every engine is registered (aria2 has also re-bound its
+    /// persisted GIDs by then), so a resumed task continues from the engine's own
+    /// resume state: aria2 session GID, `.part` sidecar, or segment sidecar.
+    private func autoResumeInterrupted() {
+        let ids = interruptedIDs
+        interruptedIDs.removeAll()
+        let d = UserDefaults.standard
+        // Absent means "on" (the feature is opt-out). `bool(forKey:)` alone would
+        // read an absent key as false, and `object(forKey:) as? Bool` ignores the
+        // NSArgumentDomain form (`-Siphon.autoResumeInterrupted NO`) used by the
+        // GUI restart verification script.
+        let enabled = d.object(forKey: PrefKey.autoResumeInterrupted) == nil
+            || d.bool(forKey: PrefKey.autoResumeInterrupted)
+        guard enabled, !ids.isEmpty else { return }
+        for id in ids where tasks.first(where: { $0.id == id })?.state == .paused {
+            resume(id)
+        }
+    }
+
     public func stop() {
         Aria2Bootstrap.shared.stop()
         aria2?.suspendPolling()
@@ -309,11 +381,11 @@ public final class DownloadStore: EngineDelegate {
     // MARK: - CRUD
     public func add(urlString: String, name: String? = nil, queueName: String = "Default",
                     options: [String: String] = [:], checksum: String? = nil,
-                    mirrors: [String] = []) {
+                    mirrors: [String] = [], priority: Int = 0) {
         Task {
             await addNormalized(urlString: urlString, name: name,
                                 queueName: queueName, options: options, checksum: checksum,
-                                mirrors: mirrors)
+                                mirrors: mirrors, priority: priority)
         }
     }
 
@@ -323,23 +395,49 @@ public final class DownloadStore: EngineDelegate {
                               queueName: String = "Default",
                               options: [String: String] = [:],
                               checksum: String? = nil,
-                              mirrors: [String] = []) async {
+                              mirrors: [String] = [],
+                              priority: Int = 0) async {
         let mirrorURLs = mirrors.compactMap { URL(string: $0) }
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Cache the browser-supplied cookie for the submitted host so playlist
+        // segments / mirrors / redirect targets can reuse it later.
+        if let cookie = options.first(where: { $0.key.lowercased() == "cookie" })?.value,
+           let host = URL(string: trimmed)?.host {
+            CookieJar.shared.ingest(cookieHeader: cookie, forHost: host)
+        }
         // JS plugin rewrite (PluginHost): a matching plugin may turn the URL
         // into a direct download URL and attach headers. Pure URL rewriting —
         // no network access inside the sandbox.
         if let resolved = PluginHost.shared.resolve(urlString: trimmed, headers: options) {
             var opts = options
             for (k, v) in resolved.headers { opts[k] = v }
-            let fileName = resolved.name ?? name
+            opts = SiteRuleStore.shared.enrichedOptions(opts, for: resolved.url)
+            if !Self.hasHeader(opts, "cookie"),
+               let cookie = CookieJar.shared.cookieHeader(for: resolved.url) {
+                opts["Cookie"] = cookie
+            }
+            let baseName = resolved.name ?? name
                 ?? URL(string: trimmed)?.lastPathComponent
             ?? "download"
-            let destination = uniqueDestination(for: fileName, in: categorizedDirectory(for: fileName))
+            let fileName = SiteRuleStore.shared.adjustedFileName(baseName, for: resolved.url)
+            guard let destination = uniqueDestination(for: fileName,
+                                                      in: categorizedDirectory(for: fileName)) else {
+                lastError = "文件已存在，已按冲突策略跳过：\(fileName)"
+                return
+            }
+            // A plugin may name a queue that does not exist; fall back instead of
+            // stranding the task in a queue the scheduler never visits.
+            let targetQueue = resolved.queueName.flatMap {
+                queues.queue(named: $0) != nil ? $0 : nil
+            } ?? queueName
             add(DownloadTask(name: fileName, source: resolved.url,
-                             destination: destination, queueName: queueName,
-                             options: opts, origin: "plugin", checksum: checksum))
+                             destination: destination,
+                             queueName: targetQueue,
+                             options: opts, origin: "plugin",
+                             checksum: resolved.checksum ?? checksum,
+                             mirrors: resolved.mirrors.isEmpty ? mirrorURLs : resolved.mirrors,
+                             priority: priority))
             lastError = nil
             return
         }
@@ -352,7 +450,7 @@ public final class DownloadStore: EngineDelegate {
             do {
                 let medias = try await YtDlpResolver.resolve(trimmed)
                 enqueueMedias(medias, queueName: queueName, options: options,
-                              checksum: checksum, customName: name)
+                              checksum: checksum, customName: name, priority: priority)
                 lastError = nil
                 return
             } catch {
@@ -362,23 +460,38 @@ public final class DownloadStore: EngineDelegate {
         }
         do {
             let reqs = try await URINormalizer.normalize(trimmed, options: options)
+            var skipped: String?
             for req in reqs {
                 // A custom name only makes sense for a single-file submission.
-                let fileName: String
-                if reqs.count == 1, let name, !name.isEmpty { fileName = name }
-                else if let n = req.suggestedName, !n.isEmpty { fileName = n }
-                else if req.proto == .data { fileName = "data.bin" }
-                else {
+                let baseName: String
+                if reqs.count == 1, let name, !name.isEmpty { baseName = name }
+                else if let n = req.suggestedName, !n.isEmpty { baseName = n }
+                else if req.proto == .data { baseName = "data.bin" }
+                else if reqs.count == 1,
+                        let remote = await serverFileName(for: req.url, options: req.options) {
+                    // RFC 6266 `Content-Disposition` beats an opaque URL id.
+                    baseName = remote
+                } else {
                     let probe = DownloadTask(source: req.url,
                                              destination: downloadDirectory,
                                              protoOverride: req.proto)
-                    fileName = probe.name
+                    baseName = probe.name
                 }
-                let destination = uniqueDestination(for: fileName,
-                                                    in: categorizedDirectory(for: fileName))
+                // Site rules fill missing headers and decorate the file name.
+                var reqOptions = SiteRuleStore.shared.enrichedOptions(req.options, for: req.url)
+                if !Self.hasHeader(reqOptions, "cookie"),
+                   let cookie = CookieJar.shared.cookieHeader(for: req.url) {
+                    reqOptions["Cookie"] = cookie
+                }
+                let fileName = SiteRuleStore.shared.adjustedFileName(baseName, for: req.url)
+                guard let destination = uniqueDestination(for: fileName,
+                                                          in: categorizedDirectory(for: fileName)) else {
+                    skipped = fileName
+                    continue
+                }
                 let task = DownloadTask(name: fileName, source: req.url,
                                         destination: destination,
-                                        queueName: queueName, options: req.options,
+                                        queueName: queueName, options: reqOptions,
                                         origin: req.origin,
                                         checksum: checksum ?? req.checksum,
                                         mirrors: req.mirrors.isEmpty
@@ -386,10 +499,11 @@ public final class DownloadStore: EngineDelegate {
                                             : req.mirrors,
                                         pieceHashes: req.pieceHashes,
                                         pieceLength: req.pieceLength,
+                                        priority: priority,
                                         protoOverride: req.proto)
                 add(task)
             }
-            lastError = nil
+            lastError = skipped.map { "文件已存在，已按冲突策略跳过：\($0)" }
         } catch {
             lastError = error.localizedDescription
         }
@@ -399,7 +513,7 @@ public final class DownloadStore: EngineDelegate {
     /// file name, with the container extension when known.
     private func enqueueMedias(_ medias: [YtDlpResolver.Media], queueName: String,
                                options: [String: String], checksum: String?,
-                               customName: String?) {
+                               customName: String?, priority: Int = 0) {
         for (index, media) in medias.enumerated() {
             let sanitizedTitle = media.title
                 .replacingOccurrences(of: "/", with: " ")
@@ -411,30 +525,107 @@ public final class DownloadStore: EngineDelegate {
             if medias.count == 1, let customName, !customName.isEmpty {
                 fileName = customName
             }
-            let destination = uniqueDestination(for: fileName, in: categorizedDirectory(for: fileName))
             guard let src = URL(string: media.url) else { continue }
+            var opts = SiteRuleStore.shared.enrichedOptions(options, for: src)
+            if !Self.hasHeader(opts, "cookie"),
+               let cookie = CookieJar.shared.cookieHeader(for: src) {
+                opts["Cookie"] = cookie
+            }
+            fileName = SiteRuleStore.shared.adjustedFileName(fileName, for: src)
+            guard let destination = uniqueDestination(for: fileName,
+                                                      in: categorizedDirectory(for: fileName)) else { continue }
             let task = DownloadTask(name: fileName,
                                     source: src,
                                     destination: destination,
-                                    queueName: queueName, options: options,
+                                    queueName: queueName, options: opts,
                                     origin: "yt-dlp", checksum: checksum,
+                                    priority: priority,
                                     protoOverride: .https)
             add(task)
         }
     }
 
     public func add(_ task: DownloadTask) {
+        // The same URL already in flight (pending/active/paused) in the same
+        // folder: focus it instead of starting a duplicate connection set.
+        let inFlight: Set<DownloadState> = [.pending, .active, .paused]
+        if let existing = tasks.first(where: {
+            inFlight.contains($0.state)
+                && $0.source.absoluteString == task.source.absoluteString
+                && $0.destination.deletingLastPathComponent().path
+                    == task.destination.deletingLastPathComponent().path
+        }) {
+            selectedTaskID = existing.id
+            return
+        }
+        // Overwrite policy: drop the stale file first so the native engine does
+        // not mistake it for an already-finished download. Directories
+        // (multi-file torrents) are never touched.
+        if ConflictPolicy.current == .overwrite {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: task.destination.path,
+                                              isDirectory: &isDirectory),
+               !isDirectory.boolValue {
+                try? FileManager.default.removeItem(at: task.destination)
+            }
+        }
         tasks.append(task)
         save()
         resetCompletionLatch() // a fresh task re-arms the completion action
+        broadcastTask(task)
+        SystemPresence.shared.refresh(tasks: tasks)
         Task { await schedule() }
     }
 
-    /// Duplicate-name dedup (ABD's numberedIfExists): if the destination already
-    /// exists — on disk or in the task list — append " (n)" until unique.
-    private func uniqueDestination(for fileName: String, in dir: URL? = nil) -> URL {
+    /// Ask the server for `Content-Disposition` only when the URL path cannot
+    /// name the file (`/download?id=123`, `/file/`, `/stream`). Normal URLs are
+    /// left untouched, so adding a task does not pay an extra network round-trip.
+    private func serverFileName(for url: URL, options: [String: String]) async -> String? {
+        guard needsServerFilename(url) else { return nil }
+        return await RemoteFilenameResolver.suggestedName(for: url, options: options)
+    }
+
+    private func needsServerFilename(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return false }
+        let last = url.lastPathComponent
+        if last.isEmpty || last == "/" { return true }
+        let lower = last.lowercased()
+        if !lower.contains(".") { return true }
+        let generic: Set<String> = [
+            "download", "downloads", "file", "files", "get", "index",
+            "redirect", "attachment", "data", "binary", "stream",
+            "file.php", "download.php", "downloadfile", "getfile"
+        ]
+        return generic.contains(lower)
+    }
+
+    /// Case-insensitive header presence check (browser/plugin payloads mix
+    /// `Cookie` and `cookie` spellings).
+    private static func hasHeader(_ options: [String: String], _ name: String) -> Bool {
+        options.keys.contains { $0.lowercased() == name.lowercased() }
+    }
+
+    /// Resolve the destination according to the user's conflict policy.
+    /// `.rename` keeps ABD's numberedIfExists behaviour, `.skip` returns nil so
+    /// the caller drops the task, and `.overwrite` reuses the name when no other
+    /// task owns it (the existing file is removed when the task is enqueued).
+    private func uniqueDestination(for fileName: String, in dir: URL? = nil) -> URL? {
         let base = dir ?? downloadDirectory
         let taken = Set(tasks.map { $0.destination.lastPathComponent })
+        let path = base.appendingPathComponent(fileName)
+        let existsOnDisk = FileManager.default.fileExists(atPath: path.path)
+        if !taken.contains(fileName) {
+            switch ConflictPolicy.current {
+            case .overwrite:
+                return path
+            case .skip:
+                return existsOnDisk ? nil : path
+            case .rename:
+                if !existsOnDisk { return path }
+            }
+        }
+        if ConflictPolicy.current == .skip { return nil }
         var candidate = fileName
         var n = 1
         while taken.contains(candidate)
@@ -451,28 +642,120 @@ public final class DownloadStore: EngineDelegate {
         guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
         tasks[i].state = .paused
         save()
+        broadcastTask(tasks[i])
+        SystemPresence.shared.refresh(tasks: tasks)
         Task { await engines[tasks[i].protocol]?.pause(id) }
+        // The queue's cap now has one fewer consumer; redistribute it.
+        Task { await reapplyTaskCaps() }
     }
 
     public func resume(_ id: UUID) {
         guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
+        // Manual resume re-arms a deferred integrity check (and lets the engine
+        // report "completed" again instead of being pinned to the old failure).
+        checksumFailed.remove(id)
+        checksumVerifying.remove(id)
         tasks[i].state = .pending
         save()
+        broadcastTask(tasks[i])
+        SystemPresence.shared.refresh(tasks: tasks)
         Task { await schedule() }
     }
 
     public func remove(_ id: UUID) {
         if let t = tasks.first(where: { $0.id == id }) {
+            broadcastTask(t, stateOverride: "removed")
             Task { await engines[t.protocol]?.remove(id) }
         }
         submitted.remove(id)
         taskSpeedLimits.removeValue(forKey: id)
+        checksumVerifying.remove(id)
+        checksumFailed.remove(id)
+        PreviewRegistry.shared.unregister(taskID: id)
         tasks.removeAll { $0.id == id }
         save()
+        SystemPresence.shared.refresh(tasks: tasks)
+    }
+
+    /// 移除任务并删除磁盘上的文件（成品、未完成的 .part、续传 sidecar）。
+    /// 普通 `remove` 只把任务移出列表，绝不删除已完成的成品文件。
+    public func removeAndDelete(_ id: UUID) {
+        guard let t = tasks.first(where: { $0.id == id }) else { return }
+        let destination = t.destination
+        let part = destination.appendingPathExtension("part")
+        remove(id)
+        let fm = FileManager.default
+        try? fm.removeItem(at: destination)
+        try? fm.removeItem(at: part)
+        try? fm.removeItem(at: destination.appendingPathExtension("aria2"))
+        try? fm.removeItem(at: URL(fileURLWithPath: destination.path + ".siphon-resume.json"))
+        Sidecar.clear(for: destination)
+        Sidecar.clear(for: part)
     }
 
     public func removeCompleted() {
         for t in tasks where t.state == .completed { remove(t.id) }
+    }
+
+    // MARK: - 边下边播
+    /// Container formats a browser / AVPlayer can start playing before EOF.
+    private static let previewableExtensions: Set<String> = [
+        "mp4", "m4v", "mov", "ts", "mkv", "webm",
+        "mp3", "m4a", "aac", "flac", "ogg", "wav"
+    ]
+
+    public func isPreviewable(_ task: DownloadTask) -> Bool {
+        let ext = task.destination.pathExtension.lowercased()
+        return Self.previewableExtensions.contains(ext)
+    }
+
+    /// Local loopback URL for `AVPlayer`. Starts the preview server lazily and
+    /// registers the task's current bytes with the registry.
+    public func previewURL(for task: DownloadTask) -> URL? {
+        guard isPreviewable(task) else {
+            lastError = "该文件类型不支持边下边播"
+            return nil
+        }
+        guard let server = ensurePreviewServer() else { return nil }
+        let fileURL = previewFileURL(for: task)
+        let diskSize = Self.fileSize(fileURL)
+        PreviewRegistry.shared.register(
+            taskID: task.id,
+            fileURL: fileURL,
+            totalBytes: max(task.progress.totalBytes, diskSize),
+            downloadedBytes: task.state == .completed ? diskSize : task.progress.downloadedBytes)
+        return server.url(for: task.id)
+    }
+
+    /// Finished files are handed to the system default app (QuickTime / IINA…),
+    /// which is both simpler and faster than proxying them through the server.
+    public func openWithDefaultApp(_ task: DownloadTask) {
+        NSWorkspace.shared.open(task.destination)
+    }
+
+    private func ensurePreviewServer() -> PreviewServer? {
+        if let previewServer { return previewServer }
+        let server = PreviewServer()
+        guard server.start() else {
+            lastError = server.lastError ?? "边下边播服务启动失败"
+            return nil
+        }
+        previewServer = server
+        return server
+    }
+
+    /// Unfinished native-HTTP transfers live at `<dest>.part`; aria2 writes straight
+    /// to the destination. Prefer the partial file when it exists.
+    private func previewFileURL(for task: DownloadTask) -> URL {
+        let dir = task.destination.deletingLastPathComponent()
+        let part = dir.appendingPathComponent(task.destination.lastPathComponent + ".part")
+        if FileManager.default.fileExists(atPath: part.path) { return part }
+        return task.destination
+    }
+
+    private static func fileSize(_ url: URL) -> Int64 {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size]
+            as? NSNumber)?.int64Value ?? 0
     }
 
     // MARK: - scheduling
@@ -492,6 +775,10 @@ public final class DownloadStore: EngineDelegate {
 
         let slots = max(0, queues.globalConcurrent - tasks.filter { $0.state == .active }.count)
         let ids = queues.nextToStart(from: tasks, slots: slots)
+        let activeByQueue = Dictionary(grouping: tasks.filter { $0.state == .active }) {
+            $0.queueName
+        }.mapValues(\.count)
+        var startingByQueue: [String: Int] = [:]
         for id in ids {
             guard let i = tasks.firstIndex(where: { $0.id == id }) else { continue }
             let task = tasks[i]
@@ -507,10 +794,15 @@ public final class DownloadStore: EngineDelegate {
                     try await engine.submit(task)
                     submitted.insert(id)
                 }
-                // Re-apply any saved per-task cap (survives pause/resume/relaunch).
-                if let cap = taskSpeedLimits[id] {
+                // Re-apply the saved per-task cap, folded under the queue's
+                // aggregate cap (shared evenly among its running tasks).
+                let cap = effectiveCap(for: task,
+                                       activeInQueue: activeByQueue[task.queueName] ?? 0,
+                                       starting: startingByQueue[task.queueName] ?? 0)
+                if let cap {
                     await engine.setTaskSpeedLimit(id, bytesPerSec: cap)
                 }
+                startingByQueue[task.queueName, default: 0] += 1
                 tasks[i].state = .active
             } catch {
                 tasks[i].state = .error
@@ -518,6 +810,53 @@ public final class DownloadStore: EngineDelegate {
             }
         }
         save()
+    }
+
+    /// Effective per-task cap = min(saved per-task cap, queue share). The queue
+    /// limit is divided by the number of tasks that will be active in it once
+    /// this task starts; `0` means the queue is unlimited.
+    private func effectiveCap(for task: DownloadTask, activeInQueue: Int,
+                              starting: Int) -> Int64? {
+        let saved = taskSpeedLimits[task.id]
+        guard let queue = queues.queue(named: task.queueName), queue.speedLimit > 0 else {
+            return saved
+        }
+        let share = max(1, queue.speedLimit / Int64(max(1, activeInQueue + starting + 1)))
+        return saved.map { min($0, share) } ?? share
+    }
+
+    /// Recompute caps for every active task after a task pause/completion or
+    /// a queue-definition change, so a freed share goes to the remaining tasks.
+    private func reapplyTaskCaps() async {
+        let activeByQueue = Dictionary(grouping: tasks.filter { $0.state == .active }) {
+            $0.queueName
+        }.mapValues(\.count)
+        for task in tasks where task.state == .active {
+            guard let engine = engines[task.protocol] else { continue }
+            let cap = effectiveCap(for: task,
+                                   activeInQueue: max(0, (activeByQueue[task.queueName] ?? 1) - 1),
+                                   starting: 0)
+            await engine.setTaskSpeedLimit(task.id, bytesPerSec: cap)
+        }
+    }
+
+    /// Queue definitions are edited in Settings; re-arm scheduling and caps.
+    public func refreshQueueLimits() {
+        Task { await reapplyTaskCaps() }
+        Task { await schedule() }
+    }
+
+    /// Delete a queue. Tasks reference queues by name, so they must be moved
+    /// back to Default first — otherwise `nextToStart` would skip them forever.
+    /// The Default queue itself cannot be deleted.
+    public func deleteQueue(id: UUID) {
+        guard let q = queues.queues.first(where: { $0.id == id }), q.name != "Default" else { return }
+        for i in tasks.indices where tasks[i].queueName == q.name {
+            tasks[i].queueName = "Default"
+        }
+        save()
+        queues.remove(id)
+        refreshQueueLimits()
     }
 
     // MARK: - EngineDelegate
@@ -531,26 +870,96 @@ public final class DownloadStore: EngineDelegate {
         }
         guard let i else { return }
         tasks[i].progress = progress
+        // Feed the streaming server: it may only serve up to the bytes the engine
+        // reports as downloaded (preallocated `.part` files are full-size from byte 0).
+        PreviewRegistry.shared.update(taskID: taskID,
+                                      downloaded: progress.downloadedBytes,
+                                      total: progress.totalBytes)
+        guard tasks[i].state == .active else { return }
+        let now = Date()
+        if now.timeIntervalSince(lastProgressPush[taskID] ?? .distantPast) >= 1 {
+            lastProgressPush[taskID] = now
+            broadcastTask(tasks[i])
+            SystemPresence.shared.refresh(tasks: tasks)
+        }
     }
 
     public func engineDidChangeState(taskID: UUID, state: DownloadState, error: Error?) {
         guard let i = tasks.firstIndex(where: { $0.id == taskID }) else { return }
+        // A checksum failure was already surfaced; keep polling reports of "complete"
+        // from silently clearing it again.
+        if checksumFailed.contains(taskID), state != .error, state != .removed { return }
         // Aria2's poll() reports the current state every tick; skip the per-second
         // reschedule + full JSON re-encode when nothing actually changed.
         guard tasks[i].state != state else {
             if let error { tasks[i].errorDescription = error.localizedDescription }
             return
         }
+        // Engines that move bytes through an external process cannot verify inline.
+        // Hold the completion transition until the store's own hash check finishes.
+        if state == .completed,
+           needsPostCompletionChecksum(tasks[i]),
+           !checksumVerifying.contains(taskID) {
+            checksumVerifying.insert(taskID)
+            let spec = tasks[i].checksum ?? ""
+            let destination = tasks[i].destination
+            Task {
+                let ok = await Task.detached(priority: .utility) { () -> Bool in
+                    var isDirectory: ObjCBool = false
+                    guard FileManager.default.fileExists(atPath: destination.path,
+                                                         isDirectory: &isDirectory),
+                          !isDirectory.boolValue else {
+                        // Multi-file torrents / missing files have no single hash.
+                        return true
+                    }
+                    return (try? ChecksumVerifier.verify(fileAt: destination, spec: spec)) ?? false
+                }.value
+                checksumVerifying.remove(taskID)
+                // The list may have shifted (insert/remove) while hashing.
+                guard let index = tasks.firstIndex(where: { $0.id == taskID }) else { return }
+                if ok {
+                    applyState(index: index, state: .completed, error: nil)
+                } else {
+                    checksumFailed.insert(taskID)
+                    applyState(index: index, state: .error,
+                               error: NetFailure.checksumMismatch)
+                }
+            }
+            return
+        }
+        applyState(index: i, state: state, error: error)
+    }
+
+    /// A checksum is only deferred for engines that never hand us the finished
+    /// bytes. Native HTTP already verifies inline; aria2 verifies HTTP/FTP and
+    /// relies on piece hashes for BT/Metalink; eD2K hashes its own protocol.
+    private func needsPostCompletionChecksum(_ task: DownloadTask) -> Bool {
+        guard let spec = task.checksum, !spec.isEmpty else { return false }
+        switch task.protocol.transport {
+        case .curl, .hls, .dash, .ssh, .mount: return true
+        default: return false
+        }
+    }
+
+    private func applyState(index i: Int, state: DownloadState, error: Error?) {
         tasks[i].state = state
         if let error { tasks[i].errorDescription = error.localizedDescription }
         if state == .completed {
             // Flag the finished file as an internet download so Gatekeeper applies its
             // first-launch checks (FluxDown mark_of_the_web).
             markDownloadQuarantine(tasks[i].destination)
+            // The `.part` file was atomically renamed; an open preview must follow.
+            PreviewRegistry.shared.retarget(taskID: tasks[i].id,
+                                            fileURL: tasks[i].destination,
+                                            totalBytes: tasks[i].progress.totalBytes,
+                                            downloadedBytes: tasks[i].progress.downloadedBytes)
             // Auto-extract archives and run any post-processing command (HyperDM model).
             ArchiveManager.shared.handleCompletion(of: tasks[i].destination)
         }
-        if state.isTerminal { save() }
+        // Persist `.error` too: otherwise the last saved record still says
+        // "active", and the auto-resume-on-launch feature would retry a task
+        // that had already failed.
+        if state.isTerminal || state == .error { save() }
         // Task-event webhook: fire on every terminal transition (FluxDown model).
         if state == .completed || state == .error || state == .removed {
             let t = tasks[i]
@@ -561,7 +970,34 @@ public final class DownloadStore: EngineDelegate {
                 totalBytes: t.progress.totalBytes,
                 error: t.errorDescription))
         }
+        broadcastTask(tasks[i])
+        SystemPresence.shared.taskStateChanged(tasks[i])
+        SystemPresence.shared.refresh(tasks: tasks)
+        if state.isTerminal {
+            // A finished/paused task frees its share of the queue cap.
+            Task { await reapplyTaskCaps() }
+        }
         Task { await schedule() }
+    }
+
+    /// One SSE frame describing a task. JSON stays single-line so the
+    /// `data:` framing in `NativeMessagingServer` cannot be split.
+    private func broadcastTask(_ task: DownloadTask, stateOverride: String? = nil) {
+        guard let server = nativeMessaging else { return }
+        let payload: [String: Any] = [
+            "id": task.id.uuidString,
+            "name": task.name,
+            "url": task.source.absoluteString,
+            "state": stateOverride ?? task.state.rawValue,
+            "downloaded": task.progress.downloadedBytes,
+            "total": task.progress.totalBytes,
+            "speed": task.progress.speedBytesPerSec,
+            "peers": task.progress.connectedPeers,
+            "priority": task.priority
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        server.broadcast(json)
     }
 
     // MARK: - BT file selection
@@ -625,14 +1061,31 @@ public final class DownloadStore: EngineDelegate {
         if let v = bytesPerSec { taskSpeedLimits[id] = v }
         else { taskSpeedLimits.removeValue(forKey: id) }
         save()
+        // The saved cap folds under the queue's aggregate share. The share is
+        // divided among active tasks in THIS task's queue only (same accounting
+        // as reapplyTaskCaps), not across every active task in the store.
+        let effective = tasks.first(where: { $0.id == id }).flatMap { task in
+            let activeInQueue = tasks.filter {
+                $0.state == .active && $0.queueName == task.queueName
+            }.count
+            return effectiveCap(for: task,
+                                activeInQueue: max(0, activeInQueue - 1),
+                                starting: 0)
+        }
         Task {
-            var seen = Set<ObjectIdentifier>()
             for engine in engines.values {
-                if seen.insert(ObjectIdentifier(engine)).inserted {
-                    await engine.setTaskSpeedLimit(id, bytesPerSec: bytesPerSec)
-                }
+                await engine.setTaskSpeedLimit(id, bytesPerSec: effective)
             }
         }
+    }
+
+    /// Change a task's scheduling priority (higher = starts sooner).
+    public func setTaskPriority(_ id: UUID, _ priority: Int) {
+        guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[i].priority = priority
+        save()
+        broadcastTask(tasks[i])
+        Task { await schedule() }
     }
 
     // MARK: - integrations
@@ -645,7 +1098,28 @@ public final class DownloadStore: EngineDelegate {
     public func setBrowserCaptureEnabled(_ on: Bool) {
         browserCaptureEnabled = on
         UserDefaults.standard.set(on, forKey: PrefKey.browser)
-        if on {
+        refreshControlServer()
+    }
+
+    /// MDXP bridge toggle. It shares the loopback control port with browser
+    /// capture, so either feature being on keeps one server alive.
+    public func setMDXPEnabled(_ on: Bool) {
+        mdxpEnabled = on
+        UserDefaults.standard.set(on, forKey: PrefKey.mdxp)
+        refreshControlServer()
+    }
+
+    private func refreshControlServer() {
+        guard browserCaptureEnabled || mdxpEnabled else {
+            nativeMessaging?.stop()
+            nativeMessaging = nil
+            storeMDXPBackend = nil
+            return
+        }
+        // The loopback server is shared by browser capture and MDXP, so it is
+        // created once when either feature turns on and kept alive while either
+        // remains enabled.
+        if nativeMessaging == nil {
             let server = NativeMessagingServer()
             server.start(onURL: { [weak self] url, options, checksum, mirrors in
                 Task { @MainActor in
@@ -653,12 +1127,27 @@ public final class DownloadStore: EngineDelegate {
                               mirrors: mirrors)
                 }
             }, api: { [weak self] method, path, body in
-                self?.handleRESTAPI(method: method, path: path, body: body) ?? Data(#"{"ok":false}"#.utf8)
+                self?.handleRESTAPI(method: method, path: path, body: body)
+                    ?? Data(#"{"ok":false}"#.utf8)
             })
             nativeMessaging = server
+        }
+        guard let server = nativeMessaging else { return }
+        // Attach or detach the MDXP handler + device-token verifier on every
+        // refresh, so toggling MDXP off (while browser capture keeps the shared
+        // server alive) actually closes the /mdxp surface.
+        if mdxpEnabled {
+            let backend = storeMDXPBackend ?? StoreMDXPBackend(store: self)
+            storeMDXPBackend = backend
+            let bridge = MDXPBridge(backend: backend)
+            server.setMDXPHandler { body in bridge.handle(body) }
+            // Paired remote devices authenticate with their device token.
+            server.setAdditionalTokenVerifier { presented in
+                RemotePairing.shared.verify(presented: presented)
+            }
         } else {
-            nativeMessaging?.stop()
-            nativeMessaging = nil
+            server.setMDXPHandler(nil)
+            server.setAdditionalTokenVerifier(nil)
         }
     }
 
@@ -736,10 +1225,58 @@ public final class DownloadStore: EngineDelegate {
         case ("GET", "/tasks"):
             let list = tasks.map { t -> [String: Any] in
                 ["id": t.id.uuidString, "name": t.name, "url": t.source.absoluteString,
-                 "state": t.state.rawValue,
+                 "state": t.state.rawValue, "priority": t.priority,
                  "downloaded": t.progress.downloadedBytes, "total": t.progress.totalBytes]
             }
             return reply(["ok": true, "tasks": list])
+        case ("GET", let p) where p.hasPrefix("/tasks/"):
+            guard let id = UUID(uuidString: String(p.dropFirst("/tasks/".count))),
+                  let t = tasks.first(where: { $0.id == id }) else {
+                return reply(["ok": false, "error": "not found"])
+            }
+            return reply(["ok": true, "task": [
+                "id": t.id.uuidString, "name": t.name, "url": t.source.absoluteString,
+                "state": t.state.rawValue, "queue": t.queueName,
+                "priority": t.priority,
+                "destination": t.destination.path,
+                "downloaded": t.progress.downloadedBytes, "total": t.progress.totalBytes,
+                "speed": t.progress.speedBytesPerSec, "peers": t.progress.connectedPeers,
+                "error": t.errorDescription ?? ""
+            ]])
+        case ("POST", "/pause-all"):
+            for t in tasks where t.state == .active || t.state == .pending { pause(t.id) }
+            return reply(["ok": true])
+        case ("POST", "/resume-all"):
+            for t in tasks where t.state == .paused { resume(t.id) }
+            return reply(["ok": true])
+        case ("POST", "/remove-completed"):
+            removeCompleted()
+            return reply(["ok": true])
+        case ("GET", "/queues"):
+            return reply(["ok": true, "globalConcurrent": queues.globalConcurrent,
+                          "queues": queues.queues.map { q -> [String: Any] in
+                              ["name": q.name, "maxConcurrent": q.maxConcurrent,
+                               "sequential": q.isSequential,
+                               "priority": q.priority, "speedLimit": q.speedLimit,
+                               "startHour": q.startHour ?? -1, "endHour": q.endHour ?? -1]
+                          }])
+        case ("GET", "/config"):
+            return reply(configPayload())
+        case ("POST", "/config"):
+            guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+                return reply(["ok": false, "error": "malformed json"])
+            }
+            if let n = json["globalConcurrent"] as? Int { queues.setGlobalConcurrent(n) }
+            if let limit = json["speedLimit"] as? String { applySpeedLimit(limit) }
+            if let raw = json["conflictPolicy"] as? String,
+               let policy = ConflictPolicy(rawValue: raw) {
+                UserDefaults.standard.set(policy.rawValue, forKey: ConflictPolicy.defaultsKey)
+            }
+            if let dir = json["downloadDirectory"] as? String, !dir.isEmpty {
+                downloadDirectory = URL(fileURLWithPath: (dir as NSString).expandingTildeInPath,
+                                        isDirectory: true)
+            }
+            return reply(configPayload())
         case ("POST", "/pause"), ("POST", "/resume"), ("POST", "/remove"):
             guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
                   let idString = json["id"] as? String, let id = UUID(uuidString: idString) else {
@@ -752,9 +1289,27 @@ public final class DownloadStore: EngineDelegate {
             default: break
             }
             return reply(["ok": true])
+        case ("POST", "/priority"):
+            guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let idString = json["id"] as? String, let id = UUID(uuidString: idString),
+                  let priority = json["priority"] as? Int,
+                  tasks.contains(where: { $0.id == id }) else {
+                return reply(["ok": false, "error": "missing id or priority"])
+            }
+            setTaskPriority(id, priority)
+            return reply(["ok": true])
         default:
             return reply(["ok": false, "error": "not found"])
         }
+    }
+
+    private func configPayload() -> [String: Any] {
+        ["ok": true, "config": [
+            "downloadDirectory": downloadDirectory.path,
+            "globalConcurrent": queues.globalConcurrent,
+            "speedLimit": speedLimitText,
+            "conflictPolicy": ConflictPolicy.current.rawValue
+        ]]
     }
 
     private func handleDetectedURL(_ url: URL) {
@@ -788,25 +1343,51 @@ public final class DownloadStore: EngineDelegate {
         return dir.appendingPathComponent("tasks.json")
     }
 
+    private var tasksBackupURL: URL {
+        tasksFileURL.deletingLastPathComponent().appendingPathComponent("tasks.json.bak")
+    }
+
     private func save() {
         let codable = tasks.map { TaskRecord($0, limit: taskSpeedLimits[$0.id]) }
         guard let d = try? JSONEncoder().encode(codable) else { return }
-        try? d.write(to: tasksFileURL, options: .atomic)
+        // 覆盖前先把上一份留作备份：写失败或文件损坏时还能回滚。
+        if let old = try? Data(contentsOf: tasksFileURL) {
+            try? old.write(to: tasksBackupURL, options: .atomic)
+        }
+        do {
+            try d.write(to: tasksFileURL, options: .atomic)
+        } catch {
+            startupError = "任务列表保存失败：\(error.localizedDescription)"
+        }
     }
 
     private func load() {
-        let records: [TaskRecord]?
-        if let d = try? Data(contentsOf: tasksFileURL) {
-            records = try? JSONDecoder().decode([TaskRecord].self, from: d)
-        } else if let d = UserDefaults.standard.data(forKey: defaultsKey) {
+        var records: [TaskRecord]?
+        if let d = try? Data(contentsOf: tasksFileURL),
+           let decoded = try? JSONDecoder().decode([TaskRecord].self, from: d) {
+            records = decoded
+        } else if let d = try? Data(contentsOf: tasksBackupURL),
+                  let decoded = try? JSONDecoder().decode([TaskRecord].self, from: d) {
+            // 主文件损坏时用备份恢复，并立刻覆盖主文件，避免下次保存把坏文件再备份一次。
+            records = decoded
+            try? d.write(to: tasksFileURL, options: .atomic)
+        } else if let d = UserDefaults.standard.data(forKey: defaultsKey),
+                  let decoded = try? JSONDecoder().decode([TaskRecord].self, from: d) {
             // One-time migration from the old UserDefaults blob.
-            records = try? JSONDecoder().decode([TaskRecord].self, from: d)
+            records = decoded
             save()
-        } else {
-            records = nil
         }
-        guard let records else { return }
+        guard let records else {
+            // 读不出来时保留现场：不要静默清空列表，并提示用户。
+            if FileManager.default.fileExists(atPath: tasksFileURL.path) {
+                startupError = "任务列表读取失败，原文件已保留以便排查"
+            }
+            return
+        }
         tasks = records.map { $0.task }
+        // Remember which tasks were mid-flight; `start()` resumes them once
+        // engines are ready. Records without the marker (older files) stay paused.
+        interruptedIDs = Set(records.filter { $0.wasInterrupted }.map { $0.id })
         taskSpeedLimits = Dictionary(uniqueKeysWithValues: records.compactMap { r in
             r.speedLimit.map { (r.id, $0) }
         })
@@ -824,6 +1405,10 @@ private struct TaskRecord: Codable {
     var pieceHashes: [String]?
     var pieceLength: Int64?
     var speedLimit: Int64?
+    var priority: Int?
+    /// True when the task was active/pending at save time, i.e. it was interrupted
+    /// by an app quit rather than paused by the user.
+    var wasActive: Bool?
 
     init(_ t: DownloadTask, limit: Int64? = nil) {
         id = t.id; name = t.name; source = t.source; destination = t.destination
@@ -836,6 +1421,19 @@ private struct TaskRecord: Codable {
         pieceHashes = t.pieceHashes.isEmpty ? nil : t.pieceHashes
         pieceLength = t.pieceLength > 0 ? t.pieceLength : nil
         speedLimit = (limit ?? 0) > 0 ? limit : nil
+        priority = t.priority != 0 ? t.priority : nil
+        // Only an in-flight task counts as interrupted; an explicit pause or a
+        // terminal task must not be auto-restarted on the next launch.
+        let inFlight = t.state == .active || t.state == .pending
+        wasActive = inFlight ? true : nil
+    }
+
+    /// A task that was mid-flight when the app quit. Terminal and user-paused
+    /// tasks are excluded even if an old file still carries the marker.
+    var wasInterrupted: Bool {
+        guard wasActive == true else { return false }
+        let savedState = DownloadState(rawValue: state) ?? .paused
+        return (savedState == .active || savedState == .pending)
     }
 
     var task: DownloadTask {
@@ -844,7 +1442,8 @@ private struct TaskRecord: Codable {
                              options: options ?? [:], checksum: checksum,
                              mirrors: mirrors ?? [],
                              pieceHashes: pieceHashes ?? [],
-                             pieceLength: pieceLength ?? 0)
+                             pieceLength: pieceLength ?? 0,
+                             priority: priority ?? 0)
         t.protocol = DownloadProtocol(rawValue: proto) ?? .https
         // Engine-side GIDs / segment state do not survive an app restart, so
         // restore non-terminal tasks as paused and let the user resume explicitly.
@@ -855,5 +1454,102 @@ private struct TaskRecord: Codable {
         t.errorDescription = error
         t.origin = origin
         return t
+    }
+}
+
+/// Bridges MDXP JSON-RPC calls back to the main-actor store. The server handler
+/// runs on its own queue, so every access hops to the main thread synchronously.
+private final class StoreMDXPBackend: MDXPBackend {
+    private weak var store: DownloadStore?
+
+    init(store: DownloadStore) {
+        self.store = store
+    }
+
+    private func onMain<T>(_ body: @MainActor (DownloadStore) -> T) -> T? {
+        guard let store else { return nil }
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated { body(store) }
+        }
+        return DispatchQueue.main.sync { MainActor.assumeIsolated { body(store) } }
+    }
+
+    private static func payload(_ t: DownloadTask) -> [String: Any] {
+        ["id": t.id.uuidString, "name": t.name, "url": t.source.absoluteString,
+         "state": t.state.rawValue, "queue": t.queueName,
+         "priority": t.priority, "destination": t.destination.path,
+         "downloaded": t.progress.downloadedBytes, "total": t.progress.totalBytes,
+         "speed": t.progress.speedBytesPerSec, "peers": t.progress.connectedPeers,
+         "error": t.errorDescription ?? ""]
+    }
+
+    func mdxpTasks() -> [[String: Any]] {
+        onMain { store in store.tasks.map(Self.payload) } ?? []
+    }
+
+    func mdxpTask(id: String) -> [String: Any]? {
+        onMain { store in
+            guard let uuid = UUID(uuidString: id),
+                  let task = store.tasks.first(where: { $0.id == uuid }) else { return nil }
+            return Self.payload(task)
+        } ?? nil
+    }
+
+    func mdxpAdd(url: String, name: String?, queue: String?, priority: Int?,
+                 headers: [String: String]?) -> Bool {
+        onMain { store in
+            let targetQueue = queue.flatMap {
+                store.queues.queue(named: $0) != nil ? $0 : nil
+            } ?? "Default"
+            store.add(urlString: url, name: name, queueName: targetQueue,
+                      options: headers ?? [:], priority: priority ?? 0)
+            return true
+        } ?? false
+    }
+
+    func mdxpPause(id: String) -> Bool {
+        onMain { store in
+            guard let uuid = UUID(uuidString: id),
+                  store.tasks.contains(where: { $0.id == uuid }) else { return false }
+            store.pause(uuid)
+            return true
+        } ?? false
+    }
+
+    func mdxpResume(id: String) -> Bool {
+        onMain { store in
+            guard let uuid = UUID(uuidString: id),
+                  store.tasks.contains(where: { $0.id == uuid }) else { return false }
+            store.resume(uuid)
+            return true
+        } ?? false
+    }
+
+    func mdxpRemove(id: String) -> Bool {
+        onMain { store in
+            guard let uuid = UUID(uuidString: id),
+                  store.tasks.contains(where: { $0.id == uuid }) else { return false }
+            store.remove(uuid)
+            return true
+        } ?? false
+    }
+
+    func mdxpSetPriority(id: String, priority: Int) -> Bool {
+        onMain { store in
+            guard let uuid = UUID(uuidString: id),
+                  store.tasks.contains(where: { $0.id == uuid }) else { return false }
+            store.setTaskPriority(uuid, priority)
+            return true
+        } ?? false
+    }
+
+    func mdxpConfig() -> [String: Any] {
+        onMain { store in
+            ["downloadDirectory": store.downloadDirectory.path,
+             "globalConcurrent": store.queues.globalConcurrent,
+             "speedLimit": store.speedLimitText,
+             "conflictPolicy": ConflictPolicy.current.rawValue,
+             "mdxpEnabled": store.mdxpEnabled]
+        } ?? [:]
     }
 }

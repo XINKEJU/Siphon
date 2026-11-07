@@ -113,6 +113,68 @@ if let resolved = PluginHost.shared.resolve(urlString: "https://broken.test/x", 
     check(true, "throwing plugin returns nil, host survives")
 }
 
+// MARK: - API v2: priority, extra fields, disable, version gate
+
+makePlugin("v2-low", manifest: """
+{"name":"PrioLow","version":"2.0","apiVersion":2,"priority":5,
+ "match":["prio.test/*"],"script":"main.js"}
+""", script: """
+function resolve(url, headers) {
+  return { url: "https://low.test/a.bin", queueName: "LowQueue" };
+}
+""")
+makePlugin("v2-high", manifest: """
+{"name":"PrioHigh","version":"2.0","apiVersion":2,"priority":20,
+ "match":["prio.test/*"],"script":"main.js"}
+""", script: """
+function resolve(url, headers) {
+  return {
+    url: "https://high.test/a.bin",
+    mirrors: ["https://mirror1.test/a.bin", "https://mirror2.test/a.bin"],
+    checksum: "sha256:abc123",
+    queue: "FastQueue"
+  };
+}
+""")
+makePlugin("future", manifest: """
+{"name":"Future","version":"9.0","apiVersion":3,"match":["future.test/*"]}
+""", script: "function resolve(url) { return { url: url }; }")
+PluginHost.shared.reload()
+
+if let resolved = PluginHost.shared.resolve(urlString: "https://prio.test/a.bin", headers: [:]) {
+    check(resolved.url.absoluteString == "https://high.test/a.bin",
+          "higher-priority plugin wins", resolved.url.absoluteString)
+    check(resolved.mirrors.count == 2, "mirrors parsed", "count \(resolved.mirrors.count)")
+    check(resolved.checksum == "sha256:abc123", "checksum parsed")
+    check(resolved.queueName == "FastQueue", "queue parsed", resolved.queueName ?? "nil")
+} else {
+    check(false, "priority plugin resolved")
+}
+
+let infos = PluginHost.shared.pluginInfos
+check(infos.contains { $0.name == "Future" && $0.error?.contains("apiVersion") == true },
+      "apiVersion > 2 refused with an error")
+check(!PluginHost.shared.pluginNames.contains("Future"), "future-version plugin not loaded")
+
+PluginHost.shared.setEnabled(name: "PrioHigh", on: false)
+if let resolved = PluginHost.shared.resolve(urlString: "https://prio.test/a.bin", headers: [:]) {
+    check(resolved.url.absoluteString == "https://low.test/a.bin",
+          "disabled plugin falls through to lower priority")
+    check(resolved.queueName == "LowQueue", "queueName alias accepted")
+} else {
+    check(false, "disabled plugin falls through")
+}
+check(PluginHost.shared.pluginInfos.first { $0.name == "PrioHigh" }?.enabled == false,
+      "disable state reflected in pluginInfos")
+PluginHost.shared.setEnabled(name: "PrioHigh", on: true)
+
+// MARK: - example plugin writer
+
+let example = PluginHost.shared.createExamplePlugin()
+check(example != nil && FileManager.default.fileExists(
+        atPath: example!.appendingPathComponent("main.js").path),
+      "createExamplePlugin writes manifest + script")
+
 try? FileManager.default.removeItem(at: dir)
 
 if failures == 0 { print("PLUGIN HOST TESTS PASSED") }

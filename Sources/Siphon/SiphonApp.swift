@@ -36,7 +36,10 @@ struct SiphonApp: App {
             ContentView(showingAdd: $showingAdd, showingInspector: $showingInspector)
                 .environment(store)
                 .frame(minWidth: 900, minHeight: 600)
-                .onAppear { appDelegate.store = store }
+                .onAppear {
+                    appDelegate.store = store
+                    SystemPresence.shared.configure(store: store)
+                }
         }
         .windowResizability(.contentSize)
         .commands {

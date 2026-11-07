@@ -72,7 +72,7 @@ let fixtureSHA256 = SHA256.hash(data: fixture)
 
 // MARK: test servers
 
-func startServer(port: UInt16, honorRange: Bool, etag: String) -> Process {
+func startServer(port: UInt16, honorRange: Bool, etag: String, sendLength: Bool = true) -> Process {
     let script = """
     import http.server, socketserver, os, re
     ROOT = '\(tmp.path)'
@@ -81,7 +81,8 @@ func startServer(port: UInt16, honorRange: Bool, etag: String) -> Process {
             p = os.path.join(ROOT, self.path.lstrip('/'))
             self.send_response(200)
             self.send_header('Accept-Ranges', 'bytes' if \(honorRange ? "True" : "False") else 'none')
-            self.send_header('Content-Length', str(os.path.getsize(p)))
+            if \(sendLength ? "True" : "False"):
+                self.send_header('Content-Length', str(os.path.getsize(p)))
             self.send_header('ETag', '\(etag)')
             self.end_headers()
         def do_GET(self):
@@ -104,7 +105,8 @@ func startServer(port: UInt16, honorRange: Bool, etag: String) -> Process {
             else:
                 with open(p, 'rb') as f: data = f.read()
                 self.send_response(200)
-                self.send_header('Content-Length', str(size))
+                if \(sendLength ? "True" : "False"):
+                    self.send_header('Content-Length', str(size))
                 self.send_header('ETag', '\(etag)')
                 self.end_headers(); self.wfile.write(data)
         def log_message(self, *a): pass
@@ -306,6 +308,65 @@ do {
     } else {
         check(false, "error is the explicit checksumMismatch", "\(String(describing: box.error))")
     }
+}
+
+// MARK: - 5. unknown size (no Content-Length) → single sentinel stream, no split
+// Regression: the 2026-11-07 crash — the size-unknown sentinel part [0, 2^62]
+// was work-stolen into 8 parts with astronomical offsets; the first flush then
+// seeked to ~2^61 and the write raised an uncatchable EFBIG NSException (abort).
+
+do {
+    let srv = startServer(port: 18786, honorRange: false, etag: "etag-unknown", sendLength: false)
+    defer { killServer(srv) }
+    let engine = HTTPDownloadEngine()
+    let dest = tmp.appendingPathComponent("unknown-size.bin")
+    let task = DownloadTask(source: URL(string: "http://127.0.0.1:18786/fixture-source.bin")!,
+                            destination: dest)
+    let box = StateBox(taskID: task.id)
+    engine.delegate = box
+    try await engine.submit(task)
+    check(await waitState(box, states: [.completed], timeout: 30),
+          "unknown-size download completed", "state=\(box.state) err=\(String(describing: box.error))")
+    let got = (try? Data(contentsOf: dest)) ?? Data()
+    check(got == fixture, "unknown-size bytes exact")
+    check(engine.lastSegmentCount <= 1, "sentinel part never split (single connection)",
+          "peak=\(engine.lastSegmentCount)")
+}
+
+// MARK: - 6. poisoned sidecar (cursor beyond bytes on disk) is discarded
+
+do {
+    let srv = startServer(port: 18787, honorRange: true, etag: "etag-poison")
+    defer { killServer(srv) }
+    let engine = HTTPDownloadEngine()
+    let dest = tmp.appendingPathComponent("poison.bin")
+    let task = DownloadTask(source: URL(string: "http://127.0.0.1:18787/fixture-source.bin")!,
+                            destination: dest)
+    let box = StateBox(taskID: task.id)
+    engine.delegate = box
+    try await engine.submit(task)
+    await engine.setGlobalSpeedLimit(20_000)
+    try? await Task.sleep(nanoseconds: 2_000_000_000)
+    await engine.pause(task.id)
+    _ = await waitState(box, states: [.paused], timeout: 5)
+    await engine.setGlobalSpeedLimit(nil)
+
+    // Tamper: bump the first part's cursor far beyond the file's real size —
+    // what the buggy build persisted when it split the sentinel part.
+    let scURL = Sidecar.path(for: URL(fileURLWithPath: dest.path + ".part"))
+    var obj = try JSONSerialization.jsonObject(with: Data(contentsOf: scURL)) as! [String: Any]
+    let parts = obj["parts"] as! [[Any]]
+    var first = parts[0]
+    first[1] = Int64(1) << 61
+    obj["parts"] = [first] + Array(parts.dropFirst())
+    try JSONSerialization.data(withJSONObject: obj).write(to: scURL)
+
+    await engine.resume(task.id)
+    check(await waitState(box, states: [.completed], timeout: 30),
+          "download completed after poisoned sidecar discarded",
+          "state=\(box.state) err=\(String(describing: box.error))")
+    let got = (try? Data(contentsOf: dest)) ?? Data()
+    check(got == fixture, "restarted download is byte-exact (poison ignored)")
 }
 
 if failCount == 0 {

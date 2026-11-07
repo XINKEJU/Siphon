@@ -11,6 +11,7 @@ struct AddTaskView: View {
     @State private var urlString = ""
     @State private var name = ""
     @State private var queueName = "Default"
+    @State private var priority = 0
     @State private var showAdvanced = false
     @State private var userAgent = ""
     @State private var referer = ""
@@ -63,6 +64,11 @@ struct AddTaskView: View {
                         ForEach(store.queues.queues) { q in
                             Text(q.name).tag(q.name)
                         }
+                    }
+                    Picker("优先级", selection: $priority) {
+                        Text("低（-1）").tag(-1)
+                        Text("普通（0）").tag(0)
+                        Text("高（1）").tag(1)
                     }
 
                     HStack {
@@ -156,7 +162,8 @@ struct AddTaskView: View {
                   name: name.isEmpty ? nil : name,
                   queueName: queueName,
                   options: options,
-                  checksum: trimmedChecksum.isEmpty ? nil : trimmedChecksum.lowercased())
+                  checksum: trimmedChecksum.isEmpty ? nil : trimmedChecksum.lowercased(),
+                  priority: priority)
         dismiss()
     }
 
