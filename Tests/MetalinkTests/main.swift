@@ -71,7 +71,7 @@ check(f3[0].checksum == "sha1:1234567890abcdef1234567890abcdef12345678",
 let mixed = """
 <metalink xmlns="urn:ietf:params:xml:ns:metalink">
   <file name="x.bin">
-    <hash type="sha-512">ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff</hash>
+    <hash type="crc32">ffffffff</hash>
     <url>https://x.example.com/x.bin</url>
     <url>https://x.example.com/x.bin</url>
     <url>http://&lt;invalid&gt;</url>
@@ -81,8 +81,24 @@ let mixed = """
 """
 let fm = MetalinkParser.parse(mixed)
 check(fm.count == 1, "mixed: parsed", "got \(fm.count)")
-check(fm[0].checksum == nil, "mixed: sha-512 dropped", fm[0].checksum ?? "nil")
+check(fm[0].checksum == nil, "mixed: unsupported hash dropped", fm[0].checksum ?? "nil")
 check(fm[0].urls.count == 2, "mixed: dedup + skip invalid", "\(fm[0].urls.count)")
+
+// SHA-512 is supported and preferred over weaker hashes.
+let strong512 = String(repeating: "f", count: 128)
+let strong = """
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="y.bin">
+    <hash type="md5">0123456789abcdef0123456789abcdef</hash>
+    <hash type="sha-512">\(strong512)</hash>
+    <url>https://y.example.com/y.bin</url>
+  </file>
+</metalink>
+"""
+let fs = MetalinkParser.parse(strong)
+check(fs.count == 1, "strong: parsed", "got \(fs.count)")
+check(fs[0].checksum == "sha512:" + strong512,
+      "strong: sha-512 preferred", fs[0].checksum ?? "nil")
 
 // Pieces: sha-1 piece list captured; unsupported type/short hashes dropped.
 let withPieces = """

@@ -109,6 +109,9 @@ public final class NativeED2KBackend: ED2KBackend, @unchecked Sendable {
         let fm = FileManager.default
         try? fm.createDirectory(at: destination.deletingLastPathComponent(),
                                 withIntermediateDirectories: true)
+        // 预分配前先确认目标卷放得下，避免块写满后才失败。
+        try DiskSpaceGuard.ensureCapacity(total: Int64(total), alreadyWritten: 0,
+                                          directory: destination.deletingLastPathComponent())
         if !fm.fileExists(atPath: destination.path) {
             guard fm.createFile(atPath: destination.path, contents: Data()) else {
                 throw ED2KTransportError.ioFailed("无法创建目标文件")

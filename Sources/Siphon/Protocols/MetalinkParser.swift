@@ -17,7 +17,7 @@ public enum MetalinkParser {
         /// Declared `<size>` in bytes; 0 when absent.
         public var size: Int64
         /// `"algorithm:hex"` spec understood by `HTTPDownloadEngine.verifyChecksum`
-        /// (md5 / sha1 / sha256). `nil` when the document declares no supported hash.
+        /// (md5 / sha1 / sha256 / sha384 / sha512). `nil` when the document declares no supported hash.
         public var checksum: String?
         /// Per-piece SHA-1 hex hashes from `<pieces type="sha-1">` (aria2
         /// ChunkChecksum model): the engine verifies blocks as they land and
@@ -170,12 +170,12 @@ public enum MetalinkParser {
 
         private func normalizeAlgo(_ raw: String) -> String? {
             let a = raw.lowercased().replacingOccurrences(of: "-", with: "")
-            return ["md5", "sha1", "sha256"].contains(a) ? a : nil
+            return ["md5", "sha1", "sha256", "sha384", "sha512"].contains(a) ? a : nil
         }
 
-        /// Prefer the strongest supported hash: sha256 > sha1 > md5.
+        /// Prefer the strongest supported hash: sha512 > sha384 > sha256 > sha1 > md5.
         private func bestHash(_ hashes: [String: String]) -> String? {
-            for algo in ["sha256", "sha1", "md5"] {
+            for algo in ["sha512", "sha384", "sha256", "sha1", "md5"] {
                 if let hex = hashes[algo], !hex.isEmpty {
                     return "\(algo):\(hex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
                 }

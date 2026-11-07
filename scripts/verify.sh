@@ -32,6 +32,7 @@ HTTP_EXTRA=(Sources/Siphon/Engines/Shared/NetFailure.swift
             Sources/Siphon/Protocols/S3Signer.swift
             Sources/Siphon/Engines/Shared/ExternalRunner.swift
             Sources/Siphon/Engines/Shared/ChecksumVerifier.swift
+            Sources/Siphon/Engines/Shared/DiskSpaceGuard.swift
             Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift)
 
 TMP="$(mktemp -d)"
@@ -130,6 +131,8 @@ swiftc -o "$TMP/ed2kengine" Tests/ED2KTests/main.swift \
     Sources/Siphon/Models/*.swift \
     Sources/Siphon/Engines/Engine.swift \
     Sources/Siphon/Managers/SpeedLimitController.swift \
+    Sources/Siphon/Engines/Shared/NetFailure.swift \
+    Sources/Siphon/Engines/Shared/DiskSpaceGuard.swift \
     Sources/Siphon/Engines/ED2K/*.swift
 "$TMP/ed2kengine"
 
@@ -231,6 +234,8 @@ swiftc -o "$TMP/ed2knative" Tests/ED2KNativeTests/main.swift \
     Sources/Siphon/Models/*.swift \
     Sources/Siphon/Engines/Engine.swift \
     Sources/Siphon/Managers/SpeedLimitController.swift \
+    Sources/Siphon/Engines/Shared/NetFailure.swift \
+    Sources/Siphon/Engines/Shared/DiskSpaceGuard.swift \
     Sources/Siphon/Engines/ED2K/*.swift
 "$TMP/ed2knative"
 kill "$ED2K_PID" 2>/dev/null || true

@@ -599,6 +599,21 @@ public final class HTTPDownloadEngine: DownloadEngine {
             parts = [SegmentCoordinator.Part(start: 0, cursor: 0, end: end)]
         }
 
+        // Resume accounting: bytes already on disk from previous sessions count
+        // toward progress; otherwise a successful resume reports incompleteBody.
+        let alreadyWritten = parts.reduce(Int64(0)) { $0 + max(0, $1.cursor - $1.start) }
+
+        // 磁盘空间预检：稀疏文件不占真实空间，若等到写到一半才 ENOSPC，
+        // 所有已下字节都会作废。已知总大小时在启动连接前先挡住。
+        do {
+            try DiskSpaceGuard.ensureCapacity(total: info.total,
+                                              alreadyWritten: alreadyWritten,
+                                              directory: out.deletingLastPathComponent())
+        } catch {
+            dbg("disk precheck failed: \(error.localizedDescription)")
+            return .failed(error)
+        }
+
         // Create the output ONLY when missing: createFile *overwrites* an existing
         // file, which would wipe everything a resume is about to continue.
         if !FileManager.default.fileExists(atPath: out.path) {
@@ -608,7 +623,13 @@ public final class HTTPDownloadEngine: DownloadEngine {
         do { handle = try FileHandle(forWritingTo: out) }
         catch { return .failed(error) }
         defer { try? handle.close() }
-        if canRange && info.total > 0 { try? handle.truncate(atOffset: UInt64(info.total)) }
+        if canRange && info.total > 0 {
+            if (fileSize(out) ?? 0) == 0 {
+                // 新建文件时申请真实磁盘块，减少碎片并尽早暴露空间问题。
+                DiskSpaceGuard.preallocate(handle, total: info.total)
+            }
+            try? handle.truncate(atOffset: UInt64(info.total))
+        }
 
         // 每任务并发连接数（默认 8，可在任务检查器中调整 1...32）。
         let requestedConnections = max(1, min(32, job.task.connections))
@@ -616,9 +637,6 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                              maxConnections: requestedConnections,
                                              minSplit: Self.minSplit,
                                              stealThreshold: Self.stealThreshold)
-        // Resume accounting: bytes already on disk from previous sessions count
-        // toward progress; otherwise a successful resume reports incompleteBody.
-        let alreadyWritten = parts.reduce(Int64(0)) { $0 + max(0, $1.cursor - $1.start) }
         // Slow start: honour a learned per-domain cap and a positive hint ramp.
         let host = job.source.host ?? ""
         var cap = DomainConnPolicy.shared.effectiveMax(host: host,

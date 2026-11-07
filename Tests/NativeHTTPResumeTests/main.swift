@@ -69,6 +69,8 @@ for _ in 0..<size {
 try fixture.write(to: tmp.appendingPathComponent("fixture-source.bin"))
 let fixtureSHA256 = SHA256.hash(data: fixture)
     .map { String(format: "%02x", $0) }.joined()
+let fixtureSHA512 = SHA512.hash(data: fixture)
+    .map { String(format: "%02x", $0) }.joined()
 
 // MARK: test servers
 
@@ -308,6 +310,22 @@ do {
     } else {
         check(false, "error is the explicit checksumMismatch", "\(String(describing: box.error))")
     }
+}
+
+// MARK: - 4c. SHA-512 checksum accepted (extended algorithm set)
+
+do {
+    let srv = startServer(port: 18788, honorRange: true, etag: "etag-ck3")
+    defer { killServer(srv) }
+    let engine = HTTPDownloadEngine()
+    let dest = tmp.appendingPathComponent("ck-sha512.bin")
+    let task = DownloadTask(source: URL(string: "http://127.0.0.1:18788/fixture-source.bin")!,
+                            destination: dest, checksum: "sha512:\(fixtureSHA512)")
+    let box = StateBox(taskID: task.id)
+    engine.delegate = box
+    try await engine.submit(task)
+    check(await waitState(box, states: [.completed], timeout: 30),
+          "sha-512 checksum accepted", "state=\(box.state) err=\(String(describing: box.error))")
 }
 
 // MARK: - 5. unknown size (no Content-Length) → single sentinel stream, no split

@@ -413,6 +413,26 @@ public final class DownloadStore: EngineDelegate {
     }
 
     // MARK: - CRUD
+    /// 拖入窗口的条目：远程链接直接入队；本地文件只接受种子 / Metalink / 播放列表。
+    public func addDropped(_ urls: [URL]) {
+        let allowed: Set<String> = ["torrent", "metalink", "meta4",
+                                    "m3u", "m3u8", "pls", "asx", "wpl"]
+        for url in urls {
+            if url.isFileURL, !allowed.contains(url.pathExtension.lowercased()) {
+                lastError = "不支持拖入的文件类型：\(url.lastPathComponent)"
+                continue
+            }
+            add(urlString: url.absoluteString)
+        }
+    }
+
+    /// 拖入纯文本（可能包含多行链接，交给 `URINormalizer` 展开）。
+    public func addDroppedText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        add(urlString: trimmed)
+    }
+
     public func add(urlString: String, name: String? = nil, queueName: String = "Default",
                     options: [String: String] = [:], checksum: String? = nil,
                     mirrors: [String] = [], priority: Int = 0,
@@ -606,6 +626,29 @@ public final class DownloadStore: EngineDelegate {
             selectedTaskID = existing.id
             return
         }
+        // 同一链接已完成（同目录）：按重复策略跳过或重新下载。
+        // 跳过时聚焦已有任务；重新下载仍走冲突策略生成新的目标文件名。
+        if let completed = tasks.first(where: {
+            $0.state == .completed
+                && $0.source.absoluteString == task.source.absoluteString
+                && $0.destination.deletingLastPathComponent().path
+                    == task.destination.deletingLastPathComponent().path
+        }) {
+            switch DuplicatePolicy.current {
+            case .skip:
+                selectedTaskID = completed.id
+                return
+            case .redownload:
+                break
+            case .ask:
+                // 后台/接口调用（MCP、浏览器扩展）不弹模态框，按“跳过”处理，
+                // 避免主线程被对话框阻塞。
+                if !NSApp.isActive || !askRedownload(duplicate: completed) {
+                    selectedTaskID = completed.id
+                    return
+                }
+            }
+        }
         // Overwrite policy: drop the stale file first so the native engine does
         // not mistake it for an already-finished download. Directories
         // (multi-file torrents) are never touched.
@@ -725,6 +768,25 @@ public final class DownloadStore: EngineDelegate {
         case .skip, .ask:
             return nil
         }
+    }
+
+    /// 逐次询问：同一链接已完成时是否重新下载。返回 true 表示继续新建任务。
+    private func askRedownload(duplicate: DownloadTask) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "该链接已下载完成"
+        alert.informativeText = "「\(duplicate.name)」已在任务列表中完成。是否重新下载？"
+        alert.addButton(withTitle: "重新下载")
+        alert.addButton(withTitle: "跳过")
+        let remember = NSButton(checkboxWithTitle: "记住选择", target: nil, action: nil)
+        alert.accessoryView = remember
+
+        let proceed = alert.runModal() == .alertFirstButtonReturn
+        if remember.state == .on {
+            UserDefaults.standard.set(
+                (proceed ? DuplicatePolicy.redownload : DuplicatePolicy.skip).rawValue,
+                forKey: DuplicatePolicy.defaultsKey)
+        }
+        return proceed
     }
 
     /// 在文件名后追加 `(n)` 直到磁盘与任务列表都不冲突。

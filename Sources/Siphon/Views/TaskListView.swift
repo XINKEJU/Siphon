@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// Task list. All global commands live in the window's unified toolbar (see
 /// `ContentView`); the list column itself is pure opaque content.
@@ -14,6 +15,7 @@ struct TaskListView: View {
     let searchText: String
     @State private var previewTask: DownloadTask?
     @State private var deleteCandidate: DownloadTask?
+    @State private var isDropTargeted = false
 
     /// Two-way derived binding: local @State + onChange only flowed changes out,
     /// so programmatic selection (notifications, MCP) never reached the list.
@@ -43,6 +45,25 @@ struct TaskListView: View {
 
     var body: some View {
         listContent
+            // 从浏览器 / 访达拖入：链接、种子、Metalink 与播放列表。
+            .onDrop(of: [.fileURL, .url, .plainText], isTargeted: $isDropTargeted) { providers in
+                handleDrop(providers)
+            }
+            .overlay {
+                if isDropTargeted {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(Color.accentColor,
+                                      style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
+                        .padding(8)
+                        .overlay {
+                            Label("松开以添加下载", systemImage: "arrow.down.circle")
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                        .allowsHitTesting(false)
+                }
+            }
             .sheet(item: $previewTask) { task in
                 StreamingPreviewView(task: task)
             }
@@ -86,6 +107,48 @@ struct TaskListView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Drag & drop
+
+    /// 接受从浏览器（链接 / 选中文本）与访达（种子、Metalink、播放列表）拖入的条目。
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var accepted = false
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                accepted = true
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier,
+                                  options: nil) { item, _ in
+                    let url: URL?
+                    if let data = item as? Data {
+                        url = URL(dataRepresentation: data, relativeTo: nil)
+                    } else if let value = item as? URL {
+                        url = value
+                    } else if let value = item as? String {
+                        url = URL(string: value)
+                    } else {
+                        url = nil
+                    }
+                    guard let url else { return }
+                    Task { @MainActor in store.addDropped([url]) }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                accepted = true
+                provider.loadItem(forTypeIdentifier: UTType.url.identifier,
+                                  options: nil) { item, _ in
+                    let url = (item as? URL) ?? (item as? NSURL) as URL?
+                    guard let url else { return }
+                    Task { @MainActor in store.addDropped([url]) }
+                }
+            } else if provider.canLoadObject(ofClass: NSString.self) {
+                accepted = true
+                _ = provider.loadObject(ofClass: NSString.self) { item, _ in
+                    guard let text = item as? String else { return }
+                    Task { @MainActor in store.addDroppedText(text) }
+                }
+            }
+        }
+        return accepted
     }
 
     // MARK: - Context menu

@@ -68,6 +68,14 @@ struct GeneralSettingsView: View {
                 }
                 Text("自动重命名：保留两份文件；跳过：不新建任务；覆盖：先删除同名文件再下载。")
                     .font(.caption).foregroundStyle(.tertiary)
+
+                Picker("同一链接", selection: Binding(
+                    get: { DuplicatePolicy.current },
+                    set: { UserDefaults.standard.set($0.rawValue, forKey: DuplicatePolicy.defaultsKey) })) {
+                    ForEach(DuplicatePolicy.allCases) { Text($0.label).tag($0) }
+                }
+                Text("该链接已有下载完成的任务时：跳过会选中原任务，重新下载会按冲突策略生成新文件。")
+                    .font(.caption).foregroundStyle(.tertiary)
             }
             Section("并发") {
                 Stepper(value: Binding(

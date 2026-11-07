@@ -19,7 +19,7 @@ public struct DownloadTask: Identifiable, Sendable {
     /// Kept so a vendor link / gateway URI can be re-opened or retried verbatim.
     public var origin: String?
     /// Expected integrity hash, `"algorithm:hex"` or bare hex (defaults to SHA-256).
-    /// Supported algorithms: md5, sha1, sha256. Verified after download completes.
+    /// Supported algorithms: md5, sha1, sha256, sha384, sha512. Verified after download completes.
     public var checksum: String?
     /// Mirror / CDN sources for the same file (FluxDown multi_cdn model). The
     /// native HTTP engine probes the primary first and fails over to a mirror

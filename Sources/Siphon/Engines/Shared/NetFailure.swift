@@ -16,6 +16,7 @@ enum NetFailure: Error {
     case resumeUnsupported
     case sizeExpansionExhausted
     case lowSpeed                  // 持续低于低速阈值：换源/重试
+    case insufficientDisk(String)  // 目标卷剩余空间不足（下载前预检）
     case diskWrite(String)         // deterministic local I/O failure (e.g. EFBIG)
     case cancelled
     case unknown(String)
@@ -39,7 +40,8 @@ enum NetFailure: Error {
     /// Whether retrying is pointless for this failure class.
     var isFatal: Bool {
         switch self {
-        case .checksumMismatch, .unsupportedChecksum, .dns, .diskWrite, .lowSpeed: return true
+        case .checksumMismatch, .unsupportedChecksum, .dns, .diskWrite, .lowSpeed,
+             .insufficientDisk: return true
         default: return false
         }
     }
@@ -75,6 +77,7 @@ extension NetFailure: LocalizedError {
         case .resumeUnsupported: return "服务器不支持断点续传"
         case .sizeExpansionExhausted: return "文件大小持续增长，无法完成下载"
         case .lowSpeed: return "连接持续低速，已停止并尝试其他来源"
+        case .insufficientDisk(let s): return "磁盘空间不足：\(s)"
         case .diskWrite(let s): return "磁盘写入失败：\(s)"
         case .cancelled: return "已取消"
         case .unknown(let s): return "网络错误：\(s)"

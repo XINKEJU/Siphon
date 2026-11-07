@@ -108,7 +108,7 @@ struct AddTaskView: View {
                     TextField("校验和（可选）", text: $checksumText)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
-                    Text("下载完成后自动校验，不符则自动重下一次。支持 sha256:/sha1:/md5: 前缀；纯十六进制串按 SHA-256 处理。")
+                    Text("下载完成后自动校验，不符则自动重下一次。支持 sha512:/sha384:/sha256:/sha1:/md5: 前缀；纯十六进制串按 SHA-256 处理。")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
