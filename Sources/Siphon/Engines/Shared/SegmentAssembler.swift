@@ -276,6 +276,11 @@ public final class SegmentAssembler {
                         completed[order] = data
                         while let d = completed.removeValue(forKey: nextToWrite) {
                             let final = s.transform?(d, s.requests[nextToWrite]) ?? d
+                            // HLS/DASH 总大小通常未知，无法在开始前预检；
+                            // 改为每段落盘前检查，空间耗尽时停在干净的段边界。
+                            try DiskSpaceGuard.ensureCapacity(
+                                total: Int64(final.count), alreadyWritten: 0,
+                                directory: s.outURL.deletingLastPathComponent())
                             try s.handle.write(contentsOf: final)
                             nextToWrite += 1
                             s.writtenCount = nextToWrite

@@ -11,8 +11,9 @@ import UniformTypeIdentifiers
 /// for list rows, text or an ersatz bottom command bar.
 struct TaskListView: View {
     @Environment(DownloadStore.self) private var store
-    @Binding var selection: SidebarItem
+    let filter: TaskFilter
     let searchText: String
+    var onSelect: ((DownloadTask) -> Void)? = nil
     @State private var previewTask: DownloadTask?
     @State private var deleteCandidate: DownloadTask?
     @State private var isDropTargeted = false
@@ -25,12 +26,11 @@ struct TaskListView: View {
 
     private var visible: [DownloadTask] {
         let base: [DownloadTask]
-        switch selection {
+        switch filter {
         case .all: base = store.tasks
-        case .downloading: base = store.tasks.filter { $0.state == .active || $0.state == .pending }
-        case .completed: base = store.tasks.filter { $0.state == .completed }
+        case .active: base = store.tasks.filter { $0.state == .active || $0.state == .pending }
         case .paused: base = store.tasks.filter { $0.state == .paused }
-        case .queue(let name): base = store.tasks.filter { $0.queueName == name }
+        case .completed: base = store.tasks.filter { $0.state == .completed }
         }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return base }
@@ -96,6 +96,12 @@ struct TaskListView: View {
                         TaskRowView(task: task)
                             .tag(task.id)
                             .contextMenu { contextMenu(for: task) }
+                            .onTapGesture(count: 2) { onSelect?(task) }
+                    }
+                }
+                .onChange(of: store.selectedTaskID) { _, newID in
+                    if let id = newID, let task = visible.first(where: { $0.id == id }) {
+                        onSelect?(task)
                     }
                 }
                 // macOS 27 paints alternating row backgrounds across the whole

@@ -2,6 +2,50 @@ import Foundation
 import SystemConfiguration
 import CoreFoundation
 
+/// Manual proxy configuration (HTTP or SOCKS5).
+public struct ManualProxy: Codable, Equatable, Sendable {
+    public enum ProxyType: String, Codable, Sendable {
+        case http, socks5
+    }
+    public var type: ProxyType = .http
+    public var host: String = ""
+    public var port: Int = 0
+    public var username: String = ""
+    public var password: String = ""
+
+    public init() {}
+
+    public var isValid: Bool {
+        !host.isEmpty && port > 0 && port <= 65535
+    }
+
+    /// URLSession `connectionProxyDictionary` for this manual proxy.
+    public var proxyDictionary: [String: Any] {
+        var dict: [String: Any] = [:]
+        switch type {
+        case .http:
+            dict["HTTPProxy"] = host
+            dict["HTTPPort"] = port
+            dict["HTTPSProxy"] = host
+            dict["HTTPSPort"] = port
+            dict["HTTPEnable"] = 1
+            dict["HTTPSEnable"] = 1
+        case .socks5:
+            dict["SOCKSProxy"] = host
+            dict["SOCKSPort"] = port
+            dict["SOCKSEnable"] = 1
+        }
+        if !username.isEmpty {
+            // SOCKS and HTTP proxy auth use the same keys in URLSession.
+            dict["SOCKSUsername"] = username
+            dict["SOCKSPassword"] = password
+            dict["HTTPUsername"] = username
+            dict["HTTPPassword"] = password
+        }
+        return dict
+    }
+}
+
 /// Proxy routing bridge (FluxDown PAC / auto-proxy model).
 ///
 /// Reads the system proxy configuration (including PAC / "Auto Proxy Discovery"
@@ -13,10 +57,14 @@ import CoreFoundation
 /// Loopback hosts (`localhost`, `127.0.0.1`, `::1`) always return `DIRECT` — they
 /// never need a proxy, and short-circuiting avoids touching the system proxy
 /// store for local traffic.
+///
+/// Manual proxy (HTTP/SOCKS5) takes priority over system PAC when enabled.
 public final class ProxyRouter: @unchecked Sendable {
     public static let shared = ProxyRouter()
 
     private static let enabledKey = "Siphon.proxyPACEnabled"
+    private static let manualEnabledKey = "Siphon.manualProxyEnabled"
+    private static let manualProxyKey = "Siphon.manualProxy"
 
     private let lock = NSLock()
     private var pacResolver: PACResolver?
@@ -31,6 +79,28 @@ public final class ProxyRouter: @unchecked Sendable {
     public var enabled: Bool {
         get { UserDefaults.standard.bool(forKey: Self.enabledKey) }
         set { UserDefaults.standard.set(newValue, forKey: Self.enabledKey) }
+    }
+
+    /// Whether a manually configured proxy (HTTP/SOCKS5) is active.
+    public var manualEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.manualEnabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.manualEnabledKey) }
+    }
+
+    /// The manually configured proxy, if any.
+    public var manualProxy: ManualProxy {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: Self.manualProxyKey),
+                  let p = try? JSONDecoder().decode(ManualProxy.self, from: data) else {
+                return ManualProxy()
+            }
+            return p
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: Self.manualProxyKey)
+            }
+        }
     }
 
     /// Whether `host` is a loopback / local address that must go DIRECT.
@@ -67,10 +137,18 @@ public final class ProxyRouter: @unchecked Sendable {
 
     /// Resolve the proxy dictionary for a URL, honouring a configured PAC script
     /// (system or user-supplied). Returns `nil` for `DIRECT` (no proxy).
+    /// Manual proxy (HTTP/SOCKS5) takes priority over system PAC when enabled.
     public func proxyDictionary(for url: URL) -> [String: Any]? {
-        guard enabled else { return nil }
         guard let host = url.host, !host.isEmpty else { return nil }
         if Self.isLoopback(host) { return nil }
+
+        // Manual proxy has highest priority when enabled and valid.
+        if manualEnabled {
+            let mp = manualProxy
+            if mp.isValid { return mp.proxyDictionary }
+        }
+
+        guard enabled else { return nil }
 
         // loadPAC takes the same lock — release around it (NSLock is not
         // reentrant; calling it while held would deadlock).

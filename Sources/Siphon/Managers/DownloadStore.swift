@@ -132,8 +132,8 @@ public final class DownloadStore: EngineDelegate {
 
     public init() {
         load()
-        clipboard.onURLDetected = { [weak self] url in
-            Task { @MainActor in self?.handleDetectedURL(url) }
+        clipboard.onURLDetected = { [weak self] url, isDefinite in
+            Task { @MainActor in self?.handleDetectedURL(url, isDefinite: isDefinite) }
         }
         // RSS subscriptions: new feed entries become download tasks automatically.
         feedManager.onNewItems = { [weak self] feed, items in
@@ -345,6 +345,10 @@ public final class DownloadStore: EngineDelegate {
         if d.bool(forKey: PrefKey.clipboard) { setClipboardEnabled(true) }
         if d.bool(forKey: PrefKey.mcp) { setMCPEnabled(true) }
         if d.bool(forKey: PrefKey.mdxp) { setMDXPEnabled(true) }
+        // Smart detection defaults to on; only turn off if explicitly disabled.
+        let smartKey = "Siphon.clipboardSmartDetection"
+        let smart = d.object(forKey: smartKey) == nil || d.bool(forKey: smartKey)
+        clipboard.smartDetection = smart
     }
 
     public func restartAria2() async {
@@ -826,6 +830,18 @@ public final class DownloadStore: EngineDelegate {
         broadcastTask(tasks[i])
         SystemPresence.shared.refresh(tasks: tasks)
         Task { await schedule() }
+    }
+
+    public func pauseAll() {
+        for t in tasks where t.state == .active || t.state == .pending {
+            pause(t.id)
+        }
+    }
+
+    public func resumeAll() {
+        for t in tasks where t.state == .paused || t.state == .error {
+            resume(t.id)
+        }
     }
 
     public func remove(_ id: UUID) {
@@ -1323,6 +1339,11 @@ public final class DownloadStore: EngineDelegate {
         clipboard.setEnabled(on)
     }
 
+    public func setClipboardSmartDetection(_ on: Bool) {
+        clipboard.smartDetection = on
+        UserDefaults.standard.set(on, forKey: "Siphon.clipboardSmartDetection")
+    }
+
     public func setBrowserCaptureEnabled(_ on: Bool) {
         browserCaptureEnabled = on
         UserDefaults.standard.set(on, forKey: PrefKey.browser)
@@ -1351,8 +1372,9 @@ public final class DownloadStore: EngineDelegate {
             let server = NativeMessagingServer()
             server.start(onURL: { [weak self] url, options, checksum, mirrors in
                 Task { @MainActor in
+                    // Browser-intercepted downloads get a priority boost.
                     self?.add(urlString: url, options: options, checksum: checksum,
-                              mirrors: mirrors)
+                              mirrors: mirrors, priority: 1)
                 }
             }, api: { [weak self] method, path, body in
                 self?.handleRESTAPI(method: method, path: path, body: body)
@@ -1540,13 +1562,22 @@ public final class DownloadStore: EngineDelegate {
         ]]
     }
 
-    private func handleDetectedURL(_ url: URL) {
-        // Offer rather than silently start: add as a paused task so the user confirms.
-        let destination = downloadDirectory.appendingPathComponent(
-            url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent)
-        var t = DownloadTask(source: url, destination: destination)
-        t.state = .paused
-        add(t)
+    private func handleDetectedURL(_ url: URL, isDefinite: Bool) {
+        let notifyMode = UserDefaults.standard.string(forKey: "Siphon.clipboardMode") ?? "notify"
+        let filename = url.lastPathComponent.isEmpty ? nil : url.lastPathComponent
+
+        if notifyMode == "auto" {
+            // Legacy: auto-create paused task with priority boost for clipboard captures.
+            let destination = downloadDirectory.appendingPathComponent(
+                url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent)
+            var t = DownloadTask(source: url, destination: destination)
+            t.state = .paused
+            t.priority = 1
+            add(t)
+        } else {
+            // Default: show notification with download action
+            SystemPresence.shared.showClipboardNotification(url: url, filename: filename)
+        }
     }
 
     // MARK: - derived

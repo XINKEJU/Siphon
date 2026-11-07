@@ -69,7 +69,7 @@ eq(DownloadProtocol.bittorrent.requiresAria2, true, "bittorrent -> aria2")
 eq(DownloadProtocol.metalink.requiresAria2, true, "metalink -> aria2")
 eq(DownloadProtocol.sftp.requiresAria2, true, "sftp -> aria2")
 eq(DownloadProtocol.nfs.transport, .mount, "nfs -> mount transport")
-eq(URISchemes.registered.count, 32, "registered URL schemes")
+eq(URISchemes.registered.count, 33, "registered URL schemes")
 
 // MARK: - 2. vendor link codec
 print("[2] vendor link decoding")

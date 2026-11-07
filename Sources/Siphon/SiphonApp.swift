@@ -22,9 +22,6 @@ struct SiphonApp: App {
     // toolbar operate on exactly the same values (HIG: every toolbar command
     // must also be available from the menu bar).
     @State private var showingAdd = false
-    // Persisted so the inspector stays collapsed/expanded across relaunches,
-    // and so the toolbar button and menu-bar Toggle always agree.
-    @AppStorage("Siphon.showInspector") private var showingInspector = true
 
     var body: some Scene {
         // Single-window scene: opening a magnet:/ed2k: URL (or re-activating
@@ -33,9 +30,9 @@ struct SiphonApp: App {
         // HIG: don't title a window with the app name — the current library
         // selection supplies the real title via .navigationTitle.
         Window("下载", id: "main-window") {
-            ContentView(showingAdd: $showingAdd, showingInspector: $showingInspector)
+            ContentView(showingAdd: $showingAdd, showingInspector: .constant(false))
                 .environment(store)
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 700, minHeight: 450)
                 .onAppear {
                     appDelegate.store = store
                     SystemPresence.shared.configure(store: store)
@@ -43,9 +40,7 @@ struct SiphonApp: App {
         }
         .windowResizability(.contentSize)
         .commands {
-            SiphonCommands(showingAdd: $showingAdd,
-                           showingInspector: $showingInspector,
-                           store: store)
+            SiphonCommands(showingAdd: $showingAdd, store: store)
         }
 
         Settings {
@@ -59,7 +54,6 @@ struct SiphonApp: App {
 /// people customise the toolbar, so no command may live only in the toolbar.
 struct SiphonCommands: Commands {
     @Binding var showingAdd: Bool
-    @Binding var showingInspector: Bool
     var store: DownloadStore
 
     var body: some Commands {
@@ -87,8 +81,6 @@ struct SiphonCommands: Commands {
             }
             Divider()
             Button("重新启动 aria2") { Task { await store.restartAria2() } }
-            Toggle("显示任务详情", isOn: $showingInspector)
-                .keyboardShortcut("i", modifiers: [.command, .option])
         }
     }
 }

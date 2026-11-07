@@ -1,53 +1,34 @@
 import SwiftUI
 import AppKit
 
-/// Root window. `NavigationSplitView` provides the standard macOS sidebar +
-/// content columns, while `.inspector` provides the *collapsible* trailing
-/// column. The two are not interchangeable: a three-column
-/// `NavigationSplitView` detail column is always visible — toggling only its
-/// contents (the old implementation) looks like a dead button.
-///
-/// Window chrome is entirely system-owned: AppKit draws the window controls,
-/// the unified title bar and the sidebar; SwiftUI draws the toolbar items on
-/// their Liquid Glass surfaces. We never add a custom background, tint or
-/// `.glassEffect` to any of those — doing so double-composites over the system
-/// material and breaks the scroll edge effect.
-///
-/// Toolbar layout follows the macOS 26 HIG (three groups, trailing search):
-///   leading  — sidebar toggle (system) + view title
-///   centre   — transfer controls: resume / pause all
-///   trailing — primary action (new download), inspector, more, search
-/// The old bottom floating command bar is gone: on macOS, controls belong in
-/// the unified toolbar at the top of the window.
+/// NDM-style simplified main window: filter tabs at top, compact task list,
+/// bottom status bar. Task details open in a sheet instead of an inspector.
 struct ContentView: View {
     @Environment(DownloadStore.self) private var store
     @Binding var showingAdd: Bool
     @Binding var showingInspector: Bool
-    @State private var sidebarSelection: SidebarItem = .all
+    @State private var filter: TaskFilter = .all
     @State private var searchText = ""
+    @State private var showingDetail = false
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(selection: $sidebarSelection)
-        }         detail: {
-            VStack(spacing: 0) {
-                SpeedGraphView()
-                TaskListView(selection: $sidebarSelection, searchText: searchText)
-                    .navigationTitle(sidebarSelection.title)
-            }
+        VStack(spacing: 0) {
+            filterTabs
+            Divider()
+            taskList
+            Divider()
+            statusBar
         }
-        // System inspector: AppKit owns the divider, the collapse animation
-        // and the glass surface. `isPresented` is the single source of truth
-        // shared with the toolbar button and the menu-bar Toggle.
-        .inspector(isPresented: $showingInspector) {
-            inspectorContent
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
-        }
-        // On macOS 26+ the system places this in a glass field at the trailing
-        // edge of the toolbar. Searching belongs to the whole split view.
         .searchable(text: $searchText, prompt: "搜索任务")
         .toolbar { toolbarContent }
         .sheet(isPresented: $showingAdd) { AddTaskView() }
+        .sheet(isPresented: $showingDetail) {
+            if let task = selectedTask {
+                TaskDetailView(task: task)
+                    .frame(minWidth: 400, minHeight: 500)
+                    .padding()
+            }
+        }
         .task { await store.start() }
         .alert("无法添加任务", isPresented: Binding(
             get: { store.lastError != nil },
@@ -57,23 +38,114 @@ struct ContentView: View {
         } message: {
             Text(store.lastError ?? "")
         }
-        .frame(minWidth: 900, minHeight: 560)
+        .frame(minWidth: 700, minHeight: 450)
     }
 
-    @ViewBuilder
-    private var inspectorContent: some View {
-        if let id = store.selectedTaskID,
-           let task = store.tasks.first(where: { $0.id == id }) {
-            TaskDetailView(task: task)
-        } else {
-            EmptyDetailView()
+    // MARK: - Filter tabs
+
+    private var filterTabs: some View {
+        HStack(spacing: 0) {
+            ForEach(TaskFilter.allCases) { item in
+                Button {
+                    filter = item
+                } label: {
+                    Text("\(item.title) (\(item.count(store.tasks)))")
+                        .font(.system(size: 12, weight: filter == item ? .semibold : .regular))
+                        .foregroundStyle(filter == item ? Color.accentColor : .secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background {
+                            if filter == item {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.accentColor.opacity(0.1))
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
     }
+
+    // MARK: - Task list
+
+    private var taskList: some View {
+        TaskListView(filter: filter, searchText: searchText, onSelect: { task in
+            store.selectedTaskID = task.id
+            showingDetail = true
+        })
+    }
+
+    // MARK: - Status bar
+
+    private var statusBar: some View {
+        HStack(spacing: 16) {
+            let active = store.tasks.filter { $0.state == .active }
+            let totalSpeed = active.map { $0.progress.speedBytesPerSec }.reduce(Int64(0), +)
+            let queued = store.tasks.filter { $0.state == .pending || $0.state == .paused }.count
+
+            Label {
+                Text("\(active.count) 个进行中")
+                    .font(.system(size: 11))
+            } icon: {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.system(size: 10))
+            }
+
+            if queued > 0 {
+                Label {
+                    Text("\(queued) 个排队中")
+                        .font(.system(size: 11))
+                } icon: {
+                    Image(systemName: "clock")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 10))
+                }
+            }
+
+            if totalSpeed > 0 {
+                Label {
+                    Text("\(formatBytes(totalSpeed))/s")
+                        .font(.system(size: 11, design: .monospaced))
+                } icon: {
+                    Image(systemName: "speedometer")
+                        .foregroundStyle(.blue)
+                        .font(.system(size: 10))
+                }
+            }
+
+            Spacer()
+
+            Button {
+                NSWorkspace.shared.open(store.downloadDirectory)
+            } label: {
+                Label {
+                    Text(store.downloadDirectory.lastPathComponent)
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } icon: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("在访达中打开下载目录")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    // MARK: - Toolbar
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        // Group 1 — transfer controls. ToolbarItemGroup is a real capsule
-        // boundary on macOS 26+, so the two buttons read as one unit.
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
                 for t in store.tasks where t.state == .paused || t.state == .error {
@@ -94,22 +166,16 @@ struct ContentView: View {
             .disabled(!store.tasks.contains { $0.state == .active })
         }
 
-        // A fixed spacer with the SAME placement is the only reliable way to
-        // keep neighbouring toolbar items on separate glass capsules.
         if #available(macOS 26.0, *) {
             ToolbarSpacer(.fixed, placement: .primaryAction)
         }
 
-        // Group 2 — the single coloured, prominent action. Toolbar content is
-        // monochrome by default; colour is reserved for the key action.
         ToolbarItem(placement: .primaryAction) {
             Button {
                 showingAdd = true
             } label: {
                 Label("新建下载", systemImage: "plus")
             }
-            // WWDC25: toolbar content is monochrome by default; use a
-            // prominent tinted style only for the single key action.
             .buttonStyle(.borderedProminent)
             .tint(Color.accentColor)
             .help("添加链接、专用链、网关地址或批量列表 (⌘N)")
@@ -119,49 +185,54 @@ struct ContentView: View {
             ToolbarSpacer(.fixed, placement: .primaryAction)
         }
 
-        // Group 3 — inspector visibility and less frequent commands.
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                showingInspector.toggle()
-            } label: {
-                Label(showingInspector ? "隐藏详情" : "显示详情",
-                      systemImage: "sidebar.trailing")
-            }
-            .help(showingInspector ? "折叠右侧详情面板 (⌘⌥I)" : "展开右侧详情面板 (⌘⌥I)")
-        }
-
         ToolbarItem(placement: .primaryAction) {
             Menu {
                 Button("清理已完成") { store.removeCompleted() }
                 Button("在访达中打开下载目录") {
                     NSWorkspace.shared.open(store.downloadDirectory)
                 }
-                if let id = store.selectedTaskID,
-                   let task = store.tasks.first(where: { $0.id == id }),
-                   FileManager.default.fileExists(atPath: task.destination.path) {
-                    Button("在访达中显示所选文件") {
-                        NSWorkspace.shared.activateFileViewerSelecting([task.destination])
-                    }
-                }
                 Divider()
                 Button("重新启动 aria2") { Task { await store.restartAria2() } }
+                Divider()
+                Toggle("显示侧边栏", isOn: $showingInspector)
             } label: {
                 Label("更多操作", systemImage: "ellipsis.circle")
             }
             .help("更多任务操作")
         }
     }
+
+    private var selectedTask: DownloadTask? {
+        guard let id = store.selectedTaskID else { return nil }
+        return store.tasks.first { $0.id == id }
+    }
 }
 
-/// System-standard empty state. `ContentUnavailableView` supplies the correct
-/// typography and spacing; a custom glass card here would put a lens over
-/// content and compete with the system sidebar material.
-private struct EmptyDetailView: View {
-    var body: some View {
-        ContentUnavailableView {
-            Label("未选择任务", systemImage: "arrow.down.circle.dotted")
-        } description: {
-            Text("从列表中选择一个任务，查看进度、来源协议、引擎与保存位置。")
+// MARK: - Task filter
+
+enum TaskFilter: String, CaseIterable, Identifiable {
+    case all, active, paused, completed
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: return "全部"
+        case .active: return "进行中"
+        case .paused: return "已暂停"
+        case .completed: return "已完成"
         }
     }
+    func count(_ tasks: [DownloadTask]) -> Int {
+        switch self {
+        case .all: return tasks.count
+        case .active: return tasks.filter { $0.state == .active || $0.state == .pending }.count
+        case .paused: return tasks.filter { $0.state == .paused }.count
+        case .completed: return tasks.filter { $0.state == .completed }.count
+        }
+    }
+}
+
+private func formatBytes(_ bytes: Int64) -> String {
+    let fmt = ByteCountFormatter()
+    fmt.countStyle = .binary
+    return fmt.string(fromByteCount: bytes)
 }

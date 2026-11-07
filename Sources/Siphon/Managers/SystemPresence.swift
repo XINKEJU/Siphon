@@ -111,6 +111,51 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate {
         NSApp.terminate(nil)
     }
 
+    // MARK: - clipboard detection notification
+
+    private static let clipboardNotificationCategory = "CLIPBOARD_DOWNLOAD"
+    nonisolated private static let clipboardDownloadAction = "CLIPBOARD_DOWNLOAD_ACTION"
+    private var pendingClipboardURL: URL?
+
+    /// Show a notification offering to download the clipboard URL.
+    public func showClipboardNotification(url: URL, filename: String?) {
+        guard notificationsAuthorized else { return }
+        let key = "Siphon.notificationsEnabled"
+        let enabled = UserDefaults.standard.object(forKey: key) == nil
+            || UserDefaults.standard.bool(forKey: key)
+        guard enabled else { return }
+
+        pendingClipboardURL = url
+        let content = UNMutableNotificationContent()
+        content.title = "检测到下载链接"
+        content.body = filename ?? url.absoluteString
+        content.categoryIdentifier = Self.clipboardNotificationCategory
+        content.sound = .default
+        content.userInfo = ["url": url.absoluteString]
+
+        let request = UNNotificationRequest(
+            identifier: "clipboard-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func registerClipboardCategory() {
+        let downloadAction = UNNotificationAction(
+            identifier: Self.clipboardDownloadAction,
+            title: "立即下载",
+            options: [.foreground]
+        )
+        let category = UNNotificationCategory(
+            identifier: Self.clipboardNotificationCategory,
+            actions: [downloadAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([category])
+    }
+
     // MARK: - notifications
 
     private func requestNotificationPermission() {
@@ -120,7 +165,10 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
-            Task { @MainActor in self?.notificationsAuthorized = granted }
+            Task { @MainActor in
+                self?.notificationsAuthorized = granted
+                if granted { self?.registerClipboardCategory() }
+            }
         }
     }
 
@@ -128,6 +176,11 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate {
     /// Notification Center.
     public func taskStateChanged(_ task: DownloadTask) {
         guard notificationsAuthorized else { return }
+        // Respect user toggle (default on).
+        let key = "Siphon.notificationsEnabled"
+        let enabled = UserDefaults.standard.object(forKey: key) == nil
+            || UserDefaults.standard.bool(forKey: key)
+        guard enabled else { return }
         let now = Date()
         guard now.timeIntervalSince(lastNotification) >= 1 else { return }
         let state = task.state
@@ -161,7 +214,19 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        Task { @MainActor in self.showMainWindow() }
+        let actionId = response.actionIdentifier
+        let userInfo = response.notification.request.content.userInfo
+
+        if actionId == Self.clipboardDownloadAction,
+           let urlString = userInfo["url"] as? String,
+           let url = URL(string: urlString) {
+            Task { @MainActor in
+                store?.add(urlString: url.absoluteString)
+                showMainWindow()
+            }
+        } else {
+            Task { @MainActor in self.showMainWindow() }
+        }
         completionHandler()
     }
 }

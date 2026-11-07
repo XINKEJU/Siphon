@@ -1,20 +1,46 @@
+// popup.js — tabbed UI for Siphon v3 extension
+
 const statusEl = document.getElementById("status");
-const toggle = document.getElementById("captureAll");
+const captureAllEl = document.getElementById("captureAll");
+const notifyOnCaptureEl = document.getElementById("notifyOnCapture");
 const listEl = document.getElementById("list");
 const sendAllBtn = document.getElementById("sendAll");
 const refreshBtn = document.getElementById("refresh");
 const clearBtn = document.getElementById("clear");
+const resetStatsBtn = document.getElementById("resetStats");
+const saveConfigBtn = document.getElementById("saveConfig");
+const minFileSizeEl = document.getElementById("minFileSize");
+const newExcludeHostEl = document.getElementById("newExcludeHost");
+const addExcludeHostBtn = document.getElementById("addExcludeHost");
+const excludeHostsListEl = document.getElementById("excludeHostsList");
+const newExcludeExtEl = document.getElementById("newExcludeExt");
+const addExcludeExtBtn = document.getElementById("addExcludeExt");
+const excludeExtsListEl = document.getElementById("excludeExtsList");
+
+const statEls = {
+  intercepted: document.getElementById("stat-intercepted"),
+  skipped: document.getElementById("stat-skipped"),
+  media: document.getElementById("stat-media"),
+  errors: document.getElementById("stat-errors"),
+};
 
 let currentTabId = -1;
 let currentItems = [];
+let excludeHosts = [];
+let excludeExts = [];
 
-chrome.storage.local.get("captureAll").then(v => {
-  toggle.checked = v.captureAll ?? false;
+// MARK: - tabs
+
+document.querySelectorAll(".tab-bar button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-bar button").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+  });
 });
 
-toggle.addEventListener("change", () => {
-  chrome.storage.local.set({ captureAll: toggle.checked });
-});
+// MARK: - helpers
 
 function fileName(url) {
   try {
@@ -29,6 +55,138 @@ function fileName(url) {
 function hostName(url) {
   try { return new URL(url).host; } catch (_) { return ""; }
 }
+
+function fmtBytes(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
+  return (n / 1073741824).toFixed(2) + " GB";
+}
+
+// MARK: - config
+
+async function loadConfig() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "getConfig" });
+    if (res?.ok && res.config) {
+      captureAllEl.checked = res.config.captureAll ?? false;
+      notifyOnCaptureEl.checked = res.config.notifyOnCapture ?? true;
+      minFileSizeEl.value = ((res.config.minFileSize ?? 1048576) / 1048576).toFixed(1);
+      excludeHosts = res.config.excludeHosts || [];
+      excludeExts = res.config.excludeExts || [];
+      renderExcludeLists();
+    }
+  } catch (_) {}
+}
+
+function renderExcludeLists() {
+  excludeHostsListEl.textContent = "";
+  if (!excludeHosts.length) {
+    excludeHostsListEl.innerHTML = '<span class="empty">无排除站点</span>';
+  } else {
+    for (const host of excludeHosts) {
+      const row = document.createElement("div");
+      row.className = "exclude-item";
+      const label = document.createElement("span");
+      label.textContent = host;
+      const btn = document.createElement("button");
+      btn.textContent = "删除";
+      btn.addEventListener("click", () => {
+        excludeHosts = excludeHosts.filter(h => h !== host);
+        renderExcludeLists();
+      });
+      row.appendChild(label);
+      row.appendChild(btn);
+      excludeHostsListEl.appendChild(row);
+    }
+  }
+
+  excludeExtsListEl.textContent = "";
+  if (!excludeExts.length) {
+    excludeExtsListEl.innerHTML = '<span class="empty">无排除扩展名</span>';
+  } else {
+    for (const ext of excludeExts) {
+      const row = document.createElement("div");
+      row.className = "exclude-item";
+      const label = document.createElement("span");
+      label.textContent = ext;
+      const btn = document.createElement("button");
+      btn.textContent = "删除";
+      btn.addEventListener("click", () => {
+        excludeExts = excludeExts.filter(e => e !== ext);
+        renderExcludeLists();
+      });
+      row.appendChild(label);
+      row.appendChild(btn);
+      excludeExtsListEl.appendChild(row);
+    }
+  }
+}
+
+addExcludeHostBtn.addEventListener("click", () => {
+  const val = newExcludeHostEl.value.trim();
+  if (!val) return;
+  if (!excludeHosts.includes(val)) {
+    excludeHosts.push(val);
+    renderExcludeLists();
+  }
+  newExcludeHostEl.value = "";
+});
+
+addExcludeExtBtn.addEventListener("click", () => {
+  const val = newExcludeExtEl.value.trim().toLowerCase().replace(/^\./, "");
+  if (!val) return;
+  if (!excludeExts.includes(val)) {
+    excludeExts.push(val);
+    renderExcludeLists();
+  }
+  newExcludeExtEl.value = "";
+});
+
+saveConfigBtn.addEventListener("click", async () => {
+  const mb = parseFloat(minFileSizeEl.value) || 0;
+  const config = {
+    captureAll: captureAllEl.checked,
+    notifyOnCapture: notifyOnCaptureEl.checked,
+    minFileSize: Math.round(mb * 1048576),
+    excludeHosts,
+    excludeExts,
+  };
+  try {
+    await chrome.runtime.sendMessage({ type: "setConfig", config });
+    saveConfigBtn.textContent = "已保存";
+    setTimeout(() => { saveConfigBtn.textContent = "保存设置"; }, 1200);
+  } catch (_) {
+    saveConfigBtn.textContent = "保存失败";
+    setTimeout(() => { saveConfigBtn.textContent = "保存设置"; }, 1200);
+  }
+});
+
+// MARK: - stats
+
+async function loadStats() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "getStats" });
+    if (res?.ok && res.stats) {
+      for (const [k, el] of Object.entries(statEls)) {
+        el.textContent = res.stats[k] ?? 0;
+      }
+    }
+  } catch (_) {}
+}
+
+resetStatsBtn.addEventListener("click", async () => {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "resetStats" });
+    if (res?.ok && res.stats) {
+      for (const [k, el] of Object.entries(statEls)) {
+        el.textContent = res.stats[k] ?? 0;
+      }
+    }
+  } catch (_) {}
+});
+
+// MARK: - media sniff
 
 function render(items) {
   currentItems = items || [];
@@ -95,7 +253,7 @@ async function refreshList() {
 
 sendAllBtn.addEventListener("click", async () => {
   sendAllBtn.disabled = true;
-  const buttons = Array.from(listEl.querySelectorAll("button"));
+  const buttons = Array.from(listEl.querySelectorAll(".item button"));
   for (let i = 0; i < currentItems.length; i++) {
     const btn = buttons[i];
     if (btn) await sendOne(currentItems[i].url, btn);
@@ -109,9 +267,15 @@ clearBtn.addEventListener("click", async () => {
   render([]);
 });
 
+// MARK: - status
+
 chrome.runtime.sendMessage({ type: "ping" }, res => {
   statusEl.textContent = res?.ok ? "● 已连接 Siphon" : "○ Siphon 未运行";
   statusEl.style.color = res?.ok ? "#0f6e56" : "#a32d2d";
 });
 
+// MARK: - init
+
+loadConfig();
+loadStats();
 refreshList();

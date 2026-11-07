@@ -194,6 +194,7 @@ public enum URISchemes {
     /// `libcurlOnly` catch-all schemes are included so every protocol we claim to
     /// accept can actually be delivered to the app from a browser.
     public static let registered: [String] = [
+        "siphon",
         "magnet", "ed2k", "thunder", "flashget", "qqdl",
         "sftp", "scp", "rsync", "webdav", "webdavs",
         "smb", "smbs", "nfs", "afp", "ipfs", "ipns", "s3", "ftps",

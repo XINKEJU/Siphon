@@ -54,13 +54,40 @@ struct IntegrationSettingsView: View {
     @State private var newSiteHost = ""
     @State private var cookieHostCount = 0
 
+    // Proxy settings
+    @State private var proxyManualEnabled = false
+    @State private var proxyType: ManualProxy.ProxyType = .http
+    @State private var proxyHost = ""
+    @State private var proxyPort = ""
+    @State private var proxyUsername = ""
+    @State private var proxyPassword = ""
+    @State private var proxyPACEnabled = false
+
+    // Notifications
+    @State private var notificationsEnabled = true
+
     var body: some View {
         Form {
             Section("剪贴板监听") {
                 Toggle("自动捕获复制的下载链接", isOn: Binding(
                     get: { store.clipboardEnabled },
                     set: { store.setClipboardEnabled($0) }))
-                Text("捕获后以「已暂停」状态添加，需手动确认开始。")
+                Toggle("智能识别（仅下载类链接）", isOn: Binding(
+                    get: {
+                        let key = "Siphon.clipboardSmartDetection"
+                        return UserDefaults.standard.object(forKey: key) == nil
+                            || UserDefaults.standard.bool(forKey: key)
+                    },
+                    set: { store.setClipboardSmartDetection($0) }))
+                Picker("捕获后行为", selection: Binding(
+                    get: { UserDefaults.standard.string(forKey: "Siphon.clipboardMode") ?? "notify" },
+                    set: { UserDefaults.standard.set($0, forKey: "Siphon.clipboardMode") }
+                )) {
+                    Text("弹出通知，点击后下载").tag("notify")
+                    Text("自动添加为暂停任务").tag("auto")
+                }
+                .pickerStyle(.menu)
+                Text("智能识别会过滤网页等无关链接，仅匹配含下载扩展名或媒体流特征的 URL。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("视频站解析（yt-dlp）") {
@@ -139,6 +166,61 @@ struct IntegrationSettingsView: View {
                 }
                 Text("扩展 v2 会按标签页嗅探媒体地址（m3u8 / mpd / mp4 / mp3…），透传页面 Cookie，并优先通过原生消息直连；未安装网关时自动回退到本地接口。安装后在 chrome://extensions 以「加载已解压的扩展程序」选择上面的目录。")
                     .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("网络代理") {
+                Toggle("使用系统代理（PAC / 自动发现）", isOn: $proxyPACEnabled)
+                    .onChange(of: proxyPACEnabled) { _, new in
+                        ProxyRouter.shared.enabled = new
+                    }
+                Toggle("手动代理", isOn: $proxyManualEnabled)
+                    .onChange(of: proxyManualEnabled) { _, new in
+                        ProxyRouter.shared.manualEnabled = new
+                    }
+                if proxyManualEnabled {
+                    Picker("类型", selection: $proxyType) {
+                        Text("HTTP").tag(ManualProxy.ProxyType.http)
+                        Text("SOCKS5").tag(ManualProxy.ProxyType.socks5)
+                    }
+                    .pickerStyle(.segmented)
+                    HStack {
+                        TextField("地址", text: $proxyHost)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("端口", text: $proxyPort)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 70)
+                    }
+                    HStack {
+                        TextField("用户名（可选）", text: $proxyUsername)
+                            .textFieldStyle(.roundedBorder)
+                        SecureField("密码（可选）", text: $proxyPassword)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Button("保存") {
+                        saveManualProxy()
+                    }
+                    .disabled(proxyHost.trimmingCharacters(in: .whitespaces).isEmpty
+                              || Int(proxyPort) == nil)
+                    Text("手动代理优先于系统 PAC；留空用户名即无认证。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(ProxyRouter.shared.manualEnabled && ProxyRouter.shared.manualProxy.isValid
+                              ? Color.green
+                              : (ProxyRouter.shared.enabled ? Color.blue : Color.secondary))
+                        .frame(width: 8, height: 8)
+                    Text(proxyStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("通知") {
+                Toggle("下载完成 / 失败时推送通知", isOn: $notificationsEnabled)
+                    .onChange(of: notificationsEnabled) { _, new in
+                        UserDefaults.standard.set(new, forKey: "Siphon.notificationsEnabled")
+                    }
+                Text("首次使用需授权；关闭后不再弹出系统通知。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("站点规则（Referer / 文件名 / 请求头）") {
                 ForEach($siteRules) { $rule in
@@ -635,6 +717,18 @@ struct IntegrationSettingsView: View {
             siteRules = SiteRuleStore.shared.rules
             cookieHostCount = CookieJar.shared.hostCount
             extensionID = NativeMessagingHostInstaller.extensionID
+            // Proxy
+            proxyPACEnabled = ProxyRouter.shared.enabled
+            proxyManualEnabled = ProxyRouter.shared.manualEnabled
+            let mp = ProxyRouter.shared.manualProxy
+            proxyType = mp.type
+            proxyHost = mp.host
+            proxyPort = mp.port > 0 ? String(mp.port) : ""
+            proxyUsername = mp.username
+            proxyPassword = mp.password
+            // Notifications (default on)
+            notificationsEnabled = UserDefaults.standard.object(forKey: "Siphon.notificationsEnabled") == nil
+                || UserDefaults.standard.bool(forKey: "Siphon.notificationsEnabled")
         }
     }
 
@@ -659,5 +753,32 @@ struct IntegrationSettingsView: View {
 
     private func reloadWebhooks() {
         webhooks = WebhookManager.shared.endpoints
+    }
+
+    private var proxyStatusText: String {
+        if ProxyRouter.shared.manualEnabled, ProxyRouter.shared.manualProxy.isValid {
+            let mp = ProxyRouter.shared.manualProxy
+            return "手动 \(mp.type.rawValue.uppercased()) \(mp.host):\(mp.port)"
+        }
+        if ProxyRouter.shared.enabled {
+            if let pac = ProxyRouter.shared.systemPACURL {
+                return "系统 PAC：\(pac.host ?? pac.absoluteString)"
+            }
+            if let sp = ProxyRouter.shared.systemProxy {
+                return "系统代理 \(sp.host):\(sp.port)"
+            }
+            return "系统代理（未配置）"
+        }
+        return "直连"
+    }
+
+    private func saveManualProxy() {
+        var mp = ManualProxy()
+        mp.type = proxyType
+        mp.host = proxyHost.trimmingCharacters(in: .whitespaces)
+        mp.port = Int(proxyPort) ?? 0
+        mp.username = proxyUsername
+        mp.password = proxyPassword
+        ProxyRouter.shared.manualProxy = mp
     }
 }

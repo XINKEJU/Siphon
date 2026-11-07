@@ -143,7 +143,15 @@ public final class Aria2Engine: DownloadEngine {
             // RPC methods; aria2.addUri does not accept a file:// pointer to them.
             switch task.source.pathExtension.lowercased() {
             case "torrent":
-                gid = try await rpc.addTorrent(Data(contentsOf: task.source), options: opts)
+                let data = try Data(contentsOf: task.source)
+                // 种子元数据能给出精确体积：在交给 aria2 之前先挡住放不下的任务。
+                // 已存在的同名文件会从需求中扣除，续传不会被误报。
+                if let pending = TorrentProbe.pendingBytes(for: data, destination: task.destination) {
+                    try DiskSpaceGuard.ensureCapacity(
+                        total: pending, alreadyWritten: 0,
+                        directory: task.destination.deletingLastPathComponent())
+                }
+                gid = try await rpc.addTorrent(data, options: opts)
             case "metalink", "meta4":
                 gid = try await rpc.addMetalink(Data(contentsOf: task.source), options: opts)
             default:
@@ -244,6 +252,10 @@ public final class Aria2Engine: DownloadEngine {
         if !task.destination.lastPathComponent.isEmpty {
             opts["out"] = sanitize(task.destination.lastPathComponent)
         }
+        // Dynamic split: match aria2's connection count to the task's setting.
+        let conns = task.connections
+        opts["split"] = String(conns)
+        opts["max-connection-per-server"] = String(conns)
         return opts
     }
 

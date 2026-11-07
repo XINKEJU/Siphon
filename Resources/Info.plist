@@ -38,6 +38,14 @@
     <array>
         <dict>
             <key>CFBundleURLName</key>
+            <string>Siphon Control Links</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>siphon</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleURLName</key>
             <string>P2P and Vendor Download Links</string>
             <key>CFBundleURLSchemes</key>
             <array>

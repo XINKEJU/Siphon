@@ -632,7 +632,17 @@ public final class HTTPDownloadEngine: DownloadEngine {
         }
 
         // 每任务并发连接数（默认 8，可在任务检查器中调整 1...32）。
-        let requestedConnections = max(1, min(32, job.task.connections))
+        var requestedConnections = max(1, min(32, job.task.connections))
+        // 小文件自动降低连接数：分段开销在小文件上不划算。
+        if info.total > 0 {
+            let tenMiB: Int64 = 10 * 1024 * 1024
+            let fiftyMiB: Int64 = 50 * 1024 * 1024
+            if info.total < tenMiB {
+                requestedConnections = min(requestedConnections, 2)
+            } else if info.total < fiftyMiB {
+                requestedConnections = min(requestedConnections, 4)
+            }
+        }
         let coordinator = SegmentCoordinator(parts: parts,
                                              maxConnections: requestedConnections,
                                              minSplit: Self.minSplit,

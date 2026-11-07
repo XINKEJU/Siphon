@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { font: 13px -apple-system, system-ui, sans-serif; width: 320px; padding: 14px; margin: 0; color: #1d1d1f; }
-    h1 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+    body { font: 13px -apple-system, system-ui, sans-serif; width: 360px; padding: 14px; margin: 0; color: #1d1d1f; }
+    h1 { font-size: 14px; margin: 0 0 8px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
     h2 { font-size: 12px; margin: 14px 0 6px; font-weight: 600; color: #6e6e73; }
     p { margin: 8px 0; color: #6e6e73; line-height: 1.5; }
-    label { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
+    label { display: flex; align-items: center; gap: 6px; margin: 6px 0; cursor: pointer; }
+    label.inline { display: inline-flex; }
     #status { font-weight: 500; }
-    #list { max-height: 280px; overflow-y: auto; border-top: 1px solid #e5e5ea; }
+    #list { max-height: 200px; overflow-y: auto; border-top: 1px solid #e5e5ea; }
     .item { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid #f2f2f7; }
     .meta { flex: 1; min-width: 0; }
     .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -19,22 +20,94 @@
     button:disabled { opacity: .55; cursor: default; }
     .row { display: flex; gap: 8px; margin-top: 8px; }
     .empty { color: #8e8e93; padding: 10px 0; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; color: #6e6e73; margin: 8px 0; }
+    .stats .val { font-weight: 600; color: #1d1d1f; }
+    .section { border-top: 1px solid #e5e5ea; padding-top: 10px; margin-top: 10px; }
+    input[type="text"], input[type="number"] {
+      font: inherit; border: 1px solid #d2d2d7; border-radius: 6px; padding: 4px 8px;
+      width: 100%; box-sizing: border-box;
+    }
+    input[type="number"] { width: 80px; }
+    .exclude-list { max-height: 80px; overflow-y: auto; border: 1px solid #e5e5ea; border-radius: 6px; padding: 4px 8px; margin: 4px 0; font-size: 11px; color: #6e6e73; }
+    .exclude-item { display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
+    .exclude-item button { padding: 1px 6px; font-size: 11px; }
+    .add-row { display: flex; gap: 4px; margin-top: 4px; }
+    .add-row input { flex: 1; }
+    .tab-bar { display: flex; gap: 0; margin: 8px 0; border-bottom: 1px solid #e5e5ea; }
+    .tab-bar button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 12px; color: #6e6e73; font-size: 12px; }
+    .tab-bar button.active { color: #0071e3; border-bottom-color: #0071e3; font-weight: 500; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
   </style>
 </head>
 <body>
-  <h1>Siphon</h1>
-  <p id="status">检查连接中…</p>
-  <label><input type="checkbox" id="captureAll"> 接管浏览器全部下载</label>
+  <h1>Siphon <span id="status" style="font-size: 11px; font-weight: 400; color: #8e8e93;">检查连接中…</span></h1>
 
-  <h2>本页媒体</h2>
-  <div id="list"><div class="empty">未嗅探到媒体链接。播放视频后再打开此弹窗。</div></div>
-  <div class="row">
-    <button id="sendAll">发送全部</button>
-    <button id="refresh">刷新</button>
-    <button id="clear">清空</button>
+  <div class="tab-bar">
+    <button class="active" data-tab="main">下载拦截</button>
+    <button data-tab="media">媒体嗅探</button>
+    <button data-tab="config">设置</button>
   </div>
 
-  <p>也可右键点击链接，选择「用 Siphon 下载」。</p>
+  <div id="tab-main" class="tab-content active">
+    <label><input type="checkbox" id="captureAll"> 接管浏览器全部下载</label>
+    <label><input type="checkbox" id="notifyOnCapture"> 拦截时显示通知</label>
+
+    <h2>本次统计</h2>
+    <div class="stats">
+      <span>已拦截</span><span class="val" id="stat-intercepted">0</span>
+      <span>已跳过</span><span class="val" id="stat-skipped">0</span>
+      <span>嗅探媒体</span><span class="val" id="stat-media">0</span>
+      <span>错误</span><span class="val" id="stat-errors">0</span>
+    </div>
+    <div class="row">
+      <button id="resetStats">重置统计</button>
+    </div>
+  </div>
+
+  <div id="tab-media" class="tab-content">
+    <h2>本页媒体</h2>
+    <div id="list"><div class="empty">未嗅探到媒体链接。播放视频后再打开此弹窗。</div></div>
+    <div class="row">
+      <button id="sendAll">发送全部</button>
+      <button id="refresh">刷新</button>
+      <button id="clear">清空</button>
+    </div>
+    <p style="font-size: 11px;">也可右键点击链接，选择「用 Siphon 下载」。</p>
+  </div>
+
+  <div id="tab-config" class="tab-content">
+    <h2>文件大小过滤</h2>
+    <label>
+      最小文件大小（MB）：
+      <input type="number" id="minFileSize" min="0" step="0.1" value="1">
+    </label>
+    <p style="font-size: 11px;">小于此大小的文件不拦截，由浏览器直接下载。</p>
+
+    <div class="section">
+      <h2>排除站点</h2>
+      <div id="excludeHostsList" class="exclude-list"><span class="empty">无排除站点</span></div>
+      <div class="add-row">
+        <input type="text" id="newExcludeHost" placeholder="例如：youtube.com">
+        <button id="addExcludeHost">添加</button>
+      </div>
+      <p style="font-size: 11px;">排除站点上的下载将由浏览器处理，不经过 Siphon。</p>
+    </div>
+
+    <div class="section">
+      <h2>排除扩展名</h2>
+      <div id="excludeExtsList" class="exclude-list"><span class="empty">无排除扩展名</span></div>
+      <div class="add-row">
+        <input type="text" id="newExcludeExt" placeholder="例如：html">
+        <button id="addExcludeExt">添加</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="saveConfig">保存设置</button>
+    </div>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>

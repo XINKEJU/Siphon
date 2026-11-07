@@ -11,6 +11,7 @@ ED2K=(Sources/Siphon/Engines/ED2K/MD4.swift
       Sources/Siphon/Engines/ED2K/ED2KURI.swift)
 SHARED=(Sources/Siphon/Engines/Engine.swift
         Sources/Siphon/Engines/Shared/NetFailure.swift
+        Sources/Siphon/Engines/Shared/DiskSpaceGuard.swift
         Sources/Siphon/Engines/Shared/SegmentAssembler.swift
         Sources/Siphon/Managers/SpeedLimitController.swift
         Sources/Siphon/Protocols/NetRC.swift
@@ -88,6 +89,8 @@ if command -v aria2c >/dev/null 2>&1; then
         "${KEYCHAIN[@]}" \
         Sources/Siphon/Engines/Shared/NetFailure.swift \
         Sources/Siphon/Engines/Shared/ChecksumVerifier.swift \
+        Sources/Siphon/Engines/Shared/DiskSpaceGuard.swift \
+        Sources/Siphon/Engines/Shared/TorrentProbe.swift \
         Sources/Siphon/Engines/Aria2/Aria2Bootstrap.swift \
         Sources/Siphon/Engines/Aria2/Aria2RPC.swift \
         Sources/Siphon/Engines/Aria2/Aria2Engine.swift
@@ -116,6 +119,8 @@ PROTOCOL_SOURCES=(
     Sources/Siphon/Engines/Shared/ExternalRunner.swift
     Sources/Siphon/Engines/Shared/NetFailure.swift
     Sources/Siphon/Engines/Shared/ChecksumVerifier.swift
+    Sources/Siphon/Engines/Shared/DiskSpaceGuard.swift
+    Sources/Siphon/Engines/Shared/TorrentProbe.swift
     Sources/Siphon/Managers/SpeedLimitController.swift
     Sources/Siphon/Engines/Local/LocalEngine.swift
     Sources/Siphon/Engines/External/CurlEngine.swift

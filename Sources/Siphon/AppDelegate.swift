@@ -48,8 +48,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                             in: .userDomainMask)[0]
         let dir = base.appendingPathComponent("Siphon", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        guard let lock = NSDistributedLock(
-            path: dir.appendingPathComponent("app.lock").path),
+        let lockPath = dir.appendingPathComponent("app.lock").path
+
+        // Check for stale lock: read PID from lock file and verify process exists
+        if let existingData = FileManager.default.contents(atPath: lockPath),
+           let pidString = String(data: existingData, encoding: .utf8),
+           let pid = pid_t(pidString.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            // Check if process is still running
+            if kill(pid, 0) != 0 && errno == ESRCH {
+                // Process not running — stale lock, remove it
+                try? FileManager.default.removeItem(atPath: lockPath)
+            } else {
+                // Process is still running — another instance exists
+                let alert = NSAlert()
+                alert.messageText = "Siphon 已在运行"
+                alert.informativeText = "同时运行两个实例会互相覆盖任务列表，请切换到已打开的窗口。"
+                alert.addButton(withTitle: "好")
+                alert.runModal()
+                return false
+            }
+        }
+
+        // Try to acquire NSDistributedLock as backup
+        guard let lock = NSDistributedLock(path: lockPath),
               lock.try() else {
             let alert = NSAlert()
             alert.messageText = "Siphon 已在运行"
@@ -58,6 +79,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.runModal()
             return false
         }
+
+        // Write our PID so future instances can detect stale locks
+        let pidData = "\(ProcessInfo.processInfo.processIdentifier)\n".data(using: .utf8)
+        try? pidData?.write(to: URL(fileURLWithPath: lockPath))
         instanceLock = lock
         return true
     }
@@ -77,9 +102,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        // Handles magnet: / ed2k: URL schemes and dropped .torrent / .metalink files.
+        // Handles magnet: / ed2k: / siphon: URL schemes and dropped .torrent / .metalink files.
         for url in urls {
-            store?.add(urlString: url.absoluteString)
+            if url.scheme?.lowercased() == "siphon" {
+                handleSiphonURL(url)
+            } else {
+                store?.add(urlString: url.absoluteString)
+            }
+        }
+    }
+
+    /// Parse siphon:// control URLs:
+    ///   siphon://add?url=<encoded>  → add download
+    ///   siphon://pause              → pause all
+    ///   siphon://resume             → resume all
+    ///   siphon://show               → show main window
+    private func handleSiphonURL(_ url: URL) {
+        let host = url.host?.lowercased() ?? ""
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryItems = components?.queryItems ?? []
+
+        switch host {
+        case "add":
+            if let urlString = queryItems.first(where: { $0.name == "url" })?.value,
+               !urlString.isEmpty {
+                // siphon:// URL scheme gets a priority boost.
+                Task { @MainActor in store?.add(urlString: urlString, priority: 1) }
+                showMainWindow()
+            }
+        case "pause":
+            Task { @MainActor in store?.pauseAll() }
+        case "resume":
+            Task { @MainActor in store?.resumeAll() }
+        case "show":
+            showMainWindow()
+        default:
+            showMainWindow()
         }
     }
 }
