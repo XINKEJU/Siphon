@@ -4,7 +4,7 @@ import SwiftUI
 /// of recent `aggregateSpeed` samples is kept by `DownloadStore`; this view draws
 /// it as a thin accent line so the user can eyeball sustained vs bursty traffic.
 struct SpeedGraphView: View {
-    @EnvironmentObject private var store: DownloadStore
+    @Environment(DownloadStore.self) private var store
 
     private static let sampleCount = 120
 

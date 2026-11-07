@@ -5,7 +5,7 @@ import AppKit
 /// and a single glass button group at the bottom. macOS convention: labelled
 /// rows, explicit destination picker, prominent default action.
 struct AddTaskView: View {
-    @EnvironmentObject private var store: DownloadStore
+    @Environment(DownloadStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     @State private var urlString = ""

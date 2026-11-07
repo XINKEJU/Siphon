@@ -9,7 +9,7 @@ import AppKit
 /// guidance is to reserve custom glass for genuine floating controls — never
 /// for list rows, text or an ersatz bottom command bar.
 struct TaskListView: View {
-    @EnvironmentObject private var store: DownloadStore
+    @Environment(DownloadStore.self) private var store
     @Binding var selection: SidebarItem
     let searchText: String
 
@@ -108,7 +108,7 @@ struct TaskListView: View {
 }
 
 struct TaskRowView: View {
-    @EnvironmentObject private var store: DownloadStore
+    @Environment(DownloadStore.self) private var store
     let task: DownloadTask
 
     var body: some View {

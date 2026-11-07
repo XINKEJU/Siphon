@@ -16,7 +16,7 @@ import AppKit
 @main
 struct SiphonApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = DownloadStore()
+    @State private var store = DownloadStore()
 
     // Window-level UI state lives here so the menu-bar Commands and the
     // toolbar operate on exactly the same values (HIG: every toolbar command
@@ -34,7 +34,7 @@ struct SiphonApp: App {
         // selection supplies the real title via .navigationTitle.
         Window("下载", id: "main-window") {
             ContentView(showingAdd: $showingAdd, showingInspector: $showingInspector)
-                .environmentObject(store)
+                .environment(store)
                 .frame(minWidth: 900, minHeight: 600)
                 .onAppear { appDelegate.store = store }
         }
@@ -47,7 +47,7 @@ struct SiphonApp: App {
 
         Settings {
             SettingsView()
-                .environmentObject(store)
+                .environment(store)
         }
     }
 }
@@ -57,7 +57,7 @@ struct SiphonApp: App {
 struct SiphonCommands: Commands {
     @Binding var showingAdd: Bool
     @Binding var showingInspector: Bool
-    @ObservedObject var store: DownloadStore
+    var store: DownloadStore
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {

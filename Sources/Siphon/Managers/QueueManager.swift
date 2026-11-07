@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// A named queue with a concurrency limit and an optional active time window.
 /// Inspired by AB Download Manager's queues/schedulers and HyperDM's schedule window.
@@ -28,9 +29,10 @@ public struct DownloadQueue: Identifiable, Codable, Sendable {
 
 /// Owns queue definitions and decides which pending task may start next.
 @MainActor
-public final class QueueManager: ObservableObject {
-    @Published public var queues: [DownloadQueue] = [DownloadQueue(name: "Default", maxConcurrent: 3)]
-    @Published public var globalConcurrent: Int = 5
+@Observable
+public final class QueueManager {
+    public var queues: [DownloadQueue] = [DownloadQueue(name: "Default", maxConcurrent: 3)]
+    public var globalConcurrent: Int = 5
 
     private let defaultsKey = "Siphon.queues"
 

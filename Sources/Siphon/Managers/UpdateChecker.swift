@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Observation
 
 /// Self-update framework (ab-download-manager shared/updater model), adapted to
 /// Siphon's zero-dependency + unsigned-adoption reality:
@@ -10,7 +11,8 @@ import AppKit
 /// The feed is empty by default — the updater stays inert until the user (or a
 /// distribution channel) points it at e.g. a GitHub Releases `latest.json`.
 @MainActor
-public final class UpdateChecker: ObservableObject {
+@Observable
+public final class UpdateChecker {
     public static let shared = UpdateChecker()
     static let feedKey = "Siphon.updateFeed"
 
@@ -21,10 +23,10 @@ public final class UpdateChecker: ObservableObject {
         public var notes: String?
     }
 
-    @Published public var status: String = ""
-    @Published public var available: UpdateInfo?
-    @Published public var checking = false
-    @Published public var installing = false
+    public var status: String = ""
+    public var available: UpdateInfo?
+    public var checking = false
+    public var installing = false
 
     public var feedURL: String {
         get { UserDefaults.standard.string(forKey: Self.feedKey) ?? "" }

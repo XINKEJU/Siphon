@@ -1,11 +1,13 @@
 import AppKit
+import Observation
 
 /// Watches the pasteboard for downloadable URLs (inspired by HyperDM's clipboard monitor).
 /// Only *new* strings are reported, and a URL is emitted at most once per copy.
 @MainActor
-public final class ClipboardMonitor: ObservableObject {
-    @Published public var isEnabled = false
-    @Published public var lastDetected: URL?
+@Observable
+public final class ClipboardMonitor {
+    public var isEnabled = false
+    public var lastDetected: URL?
 
     private var timer: Timer?
     private var lastChangeCount: Int

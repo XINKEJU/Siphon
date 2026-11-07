@@ -5,7 +5,7 @@ import AppKit
 /// system's glass sidebar, so adding another custom glass surface here would
 /// double-composite; header, rows and numbers stay plain and crisp.
 struct TaskDetailView: View {
-    @EnvironmentObject private var store: DownloadStore
+    @Environment(DownloadStore.self) private var store
     let task: DownloadTask
 
     var body: some View {
@@ -105,7 +105,7 @@ struct TaskDetailView: View {
 /// only after BT metadata resolution — for magnets that means the task must
 /// have started once. The selection applies live on a running download.
 private struct BTFilesSection: View {
-    @EnvironmentObject private var store: DownloadStore
+    @Environment(DownloadStore.self) private var store
     let task: DownloadTask
 
     @State private var files: [Aria2Engine.BTFile] = []

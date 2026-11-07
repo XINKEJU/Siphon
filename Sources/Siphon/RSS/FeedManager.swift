@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 // MARK: - RSS/Atom parsing (persepolis/Fluxdown's subscription pattern)
 
@@ -114,7 +115,8 @@ public final class RSSParser: NSObject, XMLParserDelegate {
 
 /// Subscription store: feeds persist in UserDefaults; `refreshAll` fetches and
 /// diffs by guid, so only genuinely new episodes/entries trigger downloads.
-public final class FeedManager: ObservableObject, @unchecked Sendable {
+@Observable
+public final class FeedManager: @unchecked Sendable {
 
     public struct Feed: Codable, Identifiable, Equatable {
         public var id: UUID
@@ -141,7 +143,7 @@ public final class FeedManager: ObservableObject, @unchecked Sendable {
     /// Settable so integrations (and tests) can update a feed in place; mutators
     /// call save() themselves — a direct external mutation needs a refreshAll()
     /// or explicit save to persist.
-    @Published public var feeds: [Feed] = []
+    public var feeds: [Feed] = []
     private let defaultsKey = "Siphon.feeds"
     /// Fired for every genuinely-new item discovered during a refresh.
     /// Wired to DownloadStore so new entries become download tasks.

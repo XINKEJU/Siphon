@@ -20,7 +20,7 @@ import AppKit
 /// The old bottom floating command bar is gone: on macOS, controls belong in
 /// the unified toolbar at the top of the window.
 struct ContentView: View {
-    @EnvironmentObject private var store: DownloadStore
+    @Environment(DownloadStore.self) private var store
     @Binding var showingAdd: Bool
     @Binding var showingInspector: Bool
     @State private var sidebarSelection: SidebarItem = .all

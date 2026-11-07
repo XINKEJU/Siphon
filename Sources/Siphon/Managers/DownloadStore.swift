@@ -5,26 +5,27 @@ import Combine
 /// Central, main-actor store. Owns the task list, routes each task to the right engine,
 /// and funnels engine callbacks into SwiftUI state.
 @MainActor
-public final class DownloadStore: ObservableObject, EngineDelegate {
-    @Published public var tasks: [DownloadTask] = []
-    @Published public var selectedTaskID: UUID?
-    @Published public var filter: TaskFilter = .all
-    @Published public var aria2Status: String = "未启动"
+@Observable
+public final class DownloadStore: EngineDelegate {
+    public var tasks: [DownloadTask] = []
+    public var selectedTaskID: UUID?
+    public var filter: TaskFilter = .all
+    public var aria2Status: String = "未启动"
     /// Prefer this over string-matching `aria2Status`: the human-readable status
     /// text changes, but the readiness flag stays a reliable source of truth.
-    @Published public var aria2Ready: Bool = false
-    @Published public var startupError: String?
+    public var aria2Ready: Bool = false
+    public var startupError: String?
     /// Last link-normalization failure (bad vendor link, missing S3 credentials, …).
-    @Published public var lastError: String?
-    @Published public var speedLimitText: String = ""
-    @Published public var clipboardEnabled = false
-    @Published public var browserCaptureEnabled = false
-    @Published public var mcpEnabled = false
+    public var lastError: String?
+    public var speedLimitText: String = ""
+    public var clipboardEnabled = false
+    public var browserCaptureEnabled = false
+    public var mcpEnabled = false
     /// Per-task speed caps (bytes/s). `nil` / absent = unlimited. Folds under the
     /// global (and turtle) cap: effective = min(global, perTask).
-    @Published public var taskSpeedLimits: [UUID: Int64] = [:]
+    public var taskSpeedLimits: [UUID: Int64] = [:]
     /// Turtle three-tier mode config (Motrix speed-limit-controller).
-    @Published public var turtleConfig: TurtleConfig = {
+    public var turtleConfig: TurtleConfig = {
         if let d = UserDefaults.standard.data(forKey: PrefKey.turtle),
            let c = try? JSONDecoder().decode(TurtleConfig.self, from: d) { return c }
         return TurtleConfig()
@@ -36,7 +37,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
             applySpeedLimit(speedLimitText) // re-fold global cap
         }
     }
-    @Published public var downloadDirectory: URL = {
+    public var downloadDirectory: URL = {
         FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
     }()
 
@@ -80,7 +81,7 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     private var lastTurtleEffective: Int64?
 
     /// Rolling aggregate-speed samples for the live sparkline (HyperDM speed_graph).
-    @Published public var speedHistory: [Int64] = []
+    public var speedHistory: [Int64] = []
     private var speedTimer: AnyCancellable?
     private let speedHistoryMax = 120
 
@@ -89,20 +90,11 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         public var id: String { rawValue }
     }
 
-    private var cancellables: [AnyCancellable] = []
-
     public init() {
         load()
         clipboard.onURLDetected = { [weak self] url in
             Task { @MainActor in self?.handleDetectedURL(url) }
         }
-        // Forward nested ObservableObject changes so views observing the store refresh.
-        cancellables.append(queues.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        })
-        cancellables.append(clipboard.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        })
         // RSS subscriptions: new feed entries become download tasks automatically.
         feedManager.onNewItems = { [weak self] feed, items in
             Task { @MainActor in self?.enqueueFeedItems(feed, items) }
@@ -186,11 +178,11 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     }
 
     // MARK: - policy state (schedule window / completion action / keep-awake)
-    @Published public var scheduleWindow = ScheduleWindow() {
+    public var scheduleWindow = ScheduleWindow() {
         didSet { UserDefaults.standard.set(
             (try? JSONEncoder().encode(scheduleWindow)) ?? Data(), forKey: PrefKey.schedule) }
     }
-    @Published public var completionAction: CompletionAction = {
+    public var completionAction: CompletionAction = {
         CompletionAction(rawValue: UserDefaults.standard.string(
             forKey: "Siphon.completionAction") ?? "") ?? .none
     }() {

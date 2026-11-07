@@ -18,7 +18,7 @@ enum SidebarItem: Hashable {
 }
 
 struct SidebarView: View {
-    @EnvironmentObject private var store: DownloadStore
+    @Environment(DownloadStore.self) private var store
     @Binding var selection: SidebarItem
     @State private var showingNewQueue = false
     @State private var newQueueName = ""
