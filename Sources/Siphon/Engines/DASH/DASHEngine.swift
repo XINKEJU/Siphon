@@ -53,7 +53,7 @@ public final class DASHEngine: @preconcurrency DownloadEngine {
         requests.append(contentsOf: best.segments.map { SegmentRequest(url: $0.url) })
 
         try assembler.start(taskID: task.id, destination: out, requests: requests,
-                            headers: task.options)
+                            headers: task.options, credentialOrigin: task.source)
         delegate?.engineDidChangeState(taskID: task.id, state: .active, error: nil)
     }
 
@@ -76,7 +76,7 @@ public final class DASHEngine: @preconcurrency DownloadEngine {
         for (k, v) in options where !["dir", "out"].contains(k.lowercased()) {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await CredentialScope.session.data(for: req)
         return data
     }
 }

@@ -25,6 +25,11 @@ public struct DownloadTask: Identifiable, Sendable {
     /// native HTTP engine probes the primary first and fails over to a mirror
     /// when the primary is unreachable, errors mid-transfer, or is slow.
     public var mirrors: [URL]
+    /// Per-piece SHA-1 hashes (Metalink `<pieces>`), block-wise verification
+    /// with surgical bad-range re-download. Empty = no piece checksums.
+    public var pieceHashes: [String]
+    /// Byte length of one piece (> 0 iff pieceHashes non-empty).
+    public var pieceLength: Int64
 
     public init(
         id: UUID = UUID(),
@@ -36,6 +41,8 @@ public struct DownloadTask: Identifiable, Sendable {
         origin: String? = nil,
         checksum: String? = nil,
         mirrors: [URL] = [],
+        pieceHashes: [String] = [],
+        pieceLength: Int64 = 0,
         protoOverride: DownloadProtocol? = nil
     ) {
         let proto = DownloadProtocol.detect(from: source)
@@ -53,6 +60,8 @@ public struct DownloadTask: Identifiable, Sendable {
         self.origin = origin
         self.checksum = checksum
         self.mirrors = mirrors
+        self.pieceHashes = pieceHashes
+        self.pieceLength = pieceLength
     }
 
     /// Human-readable fallback name. Custom schemes carry their filename in

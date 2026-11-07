@@ -4,9 +4,15 @@ import Foundation
 public struct SegmentRequest: Sendable {
     public let url: URL
     public let byteRange: (length: Int, offset: Int)?
-    public init(url: URL, byteRange: (length: Int, offset: Int)? = nil) {
+    /// Media sequence number of this segment (HLS). Used to derive the AES-128
+    /// default IV for live recordings, where the request index no longer equals
+    /// the media sequence (the sliding window continuously appends new segments).
+    public let mediaSequence: Int64?
+    public init(url: URL, byteRange: (length: Int, offset: Int)? = nil,
+                mediaSequence: Int64? = nil) {
         self.url = url
         self.byteRange = byteRange
+        self.mediaSequence = mediaSequence
     }
 }
 
@@ -21,25 +27,34 @@ public struct SegmentRequest: Sendable {
 /// - per-segment transform hook (used by HLS AES-128 decryption)
 public final class SegmentAssembler {
     private final class Active {
-        let requests: [SegmentRequest]
+        var requests: [SegmentRequest]
         let handle: FileHandle
         let outURL: URL
         let headers: [String: String]
-        let transform: (@Sendable (Data, Int) -> Data)?
+        /// URL the headers were captured for (the playlist / manifest). Segments
+        /// and init/key URLs on another site must not receive its credentials.
+        let credentialOrigin: URL
+        let transform: (@Sendable (Data, SegmentRequest) -> Data)?
         var writtenCount: Int
         /// Real payload bytes written to disk. Progress, speed and ETA must be
         /// byte-based — segment counts made a 1.4 MB stream report "180 / 180".
         var writtenBytes: Int64
         var cancelled = false
+        /// Live mode: keep the run loop alive and wait for `appendSegments` to add
+        /// new requests (HLS/DASH live recording). When false the loop exits after
+        /// the initial batch, exactly as before.
+        var live = false
         var lastBytes: Int64 = 0
         var lastTime = Date()
         var task: Task<Void, Never>?
 
         init(requests: [SegmentRequest], handle: FileHandle, outURL: URL,
-             headers: [String: String], transform: (@Sendable (Data, Int) -> Data)?,
+             headers: [String: String], credentialOrigin: URL,
+             transform: (@Sendable (Data, SegmentRequest) -> Data)?,
              writtenCount: Int, writtenBytes: Int64 = 0) {
             self.requests = requests; self.handle = handle; self.outURL = outURL
-            self.headers = headers; self.transform = transform
+            self.headers = headers; self.credentialOrigin = credentialOrigin
+            self.transform = transform
             self.writtenCount = writtenCount; self.writtenBytes = writtenBytes
             self.lastTime = Date()
         }
@@ -47,14 +62,19 @@ public final class SegmentAssembler {
 
     public weak var delegate: (any EngineDelegate)?
     private var active: [UUID: Active] = [:]
-    private let session = URLSession.shared
+    private let session = CredentialScope.session
     private let concurrency: Int
 
     public init(concurrency: Int = 6) { self.concurrency = max(1, concurrency) }
 
+    /// - Parameter credentialOrigin: URL the supplied headers belong to (normally
+    ///   the playlist / manifest URL). Defaults to the first request's URL, which
+    ///   is right when every segment shares that host; pass it explicitly whenever
+    ///   segments may live on another CDN.
     public func start(taskID: UUID, destination: URL, requests: [SegmentRequest],
                       headers: [String: String] = [:],
-                      transform: (@Sendable (Data, Int) -> Data)? = nil,
+                      credentialOrigin: URL? = nil,
+                      transform: (@Sendable (Data, SegmentRequest) -> Data)? = nil,
                       resume: Bool = false) throws {
         if requests.isEmpty { return }
         let existing = !FileManager.default.fileExists(atPath: destination.path)
@@ -70,7 +90,9 @@ public final class SegmentAssembler {
             alreadyWritten = size.int64Value
         }
         let state = Active(requests: requests, handle: handle, outURL: destination,
-                          headers: headers, transform: transform, writtenCount: written,
+                          headers: headers,
+                          credentialOrigin: credentialOrigin ?? requests[0].url,
+                          transform: transform, writtenCount: written,
                           writtenBytes: alreadyWritten)
         state.task = Task.detached(priority: .utility) { [weak self] in
             await self?.run(state, taskID: taskID)
@@ -102,6 +124,21 @@ public final class SegmentAssembler {
         try? FileManager.default.removeItem(at: s.outURL)
     }
 
+    // MARK: - live (HLS/DASH live recording)
+
+    /// Switch a running assembly into live mode: the run loop stays alive and waits
+    /// for new segments instead of reporting completion after the initial batch.
+    public func setLive(_ on: Bool) {
+        active.values.forEach { $0.live = on }
+    }
+
+    /// Append new segments for a live playlist refresh. New requests are appended to
+    /// the end of the request list; the in-flight run loop picks them up on its next
+    /// pump. Safe to call from a different task than the one running `run`.
+    public func appendSegments(_ new: [SegmentRequest]) {
+        active.values.forEach { $0.requests.append(contentsOf: new) }
+    }
+
     // MARK: - ordered, bounded-concurrency assembly
     private func run(_ s: Active, taskID: UUID) async {
         var completed: [Int: Data] = [:]
@@ -109,36 +146,49 @@ public final class SegmentAssembler {
         var nextToFetch = s.writtenCount
 
         do {
-            try await withThrowingTaskGroup(of: (Int, Data).self) { group in
-                var inFlight = 0
-                func pump() {
-                    while nextToFetch < s.requests.count && inFlight < concurrency {
-                        let req = s.requests[nextToFetch]
-                        let order = nextToFetch
-                        nextToFetch += 1
-                        inFlight += 1
-                        group.addTask { [weak self] in
-                            guard let self else { return (order, Data()) }
-                            let d = try await self.fetch(req, headers: s.headers)
-                            await SpeedLimitController.shared.consume(d.count)
-                            return (order, d)
+            // For live playlists the loop stays alive, waiting for `appendSegments`
+            // to add new requests. For VOD the loop runs once and exits — behaviour
+            // is identical to before `live` was introduced.
+            while !s.cancelled {
+                guard nextToFetch < s.requests.count else {
+                    if s.live {
+                        try await Task.sleep(nanoseconds: 2_000_000_000)
+                        continue
+                    }
+                    break
+                }
+                try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+                    var inFlight = 0
+                    func pump() {
+                        while nextToFetch < s.requests.count && inFlight < concurrency {
+                            let req = s.requests[nextToFetch]
+                            let order = nextToFetch
+                            nextToFetch += 1
+                            inFlight += 1
+                            group.addTask { [weak self] in
+                                guard let self else { return (order, Data()) }
+                                let d = try await self.fetch(req, headers: s.headers,
+                                                             origin: s.credentialOrigin)
+                                await SpeedLimitController.shared.consume(d.count)
+                                return (order, d)
+                            }
                         }
                     }
-                }
-                pump()
-                while let (order, data) = try await group.next() {
-                    inFlight -= 1
-                    if s.cancelled { group.cancelAll(); break }
-                    completed[order] = data
-                    while let d = completed.removeValue(forKey: nextToWrite) {
-                        let final = s.transform?(d, nextToWrite) ?? d
-                        try s.handle.write(contentsOf: final)
-                        nextToWrite += 1
-                        s.writtenCount = nextToWrite
-                        s.writtenBytes += Int64(final.count)
-                        await self.report(s, taskID: taskID)
-                    }
                     pump()
+                    while let (order, data) = try await group.next() {
+                        inFlight -= 1
+                        if s.cancelled { group.cancelAll(); break }
+                        completed[order] = data
+                        while let d = completed.removeValue(forKey: nextToWrite) {
+                            let final = s.transform?(d, s.requests[nextToWrite]) ?? d
+                            try s.handle.write(contentsOf: final)
+                            nextToWrite += 1
+                            s.writtenCount = nextToWrite
+                            s.writtenBytes += Int64(final.count)
+                            await self.report(s, taskID: taskID)
+                        }
+                        pump()
+                    }
                 }
             }
             try s.handle.close()
@@ -181,13 +231,15 @@ public final class SegmentAssembler {
         await delegate?.engineDidUpdate(taskID: taskID, progress: p)
     }
 
-    private func fetch(_ req: SegmentRequest, headers: [String: String]) async throws -> Data {
+    private func fetch(_ req: SegmentRequest, headers: [String: String],
+                       origin: URL) async throws -> Data {
         var r = URLRequest(url: req.url)
         r.httpMethod = "GET"
         if let (len, off) = req.byteRange {
             r.setValue("bytes=\(off)-\(off + len - 1)", forHTTPHeaderField: "Range")
         }
-        for (k, v) in headers where !["dir", "out"].contains(k.lowercased()) {
+        let scoped = CredentialScope.headers(headers, from: origin, to: req.url)
+        for (k, v) in scoped where !["dir", "out"].contains(k.lowercased()) {
             r.setValue(v, forHTTPHeaderField: k)
         }
         let (data, _) = try await session.data(for: r)

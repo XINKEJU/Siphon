@@ -30,6 +30,28 @@ function sanitizeHeaders(raw) {
   return out;
 }
 
+// Per-install bearer token. Extension contexts with host_permissions can read
+// /ping (plain web pages cannot — the app sends no CORS header), so the token
+// bootstraps itself; a rotated token is picked up automatically.
+let apiToken = null;
+async function getToken() {
+  if (apiToken) return apiToken;
+  const stored = await chrome.storage.local.get("apiToken");
+  apiToken = stored.apiToken || null;
+  if (apiToken) return apiToken;
+  try {
+    const r = await fetch(PING);
+    if (r.ok) {
+      const j = await r.json();
+      if (j.token) {
+        apiToken = j.token;
+        await chrome.storage.local.set({ apiToken });
+      }
+    }
+  } catch (_) {}
+  return apiToken;
+}
+
 async function send(url, { headers = {}, referer = "" } = {}) {
   if (!url) return;
   if (/^(chrome|edge|about|data|blob|javascript):/i.test(url)) return;
@@ -38,9 +60,13 @@ async function send(url, { headers = {}, referer = "" } = {}) {
     if (Object.keys(headers).length || referer) {
       payload.headers = { ...headers, ...(referer ? { Referer: referer } : {}) };
     }
+    const token = await getToken();
     const r = await fetch(ENDPOINT, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify(payload),
     });
     console.log("[Siphon] sent", url, r.status);
@@ -75,7 +101,16 @@ chrome.downloads.onCreated.addListener(async (item) => {
 // The popup can call this to test connectivity.
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg?.type === "ping") {
-    fetch(PING).then(r => reply({ ok: r.ok })).catch(() => reply({ ok: false }));
+    fetch(PING).then(async r => {
+      if (r.ok) {
+        const j = await r.json();
+        if (j.token) {
+          apiToken = j.token;
+          await chrome.storage.local.set({ apiToken });
+        }
+      }
+      reply({ ok: r.ok });
+    }).catch(() => reply({ ok: false }));
     return true; // keep the message channel open for the async reply
   }
 });

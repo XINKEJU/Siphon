@@ -19,6 +19,8 @@ public final class HLSEngine: DownloadEngine {
 
     private let assembler = SegmentAssembler(concurrency: 6)
     private var outputs: [UUID: URL] = [:]
+    private var livePolls: [UUID: Task<Void, Never>] = [:]
+    private var liveContext: [UUID: (url: URL, options: [String: String])] = [:]
 
     public init() {}
     public func canHandle(_ p: DownloadProtocol) -> Bool { p == .hls }
@@ -27,12 +29,19 @@ public final class HLSEngine: DownloadEngine {
     public func submit(_ task: DownloadTask) async throws {
         if outputs[task.id] != nil { try assembler.resume(task.id); return }
 
-        let text = try await playlistText(task.source, options: task.options)
+        let text = try await playlistText(task.source, options: task.options, origin: task.source)
         var pl = HLSParser.parse(text, baseURL: task.source)
+        var mediaURL = task.source
+        var mediaText = text
         if pl.isMaster, let variant = HLSParser.bestVariant(pl) {
-            let vtext = try await playlistText(variant, options: task.options)
-            pl = HLSParser.parse(vtext, baseURL: variant)
+            mediaText = try await playlistText(variant, options: task.options, origin: task.source)
+            mediaURL = variant
+            pl = HLSParser.parse(mediaText, baseURL: variant)
         }
+        // A playlist without #EXT-X-ENDLIST is a live stream (FluxDown/Motrix
+        // record-by-polling model): we seed the initial window, then poll for new
+        // segments instead of treating the snapshot as the whole file.
+        let isLive = !mediaText.contains("#EXT-X-ENDLIST")
 
         var out = task.destination
         if out.pathExtension.isEmpty {
@@ -42,34 +51,51 @@ public final class HLSEngine: DownloadEngine {
         outputs[task.id] = out
 
         // Resolve the AES-128 key once, then build a stateless per-segment decrypt closure.
+        // Each request carries its own media sequence number so the default-IV derivation
+        // stays correct even while a live playlist slides and appends new segments.
         var key: Data?
         if let keyURL = pl.keyURL {
-            key = try? await Self.fetchData(keyURL, options: task.options)
+            key = try? await Self.fetchData(keyURL, options: task.options, origin: task.source)
         }
         let baseIV = pl.keyIV
-        let mediaSequence = pl.mediaSequence
-        // With EXT-X-MAP the first request is the (unencrypted) fMP4 init segment,
-        // so media segments start at order 1 and their IV sequence must shift too.
-        let hasMap = pl.isFMP4
-        let transform: (@Sendable (Data, Int) -> Data)? = key.map { k in
-            { @Sendable data, order in
-                if hasMap, order == 0 { return data }
-                let mediaOrder = hasMap ? order - 1 : order
-                let iv = baseIV ?? Self.defaultIV(mediaSequence: mediaSequence, order: mediaOrder)
+        let firstSequence = pl.mediaSequence
+        let mapURL = pl.mapURL
+        let transform: (@Sendable (Data, SegmentRequest) -> Data)? = key.map { k in
+            { @Sendable data, req in
+                // The fMP4 init segment is never encrypted.
+                if let mapURL, req.url == mapURL { return data }
+                // Per RFC 8216 §5.2 the default IV is the 128-bit big-endian media
+                // sequence number; fall back to the initial window start for VOD.
+                let seq = req.mediaSequence ?? firstSequence
+                let iv = baseIV ?? Self.defaultIV(mediaSequence: seq, order: 0)
                 return Self.decryptAES128(data, key: k, iv: iv) ?? data
             }
         }
 
         var requests: [SegmentRequest] = []
         if let map = pl.mapURL {
+            // Init segment has no media sequence (it is written unencrypted regardless).
             requests.append(SegmentRequest(url: map, byteRange: pl.mapByteRange))
         }
-        requests.append(contentsOf: pl.segments.map {
-            SegmentRequest(url: $0.url, byteRange: $0.byteRange)
+        requests.append(contentsOf: pl.segments.enumerated().map { idx, seg in
+            SegmentRequest(url: seg.url, byteRange: seg.byteRange,
+                           mediaSequence: firstSequence + Int64(idx))
         })
         try assembler.start(taskID: task.id, destination: out, requests: requests,
-                            headers: task.options, transform: transform)
+                            headers: task.options, credentialOrigin: task.source,
+                            transform: transform)
         await delegate?.engineDidChangeState(taskID: task.id, state: .active, error: nil)
+
+        // A live stream (no #EXT-X-ENDLIST) is recorded by polling the playlist for new
+        // segments. We seed the current window above, then keep appending as the edge
+        // advances. When the stream ends (ENDLIST appears) the poll stops and the
+        // assembler finishes normally.
+        if isLive {
+            assembler.setLive(true)
+            startLivePoll(task.id, mediaURL: mediaURL, options: task.options,
+                          origin: task.source,
+                          known: requests.compactMap { $0.mediaSequence != nil ? $0.url : nil })
+        }
     }
 
     public func pause(_ id: UUID) async { assembler.pause(id) }
@@ -81,26 +107,71 @@ public final class HLSEngine: DownloadEngine {
     }
 
     public func remove(_ id: UUID) async {
+        livePolls[id]?.cancel()
+        livePolls.removeValue(forKey: id)
+        liveContext.removeValue(forKey: id)
         assembler.remove(id)
         outputs.removeValue(forKey: id)
     }
 
+    // MARK: - live (HLS live recording)
+
+    /// Periodically re-read the media playlist of a live stream, append any segments
+    /// that have not been seen yet to the running assembler, and stop once the stream
+    /// ends (the playlist gains #EXT-X-ENDLIST). Mirrors the FluxDown / Motrix
+    /// "record live by polling" model.
+    private func startLivePoll(_ id: UUID, mediaURL: URL, options: [String: String],
+                              origin: URL, known initial: [URL]) {
+        var knownSeen = Set(initial)
+        liveContext[id] = (url: mediaURL, options: options)
+        livePolls[id] = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) } catch { break }
+                if Task.isCancelled { break }
+                do {
+                    let text = try await self.playlistText(mediaURL, options: options, origin: origin)
+                    let pl = HLSParser.parse(text, baseURL: mediaURL)
+                    let ended = text.contains("#EXT-X-ENDLIST")
+                    let newReqs: [SegmentRequest] = zip(pl.segments.indices, pl.segments).compactMap { idx, seg in
+                        guard !knownSeen.contains(seg.url) else { return nil }
+                        knownSeen.insert(seg.url)
+                        return SegmentRequest(url: seg.url, byteRange: seg.byteRange,
+                                             mediaSequence: Int64(pl.mediaSequence) + Int64(idx))
+                    }
+                    if !newReqs.isEmpty {
+                        self.assembler.appendSegments(newReqs)
+                        await self.delegate?.engineDidChangeState(taskID: id, state: .active, error: nil)
+                    }
+                    if ended {
+                        // No more segments will appear; let the assembler finish.
+                        self.assembler.setLive(false)
+                        break
+                    }
+                } catch {
+                    // Transient playlist fetch error: keep polling until cancelled.
+                }
+            }
+        }
+    }
+
     // MARK: - HLS specifics
-    private func playlistText(_ url: URL, options: [String: String]) async throws -> String {
-        let data = try await Self.fetchData(url, options: options)
+    private func playlistText(_ url: URL, options: [String: String], origin: URL) async throws -> String {
+        let data = try await Self.fetchData(url, options: options, origin: origin)
         guard let t = String(data: data, encoding: .utf8) else {
             throw URLError(.cannotDecodeContentData)
         }
         return t
     }
 
-    private static func fetchData(_ url: URL, options: [String: String]) async throws -> Data {
+    private static func fetchData(_ url: URL, options: [String: String], origin: URL) async throws -> Data {
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
-        for (k, v) in options where !["dir", "out"].contains(k.lowercased()) {
+        let scoped = CredentialScope.headers(options, from: origin, to: url)
+        for (k, v) in scoped where !["dir", "out"].contains(k.lowercased()) {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await CredentialScope.session.data(for: req)
         return data
     }
 

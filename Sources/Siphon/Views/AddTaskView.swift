@@ -42,8 +42,9 @@ struct AddTaskView: View {
 
             Form {
                 Section {
-                    TextField("链接", text: $urlString, prompt: Text("https://… / thunder:// / ipfs:// / s3:// / .m3u8"))
+                    TextField("链接（可多行，每行一个）", text: $urlString, prompt: Text("https://… / thunder:// / ipfs:// / s3:// / img_{001..100}.jpg"), axis: .vertical)
                         .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...6)
                         .onChange(of: urlString) { _, v in updateDetection(v) }
 
                     LabeledContent("下载引擎", value: detected.transport.displayName)

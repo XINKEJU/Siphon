@@ -10,12 +10,20 @@ import Network
 ///
 ///     curl -X POST http://127.0.0.1:17801/add \
 ///          -H 'Content-Type: application/json' \
+///          -H "Authorization: Bearer $(token)" \
 ///          -d '{"url":"https://example.com/file.zip"}'
+///
+/// Every request except `GET /ping` must carry the per-install token
+/// (`LocalAuthToken`, shown/copyable in Settings → 集成). Responses carry no CORS
+/// header, so a web page can neither read them nor attach the Authorization
+/// header (its "simple request" preflight would fail) — the extension reads and
+/// bootstraps its token from `/ping`, which extension contexts with
+/// host_permissions can access but web pages cannot.
 ///
 /// POST /add   {"url": "...", "name"?: "...", "queue"?: "...",
 ///              "headers"?: {"Cookie": "...", "Referer": "..."},
 ///              "checksum"?: "sha256:…"}                    -> {"ok":true}
-/// GET  /ping  -> {"ok":true,"app":"Siphon"}
+/// GET  /ping  -> {"ok":true,"app":"Siphon","token":"…"}   (token bootstrap)
 /// GET  /tasks -> {"ok":true,"tasks":[…]}                   (store-backed)
 /// POST /pause /resume /remove {"id": "uuid"}               (store-backed)
 ///
@@ -114,7 +122,17 @@ public final class NativeMessagingServer {
         let path = parts.count > 1 ? String(parts[1]) : ""
 
         if method == "GET" && path == "/ping" {
-            return http("200 OK", #"{"ok":true,"app":"Siphon"}"#)
+            // The token rides along so the extension can bootstrap itself; only
+            // extension contexts (host_permissions) and loopback scripts can read
+            // the response — web pages get no CORS grant.
+            let body = #"{"ok":true,"app":"Siphon","token":""# + LocalAuthToken.current() + #""}"#
+            return http("200 OK", body)
+        }
+        // Everything else is authenticated. A web page's simple request cannot
+        // carry Authorization (that would require a preflight), so this is what
+        // actually keeps drive-by pages from adding tasks or reading task URLs.
+        guard let auth = header(named: "Authorization", in: lines), LocalAuthToken.verify(auth) else {
+            return http("401 Unauthorized", #"{"ok":false,"error":"missing or invalid token"}"#)
         }
         if method == "POST" && path == "/add" {
             guard let bodyStart = raw.range(of: "\r\n\r\n")?.upperBound else {
@@ -151,8 +169,21 @@ public final class NativeMessagingServer {
         return http("404 Not Found", #"{"ok":false,"error":"not found"}"#)
     }
 
+    private func header(named name: String, in lines: [String]) -> String? {
+        for line in lines.dropFirst() {
+            guard let idx = line.firstIndex(of: ":") else { continue }
+            let field = String(line[..<idx]).trimmingCharacters(in: .whitespaces)
+            if field.lowercased() == name.lowercased() {
+                return String(line[line.index(after: idx)...]).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
+    /// Deliberately no `Access-Control-Allow-Origin`: granting `*` let any web
+    /// page read the task list (URLs can embed credentials) cross-origin.
     private func http(_ status: String, _ body: String) -> Data {
-        let payload = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n\(body)"
+        let payload = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         return payload.data(using: .utf8) ?? Data()
     }
 }

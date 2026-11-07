@@ -80,6 +80,12 @@ public final class CurlEngine: DownloadEngine {
         if let eff = effectiveLimit(for: task.id), eff > 0 {
             args += ["--limit-rate", String(eff)]
         }
+        // netrc credentials (curl --netrc): only when the URL itself carries no
+        // user/password, and ~/.netrc exists so curl never trips on a missing file.
+        if task.source.user == nil && task.source.password == nil,
+           FileManager.default.fileExists(atPath: NetRC.filePath) {
+            args.append("--netrc")
+        }
         for (k, v) in task.options where !["dir", "out"].contains(k.lowercased()) {
             args += ["--header", "\(k): \(v)"]
         }

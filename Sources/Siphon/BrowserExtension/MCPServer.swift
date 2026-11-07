@@ -5,13 +5,16 @@ import Network
 /// so AI clients (Claude, Cursor, any MCP-capable agent) can manage Siphon
 /// downloads. Borrowed from FluxDown's 12-tool MCP server and gopeed's `mcpserver`.
 ///
-/// MCP messages are JSON-RPC 2.0. We implement the minimal transport-agnostic
-/// surface that an HTTP/SSE-capable client needs:
+/// Every request must carry the per-install token (Settings → 集成 → 本地接口令牌):
 ///
 ///     POST http://127.0.0.1:17802/mcp
+///     Authorization: Bearer <token>
 ///     {"jsonrpc":"2.0","id":1,"method":"initialize","params":{...}}
 ///     -> {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05",
 ///         "capabilities":{"tools":{}},"serverInfo":{"name":"Siphon","version":"0.1"}}}
+///
+/// MCP messages are JSON-RPC 2.0. We implement the minimal transport-agnostic
+/// surface that an HTTP/SSE-capable client needs:
 ///
 ///     {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 ///     -> {"jsonrpc":"2.0","id":2,"result":{"tools":[...]}}
@@ -90,7 +93,16 @@ public final class MCPServer {
     func process(_ data: Data) -> Data {
         guard let raw = String(data: data, encoding: .utf8),
               let bodyStart = raw.range(of: "\r\n\r\n")?.upperBound else {
-            return http("400 Bad Request", #"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#)
+            return http("400 Bad Request", Self.jsonRPCError(id: nil, code: -32700, message: "Parse error"))
+        }
+        // Bearer token on every call — MCP clients are configured once with the
+        // token from Settings, and drive-by pages must not reach the tool surface.
+        let authorized = raw[..<bodyStart].components(separatedBy: "\r\n").dropFirst()
+            .first { $0.lowercased().hasPrefix("authorization:") }
+            .map { String($0.dropFirst("authorization:".count)).trimmingCharacters(in: .whitespaces) }
+        guard LocalAuthToken.verify(authorized) else {
+            return http("401 Unauthorized",
+                        Self.jsonRPCError(id: nil, code: -32000, message: "Unauthorized"))
         }
         let body = String(raw[bodyStart...]).data(using: .utf8) ?? Data()
         guard let req = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
@@ -187,8 +199,10 @@ public final class MCPServer {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
+    // No `Access-Control-Allow-Origin`: a web page must not be able to read the
+    // tool responses, and cannot attach Authorization without a preflight anyway.
     private func http(_ status: String, _ body: String) -> Data {
-        let payload = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n\(body)"
+        let payload = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         return payload.data(using: .utf8) ?? Data()
     }
 }

@@ -10,6 +10,10 @@ func check(_ cond: Bool, _ msg: String, _ detail: String = "") {
     else { failures += 1; print("  FAIL \(msg)\(detail.isEmpty ? "" : "  [\(detail)]")") }
 }
 
+// The MCP surface requires a bearer token on every call. Fixed token so the
+// test never touches the login keychain.
+LocalAuthToken.testingToken = "test-token"
+
 // MARK: - MCP JSON-RPC
 
 let mcp = MCPServer()
@@ -83,8 +87,16 @@ let decoded = try! JSONDecoder().decode([WebhookManager.Endpoint].self, from: en
 check(decoded.first == ep, "Endpoint Codable round-trip")
 
 func httpBody(_ body: String) -> Data {
-    "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)".data(using: .utf8)!
+    "POST /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-token\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)".data(using: .utf8)!
 }
+
+// Auth: without the token every call is rejected before JSON parsing.
+let noAuth = "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: \(initReq.utf8.count)\r\n\r\n\(initReq)"
+check((String(data: mcp.process(Data(noAuth.utf8)), encoding: .utf8) ?? "").contains("401"),
+      "missing token → 401")
+let badAuth = "POST /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong\r\nContent-Length: \(initReq.utf8.count)\r\n\r\n\(initReq)"
+check((String(data: mcp.process(Data(badAuth.utf8)), encoding: .utf8) ?? "").contains("401"),
+      "wrong token → 401")
 
 if failures == 0 { print("MCP + WEBHOOK TESTS PASSED") }
 else { print("MCP + WEBHOOK TESTS FAILED: \(failures)"); exit(1) }

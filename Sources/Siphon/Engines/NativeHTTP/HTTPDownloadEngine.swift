@@ -46,10 +46,77 @@ public final class HTTPDownloadEngine: DownloadEngine {
     private static let flushThreshold = 1 << 16           // 64 KiB
     private static let maxRetriesPerPart = 5
     private static let maxResumeAttempts = 3              // circuit breaker (aria2)
+    private static let maxPieceRepairRounds = 2           // ChunkChecksum re-fetch budget
     private static let rampInterval: UInt64 = 2_000_000_000 // slow start doubles every 2 s
+    /// Mirrors are only worth probing (HEAD) for multi-source distribution above
+    /// this size; below it the sequential failover chain is cheaper.
+    private static let mirrorProbeMinSize: Int64 = 16 << 20
+    /// Multi-NIC aggregation kicks in only for large range-capable downloads.
+    static let multiNicMinSize: Int64 = 256 << 20
+    static let multiNicKey = "Siphon.multiNic"
 
-    private final class Job {
-        let task: DownloadTask
+    /// A curl worker bound to a secondary network interface, fetching a fixed
+    /// byte range into a temp file (FluxDown multi_nic model). The native engine
+    /// downloads the head half concurrently on the default route; on failure the
+    /// tail falls back to a native pass, so a dead second path costs nothing.
+    final class SecondaryPath: @unchecked Sendable {
+        let range: Range<Int64>
+        let tmp: URL
+        let interface: String
+        private let runner: ExternalRunner
+        private let task: Task<Bool, Never>
+
+        init?(url: URL, headers: [String: String], range: Range<Int64>,
+              directory: URL, interface: String) {
+            guard range.lowerBound < range.upperBound else { return nil }
+            let curl = Self.curlPath
+            guard FileManager.default.isExecutableFile(atPath: curl) else { return nil }
+            self.range = range
+            self.interface = interface
+            let tmp = directory.appendingPathComponent(".siphon-mnic-\(UUID().uuidString).part")
+            self.tmp = tmp
+            var args = ["--globoff", "--silent", "--show-error", "--fail", "--location",
+                        "--connect-timeout", "20",
+                        "--interface", interface,
+                        "--range", "\(range.lowerBound)-\(range.upperBound - 1)"]
+            for (k, v) in headers where !["dir", "out"].contains(k.lowercased()) {
+                args += ["--header", "\(k): \(v)"]
+            }
+            args.append(url.absoluteString)
+            let runner = ExternalRunner(executable: URL(fileURLWithPath: curl),
+                                        arguments: args, destination: tmp)
+            self.runner = runner
+            do { try runner.start() } catch { return nil }
+            let expected = range.upperBound - range.lowerBound
+            self.task = Task { [weak runner] in
+                guard let runner else { return false }
+                let outcome = await runner.wait()
+                let got = ((try? FileManager.default.attributesOfItem(
+                    atPath: tmp.path))?[.size] as? NSNumber)?.int64Value ?? 0
+                return outcome.exitCode == 0 && got == expected
+            }
+        }
+
+        func awaitCompletion() async -> Bool { await task.value }
+        func cancel() { runner.cancel() }
+
+        static var curlPath: String {
+            let configured = ProtocolSettings.load().curlPath.trimmingCharacters(in: .whitespaces)
+            if !configured.isEmpty, FileManager.default.isExecutableFile(atPath: configured) {
+                return configured
+            }
+            return "/usr/bin/curl"
+        }
+    }
+
+    /// One usable source for multi-source segment distribution, with headers
+    /// already credential-scoped for that origin (CredentialScope).
+    struct MirrorEndpoint {
+        let url: URL
+        let headers: [String: String]
+    }
+
+    private final class Job {        let task: DownloadTask
         var handle: Task<Void, Never>?
         var cancelled = false
         /// Per-task speed limit (bytes/s); `nil` = unlimited. Hot-updatable.
@@ -59,25 +126,27 @@ public final class HTTPDownloadEngine: DownloadEngine {
         var sourceOverride: URL?
         /// Position of this source in the [primary] + mirrors list (diagnostics).
         var mirrorIndex: Int = 0
-        /// Terminal outcome of the last transfer, so the failover loop can decide
-        /// whether to continue to the next mirror or stop.
-        enum Outcome { case completed, failed, paused }
-        var lastOutcome: Outcome?
-        var source: URL { sourceOverride ?? task.source }
-        init(_ t: DownloadTask) { task = t }
+    /// Terminal outcome of the last transfer, so the failover loop can decide
+    /// whether to continue to the next mirror or stop.
+    enum Outcome { case completed, failed, paused }
+    var lastOutcome: Outcome?
+    /// Headers actually sent, after per-host overrides (User-Agent, …) are merged.
+    var effectiveHeaders: [String: String] = [:]
+    var source: URL { sourceOverride ?? task.source }
+    init(_ t: DownloadTask) {
+        task = t
+        effectiveHeaders = t.options
     }
+}
 
     /// Async-safe job table (OSAllocatedUnfairLock instead of NSLock because these
     /// methods are called from async contexts).
     private let jobsState = OSAllocatedUnfairLock<[UUID: Job]>(initialState: [:])
     private let writeQueue = DispatchQueue(label: "siphon.nativehttp.write")
-    private let session: URLSession = {
-        let c = URLSessionConfiguration.default
-        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+    private let session: URLSession = CredentialScope.makeSession { c in
         c.httpMaximumConnectionsPerHost = 8
         c.timeoutIntervalForRequest = 60
-        return URLSession(configuration: c)
-    }()
+    }
 
     /// Per-proxy sessions (FluxDown PAC / auto-proxy model). When the system PAC
     /// resolves a host to a proxy, that host's requests run on a dedicated session
@@ -89,12 +158,11 @@ public final class HTTPDownloadEngine: DownloadEngine {
         let key = dict.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }.joined(separator: "&")
         if let existing = proxySessions.withLock({ $0[key] }) { return existing }
-        let c = URLSessionConfiguration.default
-        c.requestCachePolicy = .reloadIgnoringLocalCacheData
-        c.httpMaximumConnectionsPerHost = 8
-        c.timeoutIntervalForRequest = 60
-        c.connectionProxyDictionary = dict
-        let s = URLSession(configuration: c)
+        let s = CredentialScope.makeSession { c in
+            c.httpMaximumConnectionsPerHost = 8
+            c.timeoutIntervalForRequest = 60
+            c.connectionProxyDictionary = dict
+        }
         proxySessions.withLock { $0[key] = s }
         return s
     }
@@ -191,11 +259,12 @@ public final class HTTPDownloadEngine: DownloadEngine {
             return
         }
 
-        // Multi-CDN failover (FluxDown multi_cdn model): try the primary source
-        // first, then each mirror in order. A hard failure (unreachable host,
-        // fatal status, persistent resume failure) advances to the next source.
+        // Multi-CDN failover (FluxDown multi_cdn model): try sources fastest-first
+        // by observed speed (aria2 AdaptiveURISelector), then in document order.
+        // A hard failure (unreachable host, fatal status, persistent resume
+        // failure) advances to the next source.
         let candidates = [task.source] + task.mirrors.filter { $0 != task.source }
-        for (index, source) in candidates.enumerated() {
+        for (index, source) in MirrorSelector.shared.ranked(candidates).enumerated() {
             let attempt = Job(task)
             attempt.cancelled = job.cancelled
             attempt.throttle = job.throttle
@@ -229,6 +298,33 @@ public final class HTTPDownloadEngine: DownloadEngine {
             }
             switch outcome {
             case .completed:
+                // Block-wise verification first (Metalink <pieces>): bad pieces
+                // are surgically re-fetched — a corrupted 1 MiB block must not
+                // cost a full 4 GB re-download (aria2 ChunkChecksum model).
+                if !job.task.pieceHashes.isEmpty, job.task.pieceLength > 0 {
+                    var rounds = 0
+                    while true {
+                        let bad: [Range<Int64>]
+                        do { bad = try Self.badPieceRanges(fileAt: out, pieceLength: job.task.pieceLength,
+                                                           hashes: job.task.pieceHashes) }
+                        catch { break } // unreadable file → whole-file checksum reports it
+                        guard !bad.isEmpty else { break }
+                        if rounds >= Self.maxPieceRepairRounds {
+                            job.lastOutcome = .failed
+                            await report(.error, for: job.task.id, error:
+                                NetFailure.checksumMismatch)
+                            return
+                        }
+                        rounds += 1
+                        dbg("piece verify: \(bad.count) bad piece(s), repair round \(rounds)")
+                        guard await repairRanges(job, fileAt: out, ranges: bad) else {
+                            job.lastOutcome = .failed
+                            await report(.error, for: job.task.id, error:
+                                NetFailure.checksumMismatch)
+                            return
+                        }
+                    }
+                }
                 if let checksum = job.task.checksum, !checksum.isEmpty {
                     let ok = (try? verifyChecksum(fileAt: out, spec: checksum)) ?? false
                     if !ok {
@@ -273,10 +369,31 @@ public final class HTTPDownloadEngine: DownloadEngine {
     private func transfer(_ job: Job, destination finalURL: URL) async -> TransferOutcome {
         let task = job.task
         let out = writingURL(for: finalURL)
+        // Stale multi-NIC temp files from a crashed session are garbage: the
+        // tail is re-planned (or fetched natively) on resume.
+        let dir = out.deletingLastPathComponent()
+        if let stale = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) {
+            for f in stale where f.lastPathComponent.hasPrefix(".siphon-mnic-")
+                    && f.lastPathComponent.hasSuffix(".part") {
+                try? FileManager.default.removeItem(at: f)
+            }
+        }
+
+        // Per-host overrides (AB DM PerHostSettingsManager): merge any custom
+        // User-Agent into the headers actually sent for this transfer.
+        let perHost = PerHostSettings.shared.rule(for: job.source.host ?? "")
+        var headers = task.options
+        if let ua = perHost?.userAgent, !ua.isEmpty {
+            headers["User-Agent"] = ua
+        }
+        // Credentials were issued for `task.source`. A mirror on another site must
+        // not receive them; redirects are re-scoped per hop by the session delegate.
+        job.effectiveHeaders = CredentialScope.headers(headers, from: task.source, to: job.source)
 
         // Probe remote size / range support / validators.
         let info: ProbeInfo
-        do { info = try await probe(url: job.source, headers: task.options) }
+        do { info = try await probe(url: job.source, headers: job.effectiveHeaders) }
         catch { dbg("probe failed: \(error)"); return .failed(error) }
         dbg("probe total=\(info.total) canRange=\(info.canRange) etag=\(info.etag ?? "nil")")
 
@@ -291,6 +408,26 @@ public final class HTTPDownloadEngine: DownloadEngine {
                let free = (fs[.systemFreeSize] as? NSNumber)?.int64Value,
                free < needed {
                 return .failed(NetFailure.unknown("磁盘空间不足：需要约 \(needed / 1_048_576) MB"))
+            }
+        }
+
+        // Conditional GET (aria2 --conditional-get): the destination file
+        // already exists from an earlier download. Ask the server whether it
+        // changed since the file's mtime — 304 means the local copy is current:
+        // finish the task without transferring. A pending sidecar means this is
+        // a real resume, so the check is skipped then.
+        if let mtime = try? FileManager.default.attributesOfItem(
+                atPath: finalURL.path)[.modificationDate] as? Date,
+           Sidecar.load(for: out)?.parts.isEmpty != false {
+            var cond = job.effectiveHeaders
+            cond["If-Modified-Since"] = Self.httpDate(mtime)
+            if await notModified(url: job.source, headers: cond) {
+                dbg("conditional-get: 304, local file is current")
+                let existing = fileSize(finalURL) ?? 0
+                var p = DownloadProgress()
+                p.totalBytes = existing; p.downloadedBytes = existing
+                await delegate?.engineDidUpdate(taskID: task.id, progress: p)
+                return .completed
             }
         }
 
@@ -331,11 +468,46 @@ public final class HTTPDownloadEngine: DownloadEngine {
         }
 
         let canRange = info.canRange
+        // Multi-source segment distribution (aria2 hybrid multi-source): when
+        // the task carries mirrors and the primary is range-capable, probe each
+        // mirror and keep those serving the same file. Workers then pull
+        // different ranges from different sources, weighted by observed speed
+        // (MirrorSelector). Credentials are re-scoped per mirror origin.
+        var endpoints = [MirrorEndpoint(url: job.source, headers: job.effectiveHeaders)]
+        if canRange, info.total >= Self.mirrorProbeMinSize, !task.mirrors.isEmpty {
+            let probed = await Self.probeMirrors(task.mirrors, primary: job.source,
+                                                 primaryEtag: info.etag, total: info.total,
+                                                 baseHeaders: headers)
+            endpoints += probed
+            dbg("mirror probe: \(probed.count)/\(task.mirrors.count) usable")
+        }
+
         var parts: [SegmentCoordinator.Part]
+        var multiNicTail: SecondaryPath?
         if canRange, let sc = sidecar, !sc.parts.isEmpty {
             parts = sc.parts.map { SegmentCoordinator.Part(start: $0[0], cursor: $0[1], end: $0[2]) }
+            // A multi-NIC download's curl half lives outside the sidecar; a
+            // resumed task must re-claim the uncovered tail natively.
+            let covered = parts.map { $0.end }.max() ?? -1
+            if info.total > 0, covered >= 0, covered < info.total - 1 {
+                parts.append(SegmentCoordinator.Part(start: covered + 1, cursor: covered + 1,
+                                                     end: info.total - 1))
+            }
         } else if canRange, info.total >= Self.minSplit * 2 {
-            parts = [SegmentCoordinator.Part(start: 0, cursor: 0, end: info.total - 1)]
+            // Multi-NIC aggregation: with ≥2 usable interfaces and a large
+            // download, curl on a second interface pulls the tail half while the
+            // native engine handles the head half (FluxDown multi_nic model).
+            if let tail = Self.planSecondaryPath(url: job.source,
+                                                 headers: job.effectiveHeaders,
+                                                 total: info.total,
+                                                 directory: out.deletingLastPathComponent()) {
+                multiNicTail = tail
+                parts = [SegmentCoordinator.Part(start: 0, cursor: 0,
+                                                 end: tail.range.lowerBound - 1)]
+                dbg("multi-NIC: \(tail.range.lowerBound)..<\(tail.range.upperBound) via \(tail.interface)")
+            } else {
+                parts = [SegmentCoordinator.Part(start: 0, cursor: 0, end: info.total - 1)]
+            }
         } else {
             // Single stream — either the server has no ranges or the size is unknown;
             // unknown sizes use a sentinel end so approveWrite never truncates early.
@@ -365,6 +537,13 @@ public final class HTTPDownloadEngine: DownloadEngine {
         let host = job.source.host ?? ""
         coordinator.effectiveCap = DomainConnPolicy.shared.effectiveMax(host: host,
                                                                        requested: Self.maxConnections)
+        // Per-host connection cap / speed limit overrides (AB DM per-host model).
+        if let ph = perHost {
+            coordinator.effectiveCap = max(1, min(coordinator.effectiveCap, ph.maxConnections))
+            if ph.speedLimitBytesPerSec > 0 {
+                job.throttle.setLimit(ph.speedLimitBytesPerSec)
+            }
+        }
         let tracker = ProgressTracker()
         tracker.written = alreadyWritten
         let sidecarSaver = SidecarSaver(destination: out, coordinator: coordinator,
@@ -380,7 +559,8 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                              coordinator: coordinator, tracker: tracker,
                                              total: info.total, canRange: canRange,
                                              sidecarSaver: sidecarSaver,
-                                             sizePlan: sizePlan)
+                                             sizePlan: sizePlan,
+                                             endpoints: endpoints)
 
         // Persist learnings for the domain.
         if case .done = result {
@@ -390,6 +570,11 @@ public final class HTTPDownloadEngine: DownloadEngine {
 
         let finalTotal = sizePlan.plannedTotal
         dbg("pool result: \(result) written=\(tracker.written)/\(finalTotal) peak=\(coordinator.peakConnections) remaining=\(coordinator.remainingBytes)")
+        if let tail = multiNicTail {
+            var nativeDone = false
+            if case .done = result { nativeDone = true }
+            if job.cancelled || !nativeDone { tail.cancel() }
+        }
         if job.cancelled {
             sidecarSaver.forceSave()
             dbg("cancelled mid-transfer")
@@ -397,6 +582,42 @@ public final class HTTPDownloadEngine: DownloadEngine {
         }
         switch result {
         case .done:
+            // Join the multi-NIC tail: splice curl's output into the preallocated
+            // file, or fall back to a native pass over the same ranges.
+            if let tail = multiNicTail {
+                let ok = await tail.awaitCompletion()
+                if ok, splice(fileAt: tail.tmp, into: handle,
+                              at: tail.range.lowerBound, expected: Int64(tail.range.count),
+                              tracker: tracker) {
+                    try? FileManager.default.removeItem(at: tail.tmp)
+                    dbg("multi-NIC tail spliced (\(tail.range.count) bytes)")
+                } else {
+                    try? FileManager.default.removeItem(at: tail.tmp)
+                    dbg("multi-NIC tail failed; native fallback pass")
+                    let tailParts = [SegmentCoordinator.Part(
+                        start: tail.range.lowerBound, cursor: tail.range.lowerBound,
+                        end: tail.range.upperBound - 1)]
+                    let tailCoord = SegmentCoordinator(parts: tailParts,
+                                                       maxConnections: Self.maxConnections,
+                                                       minSplit: Self.minSplit,
+                                                       stealThreshold: Self.stealThreshold)
+                    let tailTracker = ProgressTracker()
+                    let tailSaver = SidecarSaver(destination: out, coordinator: tailCoord,
+                                                 etag: info.etag, lastModified: info.lastModified,
+                                                 total: info.total)
+                    _ = await coordinateWorkers(job, url: job.source, handle: handle,
+                                                    coordinator: tailCoord, tracker: tailTracker,
+                                                    total: info.total, canRange: true,
+                                                    sidecarSaver: tailSaver, sizePlan: sizePlan,
+                                                    endpoints: endpoints)
+                    Sidecar.clear(for: out)
+                    if let f = tailCoord.fatalError { return .failed(f) }
+                    guard tailCoord.remainingBytes == 0 else {
+                        return .failed(NetFailure.incompleteBody)
+                    }
+                    writeQueue.sync { tracker.written += Int64(tail.range.count) }
+                }
+            }
             if tracker.written != finalTotal && finalTotal > 0 {
                 return .failed(NetFailure.incompleteBody)
             }
@@ -447,7 +668,8 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                    coordinator: SegmentCoordinator, tracker: ProgressTracker,
                                    total: Int64, canRange: Bool,
                                    sidecarSaver: SidecarSaver,
-                                   sizePlan: SizePlan) async -> PoolResult {
+                                   sizePlan: SizePlan,
+                                   endpoints: [MirrorEndpoint]) async -> PoolResult {
         let workers = max(1, coordinator.effectiveCap)
         dbg("coordinateWorkers: spawning \(workers) workers, cap=\(coordinator.effectiveCap)")
         await withTaskGroup(of: Void.self) { group in
@@ -458,7 +680,8 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                           coordinator: coordinator, tracker: tracker,
                                           total: total, canRange: canRange,
                                           sidecarSaver: sidecarSaver,
-                                          sizePlan: sizePlan)
+                                          sizePlan: sizePlan,
+                                          endpoints: endpoints)
                 }
             }
             // Wait for every worker to finish (they exit when no work remains).
@@ -471,30 +694,87 @@ public final class HTTPDownloadEngine: DownloadEngine {
         return .done
     }
 
+    /// Weighted least-connections source choice (aria2 URI selection): highest
+    /// observed speed with an active-connection penalty, so a fast mirror gets
+    /// most workers but usage spreads as connections pile up. Untested sources
+    /// score 0 and are tried in list order (primary first).
+    static func pickEndpoint(_ endpoints: [MirrorEndpoint], usage: inout [URL: Int]) -> MirrorEndpoint {
+        guard endpoints.count > 1 else { return endpoints[0] }
+        let chosen = endpoints.min { a, b in
+            let sa = MirrorSelector.shared.score(a.url) / Double(1 + (usage[a.url] ?? 0))
+            let sb = MirrorSelector.shared.score(b.url) / Double(1 + (usage[b.url] ?? 0))
+            return sa > sb
+        } ?? endpoints[0]
+        usage[chosen.url, default: 0] += 1
+        return chosen
+    }
+
+    /// HEAD-probe mirrors concurrently; keep only those that answer and serve a
+    /// file of the same size (and, when both sides expose an ETag, the same one).
+    static func probeMirrors(_ mirrors: [URL], primary: URL, primaryEtag: String?,
+                             total: Int64,
+                             baseHeaders: [String: String]) async -> [MirrorEndpoint] {
+        await withTaskGroup(of: MirrorEndpoint?.self) { group in
+            for m in mirrors where m != primary {
+                group.addTask {
+                    let h = CredentialScope.headers(baseHeaders, from: primary, to: m)
+                    var req = URLRequest(url: m, cachePolicy: .reloadIgnoringLocalCacheData)
+                    req.httpMethod = "HEAD"
+                    for (k, v) in h where !["dir", "out"].contains(k.lowercased()) {
+                        req.setValue(v, forHTTPHeaderField: k)
+                    }
+                    guard let (_, resp) = try? await URLSession.shared.data(for: req),
+                          let http = resp as? HTTPURLResponse,
+                          (200...299).contains(http.statusCode) else { return nil }
+                    let t = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "0") ?? 0
+                    if t > 0, total > 0, t != total { return nil }
+                    let etag = http.value(forHTTPHeaderField: "ETag")
+                    if let etag, let primaryEtag, !etag.isEmpty, !primaryEtag.isEmpty, etag != primaryEtag {
+                        return nil
+                    }
+                    return MirrorEndpoint(url: m, headers: h)
+                }
+            }
+            var out: [MirrorEndpoint] = []
+            for await e in group { if let e { out.append(e) } }
+            return out
+        }
+    }
+
     private func workerLoop(_ job: Job, url: URL, handle: FileHandle,
                             coordinator: SegmentCoordinator, tracker: ProgressTracker,
                             total: Int64, canRange: Bool,
                             sidecarSaver: SidecarSaver,
-                            sizePlan: SizePlan) async {
+                            sizePlan: SizePlan,
+                            endpoints: [MirrorEndpoint]) async {
+        var usage: [URL: Int] = [:]
         while !job.cancelled {
             guard let part = coordinator.claim() else {
                 if coordinator.isDrained { return }
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 continue
             }
-            dbg("worker claimed part \(part.start)..\(part.end) from \(part.cursor)")
+            let endpoint = Self.pickEndpoint(endpoints, usage: &usage)
+            dbg("worker claimed part \(part.start)..\(part.end) from \(part.cursor) via \(endpoint.url.host ?? "?")")
+            let started = Date()
             do {
-                try await streamPart(part, url: url, headers: job.task.options,
+                let bytes = try await streamPart(part, url: endpoint.url, headers: endpoint.headers,
                                      handle: handle, tracker: tracker,
                                      total: total, job: job,
                                      coordinator: coordinator, canRange: canRange,
                                      sidecarSaver: sidecarSaver,
                                      sizePlan: sizePlan)
+                usage[endpoint.url, default: 0] -= 1
+                MirrorSelector.shared.record(endpoint.url, bytes: bytes,
+                                             duration: Date().timeIntervalSince(started))
                 dbg("worker finished part \(part.start)..\(part.end)")
             } catch is CancellationError {
+                usage[endpoint.url, default: 0] -= 1
                 coordinator.requeueRemainder(of: part)
                 return
             } catch {
+                usage[endpoint.url, default: 0] -= 1
+                MirrorSelector.shared.recordFailure(endpoint.url)
                 let failure = NetFailure.classify(error)
                 coordinator.recordFailure(failure, attemptedConnections: coordinator.activeConnections,
                                           host: url.host ?? "")
@@ -517,6 +797,44 @@ public final class HTTPDownloadEngine: DownloadEngine {
         }
     }
 
+    /// Plan a secondary-interface curl path for the tail half of a large
+    /// download; nil when disabled, too small, single-homed, or curl is absent.
+    static func planSecondaryPath(url: URL, headers: [String: String], total: Int64,
+                                  directory: URL) -> SecondaryPath? {
+        guard total >= multiNicMinSize,
+              UserDefaults.standard.object(forKey: multiNicKey) as? Bool ?? true else { return nil }
+        let ifaces = NetworkInterfaces.usableIPv4()
+        guard ifaces.count >= 2 else { return nil }
+        let mid = total / 2
+        return SecondaryPath(url: url, headers: headers,
+                             range: mid..<total, directory: directory,
+                             interface: ifaces[1])
+    }
+
+    /// Copy a completed secondary-path temp file into the preallocated .part at
+    /// `offset`, in 1 MiB chunks (never the whole tail in memory). Succeeds only
+    /// when exactly `expected` bytes landed.
+    private func splice(fileAt tmp: URL, into handle: FileHandle, at offset: Int64,
+                        expected: Int64, tracker: ProgressTracker) -> Bool {
+        guard let src = try? FileHandle(forReadingFrom: tmp) else { return false }
+        defer { try? src.close() }
+        var written: Int64 = 0
+        var failed = false
+        writeQueue.sync {
+            try? handle.seek(toOffset: UInt64(offset))
+            while true {
+                let chunk: Data
+                do { chunk = try src.read(upToCount: 1 << 20) ?? Data() }
+                catch { failed = true; break }
+                if chunk.isEmpty { break }
+                handle.write(chunk)
+                written += Int64(chunk.count)
+            }
+            tracker.written += written
+        }
+        return !failed && written == expected
+    }
+
     // MARK: - single part streaming
 
     private func streamPart(_ part: SegmentCoordinator.Part, url: URL,
@@ -524,7 +842,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
                             tracker: ProgressTracker, total: Int64, job: Job,
                             coordinator: SegmentCoordinator, canRange: Bool,
                             sidecarSaver: SidecarSaver,
-                            sizePlan: SizePlan) async throws {
+                            sizePlan: SizePlan) async throws -> Int64 {
         let singleStream = !canRange || (total <= 0 && part.start == 0 && part.end == 0)
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         req.httpMethod = "GET"
@@ -582,7 +900,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
 
         var buffer = Data()
         var offset = part.cursor
-        var byteCount = 0
+        var byteCount = Int64(0)
         for try await byte in asyncBytes {
             if job.cancelled { throw CancellationError() }
             byteCount += 1
@@ -590,7 +908,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
             if buffer.count >= Self.flushThreshold {
                 let requested = Int64(buffer.count)
                 let approved = coordinator.approveWrite(offset: offset, requested: requested)
-                if approved == 0 { return } // tail stolen or part finished elsewhere
+                if approved == 0 { return byteCount } // tail stolen or part finished elsewhere
                 if approved < requested {
                     // Partial approval: our slice ends mid-buffer; the rest of the
                     // buffer belongs to the connection that split us. Write only
@@ -602,7 +920,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
                                      sidecarSaver: sidecarSaver)
                 offset += approved
                 buffer.removeAll(keepingCapacity: true)
-                if approved < requested { return }
+                if approved < requested { return byteCount }
             }
         }
         if !buffer.isEmpty {
@@ -619,6 +937,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
         dbg("stream \(part.start): body ended, got \(byteCount) bytes, offset now \(offset)")
         coordinator.completePart(through: offset)
         sidecarSaver.requestSave()
+        return byteCount
     }
 
     private func writeChunk(_ data: Data, at offset: Int64, handle: FileHandle,
@@ -652,6 +971,63 @@ public final class HTTPDownloadEngine: DownloadEngine {
         tracker.lastBytes = tracker.written
         tracker.lastReport = now
         return p
+    }
+
+    // MARK: - piece verification (aria2 ChunkChecksum model)
+
+    /// Verify each `pieceLength` block of the file against its SHA-1 hex hash.
+    /// Returns the byte ranges of bad pieces ([] when all good). Pieces beyond
+    /// EOF are ignored (size-unknown downloads).
+    static func badPieceRanges(fileAt url: URL, pieceLength: Int64,
+                               hashes: [String]) throws -> [Range<Int64>] {
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size]
+            as? NSNumber)?.int64Value ?? 0
+        guard size > 0 else { return [] }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var bad: [Range<Int64>] = []
+        for (i, hex) in hashes.enumerated() {
+            let start = Int64(i) * pieceLength
+            guard start < size else { break }
+            _ = try handle.seek(toOffset: UInt64(start))
+            let data = try handle.read(upToCount: Int(min(pieceLength, size - start))) ?? Data()
+            let digest = Insecure.SHA1.hash(data: data)
+            let actual = digest.map { String(format: "%02x", $0) }.joined()
+            if actual != hex.lowercased() {
+                bad.append(start..<min(start + pieceLength, size))
+            }
+        }
+        return bad
+    }
+
+    /// Re-download specific byte ranges into an existing (complete-size) file
+    /// through the normal coordinator pipeline. Used by piece repair.
+    private func repairRanges(_ job: Job, fileAt file: URL, ranges: [Range<Int64>]) async -> Bool {
+        guard let handle = try? FileHandle(forWritingTo: file) else { return false }
+        defer { try? handle.close() }
+        let parts = ranges.map {
+            SegmentCoordinator.Part(start: $0.lowerBound, cursor: $0.lowerBound,
+                                    end: $0.upperBound - 1)
+        }
+        let coordinator = SegmentCoordinator(parts: parts,
+                                             maxConnections: Self.maxConnections,
+                                             minSplit: Self.minSplit,
+                                             stealThreshold: Self.stealThreshold)
+        let tracker = ProgressTracker()
+        let sizePlan = SizePlan(total: Int64(ranges.map { Int($0.count) }.reduce(0, +)))
+        let saver = SidecarSaver(destination: file, coordinator: coordinator,
+                                 etag: nil, lastModified: nil, total: 0)
+        await report(.active, for: job.task.id)
+        let result = await coordinateWorkers(job, url: job.source, handle: handle,
+                                             coordinator: coordinator, tracker: tracker,
+                                             total: 0, canRange: true,
+                                             sidecarSaver: saver, sizePlan: sizePlan,
+                                             endpoints: [MirrorEndpoint(url: job.source,
+                                                                        headers: job.effectiveHeaders)])
+        Sidecar.clear(for: file)
+        if let f = coordinator.fatalError { dbg("piece repair failed: \(f)"); return false }
+        if case .done = result, coordinator.remainingBytes == 0 { return true }
+        return false
     }
 
     // MARK: - checksum
@@ -731,6 +1107,32 @@ public final class HTTPDownloadEngine: DownloadEngine {
             }
         }
         return result
+    }
+
+    /// Conditional-request probe (aria2 --conditional-get): HEAD with
+    /// If-Modified-Since; true only on an explicit 304. Any failure or 200
+    /// means "download normally".
+    private func notModified(url: URL, headers: [String: String]) async -> Bool {
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        req.httpMethod = "HEAD"
+        for (k, v) in headers where !["dir", "out"].contains(k.lowercased()) {
+            req.setValue(v, forHTTPHeaderField: k)
+        }
+        guard let (_, resp) = try? await session(for: url).data(for: req),
+              let http = resp as? HTTPURLResponse else { return false }
+        return http.statusCode == 304
+    }
+
+    private static let httpDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "GMT")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return f
+    }()
+
+    private static func httpDate(_ date: Date) -> String {
+        httpDateFormatter.string(from: date)
     }
 
     private func fileSize(_ url: URL) -> Int64? {
@@ -960,6 +1362,15 @@ final class SegmentCoordinator: @unchecked Sendable {
     /// Per-part retry counters keyed by `start`; a retry without byte progress counts.
     private var retries: [Int64: Int] = [:]
     private let maxRetriesPerPart = 5
+    /// Per-segment throughput history (FluxDown speed_history model): EWMA of the
+    /// observed write rate per active part, keyed by `Part.start`. Drives the
+    /// steal policy: work migrates from slow to fast connections.
+    private struct SpeedSample {
+        var ewma: Double = 0
+        var windowBytes: Int64 = 0
+        var windowStart = Date()
+    }
+    private var speeds: [Int64: SpeedSample] = [:]
 
     var effectiveCap: Int = 8
     var activeConnections: Int { lock.lock(); defer { lock.unlock() }; return active.count }
@@ -988,7 +1399,10 @@ final class SegmentCoordinator: @unchecked Sendable {
         rampTarget = min(effectiveCap, rampTarget * 2)
     }
 
-    /// A worker asks for work. May split the largest active part's tail.
+    /// A worker asks for work. May split an active part's tail. The victim is
+    /// the part with the longest projected time-to-finish (remaining / observed
+    /// speed) so a stalled source donates work to a faster connection; before
+    /// any speed sample exists this degrades to "largest remaining".
     func claim() -> Part? {
         lock.lock(); defer { lock.unlock() }
         tickRamp()
@@ -999,10 +1413,10 @@ final class SegmentCoordinator: @unchecked Sendable {
             peakConnections = max(peakConnections, active.count)
             return p
         }
-        // Slow start beyond the first connection: split the largest active part.
-        guard active.count < rampTarget, active.count < effectiveCap,
-              let idx = active.indices.max(by: { remaining(active[$0]) < remaining(active[$1]) }),
-              remaining(active[idx]) >= stealThreshold * 2 else { return nil }
+        // Slow start beyond the first connection: steal from the slowest part.
+        guard active.count < rampTarget, active.count < effectiveCap else { return nil }
+        let splittable = active.indices.filter { remaining(active[$0]) >= stealThreshold * 2 }
+        guard let idx = pickVictim(among: splittable) else { return nil }
         var victim = active[idx]
         let rem = remaining(victim)
         let cut = victim.cursor + rem / 2
@@ -1015,24 +1429,63 @@ final class SegmentCoordinator: @unchecked Sendable {
         return stolen
     }
 
+    /// Index of the active part to steal from, or nil when nothing qualifies.
+    private func pickVictim(among indices: [Int]) -> Int? {
+        guard !indices.isEmpty else { return nil }
+        guard !speeds.isEmpty else {
+            return indices.max(by: { remaining(active[$0]) < remaining(active[$1]) })
+        }
+        let known = speeds.values.map(\.ewma).filter { $0 > 0 }.sorted()
+        let fallback = known.isEmpty ? 0 : known[known.count / 2]
+        func timeLeft(_ i: Int) -> Double {
+            let s = speeds[active[i].start]?.ewma ?? fallback
+            return Double(remaining(active[i])) / max(s, 65_536)
+        }
+        return indices.max(by: { timeLeft($0) < timeLeft($1) })
+    }
+
     /// Approve a write of `requested` bytes at `offset`; returns the approved count
     /// (may be smaller if the part was split mid-flight, or 0 if nothing is ours).
+    /// Also feeds the per-part speed history.
     func approveWrite(offset: Int64, requested: Int64) -> Int64 {
         lock.lock(); defer { lock.unlock() }
         guard let idx = active.firstIndex(where: { offset >= $0.cursor && offset <= $0.end }) else {
             return 0
         }
         let approved = min(requested, active[idx].end + 1 - offset)
-        if approved > 0 { active[idx].cursor = offset + approved }
-        if remaining(active[idx]) <= 0 { active.remove(at: idx) }
+        if approved > 0 {
+            active[idx].cursor = offset + approved
+            noteSpeed(active[idx].start, bytes: approved)
+        }
+        if remaining(active[idx]) <= 0 {
+            speeds.removeValue(forKey: active[idx].start)
+            active.remove(at: idx)
+        }
         return approved
+    }
+
+    /// EWMA update for one part's observed throughput (2 s measurement windows).
+    private func noteSpeed(_ key: Int64, bytes: Int64) {
+        var s = speeds[key] ?? SpeedSample()
+        s.windowBytes += bytes
+        let dt = Date().timeIntervalSince(s.windowStart)
+        if dt >= 2.0, s.windowBytes > 0 {
+            let inst = Double(s.windowBytes) / dt
+            s.ewma = s.ewma == 0 ? inst : s.ewma * 0.7 + inst * 0.3
+            s.windowBytes = 0
+            s.windowStart = Date()
+        }
+        speeds[key] = s
     }
 
     /// Worker finished streaming to `offset` without error.
     func completePart(through offset: Int64) {
         lock.lock(); defer { lock.unlock() }
         if let idx = active.firstIndex(where: { $0.cursor <= offset && offset <= $0.end + 1 }) {
-            if remaining(active[idx]) <= 0 { active.remove(at: idx) }
+            if remaining(active[idx]) <= 0 {
+                speeds.removeValue(forKey: active[idx].start)
+                active.remove(at: idx)
+            }
         }
     }
 
@@ -1041,6 +1494,7 @@ final class SegmentCoordinator: @unchecked Sendable {
     /// too many fruitless retries is a hard stop for the whole download.
     func requeueRemainder(of part: Part) {
         lock.lock(); defer { lock.unlock() }
+        speeds.removeValue(forKey: part.start)
         let idx = active.firstIndex(where: { $0.start == part.start && $0.cursor >= part.cursor })
         let remainder: Part?
         if let idx {

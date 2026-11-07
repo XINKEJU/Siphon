@@ -30,8 +30,11 @@ struct TaskDetailView: View {
                     }
                 }
 
-                Section("任务信息") {
-                    LabeledContent("队列", value: task.queueName)
+                if task.protocol == .bittorrent || task.protocol == .magnet {
+                    BTFilesSection(task: task)
+                }
+
+                Section("任务信息") {                    LabeledContent("队列", value: task.queueName)
                     LabeledContent("引擎", value: task.protocol.transport.displayName)
                     LabeledContent("创建时间", value: task.createdAt.formatted(date: .abbreviated, time: .shortened))
                     VStack(alignment: .leading, spacing: 4) {
@@ -73,8 +76,7 @@ struct TaskDetailView: View {
         // ContentView's More menu instead.
     }
 
-    private var identityCard: some View {
-        VStack(spacing: 10) {
+    private var identityCard: some View {        VStack(spacing: 10) {
             HStack(spacing: 12) {
                 Image(systemName: "doc.fill")
                     .font(.system(size: 30))
@@ -96,5 +98,73 @@ struct TaskDetailView: View {
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
+    }
+}
+
+/// Multi-file torrent selection (aria2 `getFiles` + `select-file`). Files exist
+/// only after BT metadata resolution — for magnets that means the task must
+/// have started once. The selection applies live on a running download.
+private struct BTFilesSection: View {
+    @EnvironmentObject private var store: DownloadStore
+    let task: DownloadTask
+
+    @State private var files: [Aria2Engine.BTFile] = []
+    @State private var checked: Set<Int> = []
+    @State private var loaded = false
+    @State private var status: String?
+    @State private var loading = false
+
+    var body: some View {
+        Section("BT 文件选择") {
+            if loading {
+                ProgressView().controlSize(.small)
+            } else if files.isEmpty {
+                Text(loaded ? "暂无文件列表（磁力任务需先启动一次以获取元数据）"
+                            : "尚未加载，任务启动后可获取文件列表")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("加载文件列表") { Task { await load() } }
+            } else {
+                ForEach(files) { f in
+                    Toggle(isOn: binding(for: f.index)) {
+                        HStack {
+                            Text(f.displayName).lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Text(Formatting.bytes(f.length))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                HStack {
+                    Button("全选") { checked = Set(files.map(\.index)) }
+                        .disabled(checked.count == files.count)
+                    Button("应用选择") { Task { await apply() } }
+                        .disabled(checked.isEmpty)
+                    if let s = status, !s.isEmpty { Text(s).font(.caption).foregroundStyle(.secondary) }
+                }
+                Text("取消勾选的文件不会下载；对已完成的文件无效。")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func binding(for index: Int) -> Binding<Bool> {
+        Binding(get: { checked.contains(index) },
+                set: { if $0 { checked.insert(index) } else { checked.remove(index) } })
+    }
+
+    private func load() async {
+        loading = true
+        let list = await store.btFiles(for: task.id)
+        files = list
+        checked = Set(list.filter(\.selected).map(\.index))
+        loaded = true
+        loading = false
+    }
+
+    private func apply() async {
+        let ok = await store.applyBTFileSelection(task.id, indexes: checked.sorted())
+        status = ok ? "已应用" : "应用失败（需至少选择一个文件，且元数据已加载）"
+        if ok { await load() }
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Darwin
 
 /// Policy helpers around task lifecycle that are not engine-specific:
 /// auto-categorization, schedule windows, completion actions, keep-awake.
@@ -171,6 +172,29 @@ public struct TurtleConfig: Codable, Equatable {
                 ? (now >= autoStartMinutes && now < autoEndMinutes)
                 : (now >= autoStartMinutes || now < autoEndMinutes)
             return inside ? limitBytesPerSec : nil
+        }
+    }
+}
+
+// MARK: - quarantine (FluxDown mark_of_the_web)
+
+public let quarantineEnabledKey = "Siphon.quarantineDownloads"
+
+/// Stamps a downloaded file with the `com.apple.quarantine` extended attribute so
+/// the system treats it as internet-downloaded (FluxDown's `mark_of_the_web`). This
+/// triggers Gatekeeper's first-launch warning for apps/dmgs — matching Safari and
+/// Chrome — and is the macOS-correct way to flag untrusted downloads.
+/// Best-effort: any failure (missing file, sandbox denial) is silently ignored.
+public func markDownloadQuarantine(_ url: URL) {
+    guard UserDefaults.standard.object(forKey: quarantineEnabledKey) as? Bool ?? true else { return }
+    guard FileManager.default.fileExists(atPath: url.path) else { return }
+    // <flags>;<epoch-seconds>;<agent>;<pid>  (pid optional). 0x0081 = web download.
+    let ts = UInt64(Date().timeIntervalSince1970)
+    let value = String(format: "0081;%llu;Siphon;", ts)
+    value.withCString { cstr in
+        url.path.withCString { path in
+            _ = setxattr(path, "com.apple.quarantine",
+                         cstr, Int(strlen(cstr) + 1), 0, 0)
         }
     }
 }

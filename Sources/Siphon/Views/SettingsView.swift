@@ -26,6 +26,42 @@ struct SettingsView: View {
     @State private var webhooks: [WebhookManager.Endpoint] = []
     @State private var webhookURLText = ""
 
+    // BitTorrent enhancement + per-host
+    @State private var trackerBlacklistText = ""
+    @State private var seedRatio: Double = 0
+    @State private var seedTime: Int = 0
+    @State private var perHostRules: [PerHostRule] = []
+    @State private var newHostText = ""
+
+    // Archive auto-extract + post-process
+    @State private var autoExtract = false
+    @State private var postProcessEnabled = false
+    @State private var postProcessCommand = ""
+
+    // eD2K servers / Kad bootstrap
+    @State private var ed2kServersText = ""
+    @State private var ed2kKadText = ""
+
+    // UPnP / NAT-PMP
+    @State private var btPortText = "6881"
+    @State private var natResult = ""
+
+    // Plugin sandbox
+    @State private var pluginList: [String] = []
+
+    // Remote pairing (MDXP)
+    @State private var pairingCode = ""
+    @State private var pairingActive = false
+    @State private var pairingDeviceName = ""
+    @State private var pairedDevices: [RemotePairing.PairedDevice] = []
+
+    // Local API token
+    @State private var apiToken = LocalAuthToken.current()
+
+    // Self-update
+    @ObservedObject private var updater = UpdateChecker.shared
+    @State private var updateFeedText = ""
+
     var body: some View {
         TabView(selection: $selectedTab) {
             generalTab.tabItem { Label("通用", systemImage: "gear") }.tag(0)
@@ -40,6 +76,19 @@ struct SettingsView: View {
             limitText = store.speedLimitText
             loadGatewaySettings()
             reloadWebhooks()
+            trackerBlacklistText = TrackerManager.shared.blacklist.joined(separator: "\n")
+            seedRatio = UserDefaults.standard.double(forKey: "Siphon.seedRatio")
+            seedTime = UserDefaults.standard.integer(forKey: "Siphon.seedTime")
+            perHostRules = PerHostSettings.shared.rules
+            autoExtract = UserDefaults.standard.bool(forKey: ArchiveManager.autoExtractKey)
+            postProcessEnabled = UserDefaults.standard.bool(forKey: ArchiveManager.postProcessKey)
+            postProcessCommand = UserDefaults.standard.string(forKey: ArchiveManager.postProcessCommandKey) ?? ""
+            ed2kServersText = ED2KServerList.shared.servers
+                .map { "\($0.host):\($0.port)" }.joined(separator: "\n")
+            ed2kKadText = ED2KServerList.shared.kadBootstrap.joined(separator: "\n")
+            pluginList = PluginHost.shared.pluginNames
+            pairedDevices = RemotePairing.shared.devices
+            updateFeedText = updater.feedURL
         }
     }
 
@@ -77,6 +126,18 @@ struct SettingsView: View {
                     get: { UserDefaults.standard.bool(forKey: "Siphon.autoCategorize") },
                     set: { UserDefaults.standard.set($0, forKey: "Siphon.autoCategorize") }))
                 Text("开启后新任务按视频 / 音频 / 文档 / 压缩包 / 镜像等自动放入子目录。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("下载文件标记隔离属性（macOS Gatekeeper）", isOn: Binding(
+                    get: { UserDefaults.standard.object(forKey: "Siphon.quarantineDownloads") as? Bool ?? true },
+                    set: { UserDefaults.standard.set($0, forKey: "Siphon.quarantineDownloads") }))
+                Text("开启后，下载完成的文件会写入 com.apple.quarantine 扩展属性，首次打开时被系统提示安全警告（与 Safari / Chrome 一致）。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("多网卡聚合下载", isOn: Binding(
+                    get: { UserDefaults.standard.object(forKey: "Siphon.multiNic") as? Bool ?? true },
+                    set: { UserDefaults.standard.set($0, forKey: "Siphon.multiNic") }))
+                Text("检测到 ≥2 个可用网络接口时，≥256 MB 的 HTTP 下载由第二接口（curl 绑定）并行拉取文件后半段，失败自动回退单路。实际分流取决于系统路由表（如有线 + Wi-Fi 双默认路由）。")
                     .font(.caption).foregroundStyle(.tertiary)
 
                 Toggle("定时下载时段", isOn: Binding(
@@ -219,7 +280,26 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                     Spacer()
                 }
-                Text("POST {\"url\": \"…\"} 即可添加任务；浏览器扩展可通过 host_permissions 调用。")
+                HStack(spacing: 8) {
+                    Text(apiToken)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help(apiToken)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(apiToken, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }.help("复制令牌")
+                    Button {
+                        apiToken = LocalAuthToken.rotate()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }.help("重新生成令牌（已配置的扩展会通过 /ping 自动获取新令牌，curl 调用需更新）")
+                }
+                Text("所有请求（除 /ping）需带 Authorization: Bearer <令牌>，防止任意网页跨站调用本机接口。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("AI 客户端（MCP）") {
@@ -232,7 +312,7 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                     Spacer()
                 }
-                Text("让 Claude / Cursor 等 AI 客户端管理下载：add_download、list_tasks、pause_task、resume_task、remove_task。")
+                Text("让 Claude / Cursor 等 AI 客户端管理下载：add_download、list_tasks、pause_task、resume_task、remove_task。客户端需在请求头配置上面的本地接口令牌。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section("任务事件 Webhook") {
@@ -312,6 +392,213 @@ struct SettingsView: View {
                 }
                 Text("每次刷新按 guid 去重，只下载新条目；首次添加不下载历史内容。应用运行期间每 30 分钟自动检查一次（有活动下载时顺延）。")
                     .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("BitTorrent 增强（Tracker / 做种）") {
+                Toggle("自动订阅公共 Tracker 列表", isOn: Binding(
+                    get: { TrackerManager.shared.autoUpdateEnabled },
+                    set: { TrackerManager.shared.setAutoUpdate($0) }))
+                HStack {
+                    Text("当前可用 Tracker")
+                    Spacer()
+                    Text("\(TrackerManager.shared.lastTrackers.count) 个").foregroundStyle(.secondary)
+                }
+                if let err = TrackerManager.shared.lastError {
+                    Text(err).font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    TextField("Tracker 黑名单（每行一个，自动过滤）", text: $trackerBlacklistText, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...4)
+                    Button("应用") { TrackerManager.shared.setBlacklist(trackerBlacklistText) }
+                }
+                Button("立即刷新 Tracker") { Task { await TrackerManager.shared.refresh() } }
+                Divider()
+                HStack(spacing: 8) {
+                    Text("做种比"); TextField("0 = 不限", value: $seedRatio, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                    Text("做种时长（分）"); TextField("0 = 不限", value: $seedTime, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Button("应用做种设置") { store.applySeedSettings(ratio: seedRatio, time: seedTime) }
+                Text("Tracker 列表定时从公开源拉取、去重后注入 aria2；做种比/时长作用于全部 BT 任务，达到后自动停止做种。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("每主机连接 / 限速 / User-Agent") {
+                ForEach($perHostRules) { $rule in
+                    DisclosureGroup(rule.host.isEmpty ? "未命名主机" : rule.host) {
+                        HStack {
+                            Text("主机"); TextField("example.com 或 *.example.com", text: $rule.host)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        Stepper("最大连接数：\(rule.maxConnections)", value: $rule.maxConnections, in: 1...32)
+                        HStack {
+                            Text("限速 B/s"); TextField("0 = 不限", value: $rule.speedLimitBytesPerSec, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        HStack {
+                            Text("User-Agent"); TextField("可选", text: $rule.userAgent)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        Button("保存并应用") {
+                            PerHostSettings.shared.upsert(rule)
+                            perHostRules = PerHostSettings.shared.rules
+                        }
+                        Button("删除", role: .destructive) {
+                            PerHostSettings.shared.remove(rule.id)
+                            perHostRules = PerHostSettings.shared.rules
+                        }
+                    }
+                }
+                HStack {
+                    TextField("新主机（如 cdn.example.com）", text: $newHostText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("添加") {
+                        let r = PerHostRule(host: newHostText.trimmingCharacters(in: .whitespaces))
+                        PerHostSettings.shared.upsert(r)
+                        perHostRules = PerHostSettings.shared.rules
+                        newHostText = ""
+                    }
+                    .disabled(newHostText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Text("按域名覆盖连接数、限速与 User-Agent，不影响全局设置。匹配顺序：精确主机名 → *.域名 通配。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("归档自动解压与后处理（HyperDM 模型）") {
+                Toggle("下载完成后自动解压归档文件", isOn: Binding(
+                    get: { autoExtract },
+                    set: {
+                        autoExtract = $0
+                        UserDefaults.standard.set($0, forKey: ArchiveManager.autoExtractKey)
+                    }))
+                Text("支持 zip / tar(.gz/.bz2/.xz/.tgz) / .gz / 7z（需安装 p7zip）。解压到同名文件夹，原文件保留。rar 暂不支持。")
+                    .font(.caption).foregroundStyle(.tertiary)
+                Divider()
+                Toggle("完成后执行后处理命令", isOn: Binding(
+                    get: { postProcessEnabled },
+                    set: {
+                        postProcessEnabled = $0
+                        UserDefaults.standard.set($0, forKey: ArchiveManager.postProcessKey)
+                    }))
+                TextField("Shell 命令（/bin/sh -c 执行）", text: $postProcessCommand,
+                          prompt: Text("例如：mv \"$SIPHON_DIR\"/* ~/Movies/"))
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!postProcessEnabled)
+                Text("可用环境变量：$SIPHON_FILE（文件路径）、$SIPHON_NAME（文件名）、$SIPHON_DIR（解压目录，未解压时为文件所在目录）。失败不阻塞下载。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("UPnP / NAT-PMP 端口映射（BT 入站）") {
+                HStack {
+                    Text("BT 监听端口"); TextField("6881", text: $btPortText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("检测 NAT 类型") {
+                        let t = PortMapper.shared.detect()
+                        natResult = "NAT：\(t.rawValue)  外网 IP：\(PortMapper.shared.externalIP ?? "—")"
+                    }
+                    Button("映射端口") {
+                        let port = UInt16(btPortText) ?? 6881
+                        Task {
+                            let ok = await PortMapper.shared.mapPortAsync(internalPort: port, description: "Siphon")
+                            natResult = ok
+                                ? "已映射 TCP \(port) via \(PortMapper.shared.natType.rawValue)  外网 IP：\(PortMapper.shared.externalIP ?? "—")"
+                                : "映射失败：\(PortMapper.shared.lastError ?? "未知原因")"
+                        }
+                    }
+                }
+                if !natResult.isEmpty {
+                    Text(natResult).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("为 BitTorrent 入站连接做 UPnP / NAT-PMP 端口映射，提升做种与连接数。无可用网关或沙盒阻止组播时自动跳过并报告原因，不影响下载。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("eD2K 服务器与 Kad 引导（原生 P2P 后端）") {
+                HStack {
+                    TextField("eD2K 服务器（每行 host:port，默认端口 4661）",
+                              text: $ed2kServersText, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...4)
+                    Button("应用") {
+                        ED2KServerList.shared.setServers(
+                            ed2kServersText.components(separatedBy: .newlines))
+                    }
+                }
+                HStack {
+                    TextField("Kad 引导节点（每行 host:port，可选）",
+                              text: $ed2kKadText, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...4)
+                    Button("应用") {
+                        ED2KServerList.shared.setKadBootstrap(
+                            ed2kKadText.components(separatedBy: .newlines))
+                    }
+                }
+                Text("链接未内嵌 |sources,host:port| 时，原生 eD2K 后端会用这些服务器做 OP_GETSOURCES 寻源；Kad DHT 引导暂未实现，因此无内嵌源且无服务器的链接仍会报 noSources。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("插件沙箱（JavaScript 解析器）") {
+                if pluginList.isEmpty {
+                    Text("未加载任何插件。插件目录：~/Library/Application Support/Siphon/plugins/")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(pluginList, id: \.self) { name in
+                        HStack {
+                            Image(systemName: "checkmark.shield.fill").foregroundStyle(.green)
+                            Text(name)
+                        }
+                    }
+                }
+                Text("插件在隔离的 JSContext 中运行，已移除 XMLHttpRequest / fetch / WebSocket / import / require / process 等可触网或触盘 API，且仅允许纯 URL 改写；声明额外权限的插件会被拒绝加载。恶意插件最多只能误改一个下载链接。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            Section("远程设备配对（MDXP 设备码）") {
+                if !pairingActive {
+                    Button("生成配对码") {
+                        pairingCode = RemotePairing.shared.beginPairing()
+                        pairingActive = true
+                    }
+                } else {
+                    HStack {
+                        Text("配对码").foregroundStyle(.secondary)
+                        Text(pairingCode).font(.title3.monospaced())
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button("取消", role: .destructive) {
+                            RemotePairing.shared.cancelPairing()
+                            pairingActive = false
+                        }
+                    }
+                    HStack {
+                        TextField("远程设备名（可选）", text: $pairingDeviceName)
+                            .textFieldStyle(.roundedBorder)
+                        Button("确认配对") {
+                            if RemotePairing.shared.confirmPairing(deviceName: pairingDeviceName) != nil {
+                                pairedDevices = RemotePairing.shared.devices
+                                pairingDeviceName = ""
+                                pairingActive = false
+                            }
+                        }
+                    }
+                    Text("将配对码在远程设备 / MDXP 中继上验证即可完成握手；此处为客户端状态机与持久化，传输层可后续接入真实中继。配对码 5 分钟内有效。")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                if !pairedDevices.isEmpty {
+                    Divider()
+                    ForEach(pairedDevices) { d in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(d.name)
+                                Text(d.token.prefix(12) + "…  ·  "
+                                      + d.pairedAt.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button(role: .destructive) {
+                                RemotePairing.shared.remove(deviceID: d.id)
+                                pairedDevices = RemotePairing.shared.devices
+                            } label: { Image(systemName: "trash") }
+                                .controlSize(.small)
+                        }
+                    }
+                }
             }
             Section("P2P 引擎（aria2，随应用打包）") {
                 HStack(spacing: 10) {
@@ -450,6 +737,36 @@ struct SettingsView: View {
             }
             .padding(24)
             .glassCard(cornerRadius: 20)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("软件更新").font(.headline)
+                HStack {
+                    TextField("更新源 JSON（如 GitHub Releases latest.json）", text: $updateFeedText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("保存") { updater.feedURL = updateFeedText }
+                }
+                HStack {
+                    Button(updater.checking ? "检查中…" : "检查更新") {
+                        Task { await updater.check() }
+                    }
+                    .disabled(updater.checking)
+                    if let info = updater.available {
+                        Text("新版本 \(info.version)").foregroundStyle(.green)
+                        Button(updater.installing ? "安装中…" : "下载并安装") {
+                            Task { await updater.downloadAndInstall() }
+                        }
+                        .disabled(updater.installing)
+                        .controlSize(.small)
+                    }
+                    Spacer()
+                }
+                if !updater.status.isEmpty {
+                    Text(updater.status).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("默认无更新源，保持静默。配置后：下载更新包 → SHA-256 校验 → 解压替换 .app（失败自动还原）→ 重启。")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8)
 
             Spacer()
             Text("HTTP/HTTPS/FTP、DASH 扁平化与 eD2K 传输均为原生 Swift 实现；aria2 以独立进程调用（GPLv2），不链接其库。AFP 链接自动迁移为 SMB。")

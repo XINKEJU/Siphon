@@ -15,7 +15,7 @@
 - 语言：Swift 6.4（Swift 5.10 工具链兼容模式）
 - 最低系统：macOS 14 (Sonoma)；**macOS 26+ 启用完整液态玻璃窗口（红绿灯 + 统一玻璃工具栏），前提是二进制 linked SDK ≥ 26**（由构建脚本保证，见 §7.1）；14/15 自动降级为材质外观（同一二进制）
 - 依赖：零第三方 Swift 包。仅系统框架（Foundation / SwiftUI / AppKit / Network / CommonCrypto / Security）
-- 外部二进制：`aria2c`（捆绑，运行必需）；系统 `/usr/bin/curl`、`scp`、`rsync`、`mount_*`（按需调用，不捆绑）；`ffmpeg`（可选，用于 fMP4 重封装）
+- 外部二进制：`aria2c`（捆绑，运行必需）；系统 `/usr/bin/curl`、`scp`、`rsync`、`mount_*`（按需调用，不捆绑）；`ffmpeg`（可选，仅 HLS→通用单文件 MP4 重封装需要；DASH 的 fMP4→MP4 已用 AVFoundation 无损导出，无 ffmpeg 依赖）
 - 许可证：MIT（详见 [LICENSE](LICENSE)）；aria2 以独立进程调用，见 §11
 
 ---
@@ -28,7 +28,7 @@
 |---|---|
 | 稳定 + 性能 | aria2（C++，20 年验证）承担主流协议，Swift 只做编排 |
 | 小体积 | Swift 原生编译，无 Electron / Flutter / JVM 运行时；aria2c 单文件约 3–5 MB |
-| 全协议 | aria2 覆盖 HTTP(S)/FTP/SFTP/BT/Metalink/磁力；原生引擎补 HLS / DASH / eD2K 哈希；适配层补专用链、WebDAV、S3、IPFS、SMB、SCP/rsync、本地文件与批量列表（§2） |
+| 全协议 | aria2 覆盖 HTTP(S)/FTP/SFTP/BT/Metalink/磁力；原生引擎补 HLS / DASH 与 eD2K 原生 C2C 传输；适配层补专用链、WebDAV、S3、IPFS、SMB、SCP/rsync、本地文件与批量列表（§2） |
 | 真原生 | SwiftUI + AppKit，`.app` bundle，非 WebView 外壳 |
 | 集各家所长 | 队列与调度（AB DM / HyperDM）、限速（Motrix / HyperDM）、剪贴板监听（HyperDM）、浏览器/REST 集成（Gopeed / AB DM）、aria2 JSON-RPC（Motrix / Persepolis）、**动态分段 work-stealing（FluxDown）**、**任务事件 Webhook（FluxDown）**、**多 CDN 故障转移（FluxDown）**、**就地扩容 TrueSize 修正（FluxDown）**、**MCP Server（FluxDown / Gopeed）**、**自动归类归档（HyperDM）**、**PAC 代理判定（FluxDown）** |
 
@@ -57,7 +57,7 @@
 |---|---|---|
 | HLS `.m3u8` | master/media 播放列表、`EXT-X-KEY` AES-128、`EXT-X-BYTERANGE`、**`EXT-X-MAP` fMP4/CMAF 初始化段** | ✅ TS 与 fMP4 字节流 |
 | DASH `.mpd` | SegmentTemplate（`$Number$` / `$RepresentationID$`）、SegmentTimeline、SegmentList，init + segments 有序拼接 | ✅ fMP4 字节流 |
-| eD2K `ed2k://` | MD4（RFC 1320 官方向量）、分块哈希、链接解析、下载后校验、`ED2KBackend` 抽象 | ⚠️ P2P 传输后端未接入，见 §5 |
+| eD2K `ed2k://` | MD4（RFC 1320 官方向量）、分块哈希、链接解析、**原生客户端 TCP 传输**（eMule 握手、180 KiB 分片请求、服务器找源、下载后 MD4 校验） | ✅ C2C 传输（Kad DHT / 混淆加密 / 信用系统未实现，见 §5） |
 
 HLS / DASH 共用 `SegmentAssembler`：有界并发、严格有序落盘、按段断点续传、令牌桶限速。
 
@@ -91,11 +91,11 @@ HLS / DASH 共用 `SegmentAssembler`：有界并发、严格有序落盘、按�
 
 | 项目 | 原因 |
 |---|---|
-| eD2K / Kad P2P 传输 | 需要独立内核（服务器登录、源交换、180 KiB 分片、信用系统、Kad DHT）。已留 `ED2KBackend` 接口，见 §5 |
+| eD2K Kad DHT / 混淆加密 / 信用系统 | 需要完整 eMule 栈（UDP DHT 引导、AICH 哈希集、源交换）。客户端 TCP 传输已由 `NativeED2KBackend` 纯 Swift 实现，见 §5 |
 | Usenet / NNTP + NZB + yEnc + PAR2 | 需要 NNTP 订阅账号与 Reed–Solomon 修复实现，属独立子系统 |
 | DRM（Widevine / FairPlay / SAMPLE-AES / ClearKey） | 需要许可证服务器与密钥协商，不在通用下载器范围 |
 | 网盘私有协议（百度网盘 / 阿里云盘等） | 需账号登录与不断变化的私有签名 API，且不属于公开传输协议 |
-| HLS / DASH 直播录制、BT v2 / WebTorrent、HTTP/3 | 需要持续刷新播放列表 / 新版 BT 栈 / QUIC 内核；见 §9 |
+| BT v2 / WebTorrent、HTTP/3 | 需要新版 BT 栈（BitTorrent v2 哈希模型）；HTTP/3 可经 URLSession 的 h3 自动协商获得，无 QUIC 内核需求；见 §9 |
 
 > 本机 `aria2c --version` 实测启用 `HTTPS, SFTP, BitTorrent, Metalink`；`curl -V` 实测协议表含 `ftps smb smbs ipfs ipns tftp gopher rtsp …`（不含 sftp/scp，那两者分别由 aria2 与 OpenSSH 承担）。协议声明与实测能力一致。
 
@@ -218,29 +218,34 @@ Tests/                           向量、解析、协议矩阵与端到端测�
 
 ---
 
-## 5. eD2K：已完成什么、还差什么
+## 5. eD2K：已实现什么、边界在哪
 
-**已实现且经测试验证**：纯 Swift MD4（RFC 1320，7/7 官方向量通过）、eD2K 分块哈希（9,728,000 字节分块）、流式哈希、`ed2k://` 链接解析（文件名/大小/哈希/sources）、下载后哈希校验、以及 `ED2KBackend` 传输抽象。
+**已实现且经端到端测试验证**：纯 Swift MD4（RFC 1320，7/7 官方向量通过）、eD2K 分块哈希（9,728,000 字节分块）、流式哈希、`ed2k://` 链接解析（文件名/大小/哈希/sources），以及 **`NativeED2KBackend` 真实客户端 TCP 传输**：
 
-**未实现**：真正的 P2P 传输。完整 eD2K 客户端需要服务器登录与 ID 分配、按哈希搜索、源交换（server ↔ peer）、peer 握手、180 KiB 分片请求、信用系统，以及 Kad DHT 找源。这属于独立内核，不可能在 UI 脚手架里"顺手"正确实现。`ED2KEngine` 默认使用 `UnavailableED2KBackend`，会明确报错并说明原因，**不会伪装成下载成功**。
+1. HELLO + eMule info 握手，读 HELLOANSWER
+2. STARTUPLOADREQ → ACCEPTUPLOADREQ 排队握手
+3. REQUESTPARTS / SENDINGPART 按 180 KiB 块拉取，按绝对偏移写入
+4. 下载完成后按链接内 eD2K 哈希校验，对端谎报数据不会产生"假成功"
 
-接入路径（任选其一，实现 `ED2KBackend` 协议即可，UI 与任务层无需改动）：
+找源路径：链接自带 `|sources,host:port|` 优先；无内嵌源时向配置的 eD2K 服务器发 OP_GETSOURCES（设置里可配服务器列表）。
 
-1. **libed2k**（推荐）：C++ 库，提供 ed2k session / transfer。用 Objective-C++ 桥接或 C ABI 包装，映射 `connect()` / `download(_:destination:onProgress:)` / `cancel(fileHashHex:)`。
-2. **aMule 守护进程**：以 `amulecmd` 或 EC 协议驱动，Swift 侧做进程与协议适配。
-3. **自研 Kad/ED2K 栈**：工作量最大，仅在需要完全自持时考虑。
+**明确不做**：Kad UDP DHT 引导、协议混淆/加密、AICH 哈希集、源交换（peer ↔ peer）、信用系统 —— 这些需要活跃 P2P 网络与完整 eMule 栈。链接无源且未配服务器时明确报 `noSources`，不会挂起或伪造进度。
 
-可参考同工作区 `FluxDown-main/native/engine` 的 eD2K 实现（Rust，AGPL-3.0）了解协议分层；若借鉴其代码需注意 AGPL 的传染性。
+## 5.1 eD2K 的已知边界与测试
+
+- E2E 测试（`Tests/ED2KNativeTests`）用本地模拟 peer 走完整握手→分片→校验链路，覆盖取消与对端中途断连。
+- 传输走专用非协作队列 + 令牌桶，限速与其他引擎一致。
+- 混合哈希（eMule AICH）与 no-source 网络环境属于运行时外部条件，不在自动化测试范围内。
 
 ---
 
 ## 6. HLS / DASH 的已知边界
 
 - **HLS**：TS 播放列表输出按序拼接的 MPEG-TS；带 `EXT-X-MAP` 的 fMP4/CMAF 播放列表会先写入初始化段再按序写入 moof/mdat 分片（初始化段不参与 AES 解密，IV 序号相应偏移）。输出是有效 fragmented-MP4 字节流，不是带扁平 `moov` 的通用单文件 MP4。
-- **DASH**：输出为 `init + segments` 的 fMP4 字节流，可被支持 fragmented MP4 的播放器读取；生成通用单文件 MP4 需 `ffmpeg -i in.mp4 -c copy out.mp4`。
+- **DASH**：输出为 `init + segments` 的 fMP4 字节流；`DASHEngine.flatten` 内置 AVFoundation 无损导出（passthrough，无重编码），自动转成带扁平 `moov` 的通用单文件 MP4，无 ffmpeg 依赖。
 - **DRM**（Widevine / FairPlay / ClearKey 等）不在范围内。
-- **直播流**（无 `EXT-X-ENDLIST` / 动态 MPD）目前按快照处理；持续录制需扩展为轮询播放列表。
-- 若捆绑了 `ffmpeg`，可在落盘后加一步重封装以获得最佳兼容性。
+- **直播流**：无 `EXT-X-ENDLIST` 的 HLS 播放列表由 `HLSEngine.startLivePoll` 持续轮询录制新段（动态 MPD 同理按快照 + 手动刷新处理；持续录制 DASH 暂未做）。
+- HLS 转通用单文件 MP4 仍需重封装：若捆绑了 `ffmpeg` 可在落盘后加一步 `-c copy` 重封装以获得最佳兼容性（DASH 无此需要，见上）。
 
 ---
 
@@ -304,17 +309,24 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 
 ## 8. 本地控制接口
 
-设置 → 集成 → 开启后监听 `127.0.0.1:17801`：
+设置 → 集成 → 开启后监听 `127.0.0.1:17801`。除 `GET /ping` 外所有请求需带每安装随机令牌（设置页可复制/轮换，存于登录钥匙串）：
 
 ```bash
+TOKEN=$(curl -s http://127.0.0.1:17801/ping | sed -E 's/.*"token":"([^"]+)".*/\1/')
+
 curl -X POST http://127.0.0.1:17801/add \
      -H 'Content-Type: application/json' \
+     -H "Authorization: Bearer $TOKEN" \
      -d '{"url":"https://example.com/file.zip"}'
 
-curl http://127.0.0.1:17801/ping
+curl http://127.0.0.1:17801/ping   # 免鉴权；响应含令牌，供扩展引导
 ```
 
-`Resources/BrowserExtension/` 提供可直接「加载已解压的扩展程序」的 Manifest V3 示例。仅绑定回环地址，不监听公网。「自动捕获复制的下载链接」与「启用本地控制接口」两个开关的状态会持久化，重启后自动恢复。
+鉴权原因：仅绑定回环挡不住浏览器里的网页——任意网页都能向 `127.0.0.1` 发跨站 POST（简单请求无需预检），旧版响应还带 `Access-Control-Allow-Origin: *`，网页可直接读回任务列表（任务 URL 可能内嵌凭据）。现在响应不带 CORS 头、接口要求 Bearer 令牌，两条路都封死。MCP 服务（`17802`）同样要求 Bearer 令牌；aria2 RPC（`6800`）以 `--rpc-secret` 保护，每条 RPC 前置 `token:` 参数。
+
+aria2 会话持久化：启动即带 `--save-session`（每 30 秒落盘），退出时 SIGTERM 优雅停止并同步写盘；重启后以 `--input-file` + `--deferred-input` 重载，Siphon 按源 URL / 磁力 BTIH 把 aria2 内的既有下载重新认领到任务上，配对的旧任务恢复为暂停态，未配对的留在 aria2 里静默暂停。
+
+`Resources/BrowserExtension/` 提供可直接「加载已解压的扩展程序」的 Manifest V3 示例。扩展凭 host_permissions 读取 `/ping` 自动获取并存储令牌（网页读不到该响应），设置页轮换令牌后自动跟随。仅绑定回环地址，不监听公网。「自动捕获复制的下载链接」与「启用本地控制接口」两个开关的状态会持久化，重启后自动恢复。
 
 ### 8.1 各协议公开自测链接
 
@@ -322,21 +334,20 @@ curl http://127.0.0.1:17801/ping
 
 在 macOS 27.2 上通过本地控制接口把 14 类链接喂进真实 App 实测：HTTPS / FTP / 带凭据 SFTP / 迅雷链 / `data:` / `file://` / WebDAV 网关 / IPFS 网关 / HLS（本地与 Apple 公开流）/ DASH / Metalink / M3U 批量全部 `completed` 并校验字节；Magnet 保持 `active`（等待 DHT / peer，属正常）。测试也发现并修掉了两个真实缺陷：`ipfs://CID` 规范化多带尾斜杠导致网关 404；HLS/DASH 把「段数」当「字节数」上报，使 1.4 MB 的流显示成 `180/180`。
 
-需要自备服务端或凭据的协议无法用公开匿名链接覆盖：SMB / NFS / AFP（需本机共享或挂载）、S3（需在「设置 → 协议网关」填密钥）、eD2K（目前只有哈希与链接解析，无 P2P 传输后端）、DRM 与网盘私有协议。公共 IPFS 网关（`ipfs.io`、`dweb.link`、`cloudflare-ipfs.com` 等）在本机网络下均超时，需在设置里换成自己可达的网关。
+需要自备服务端或凭据的协议无法用公开匿名链接覆盖：SMB / NFS / AFP（需本机共享或挂载）、S3（需在「设置 → 协议网关」填密钥）、eD2K（匿名环境无源且未配服务器时明确报 `noSources`）、DRM 与网盘私有协议。公共 IPFS 网关（`ipfs.io`、`dweb.link`、`cloudflare-ipfs.com` 等）在本机网络下均超时，需在设置里换成自己可达的网关。
 
 ---
 
 ## 9. 后续路线建议
 
-1. 接入 `ED2KBackend`（libed2k / aMule）以完成 eD2K 传输闭环
-2. 增加 `ffmpeg` 重封装管线，统一 HLS/DASH 输出为标准单文件 MP4
+1. eD2K 补齐 eMule 栈：Kad UDP DHT 找源、协议混淆/加密、源交换与信用系统（客户端 TCP 传输已完成，见 §5）
+2. HLS→通用单文件 MP4 的重封装管线（DASH 已由 AVFoundation 完成）；若捆绑 `ffmpeg` 可直接 `-c copy`，否则需纯 Swift MP4 demux/remux
 3. Usenet：NNTP over TLS + NZB + yEnc + PAR2 修复
-4. HLS/DASH 直播录制（播放列表轮询）、BT v2 / WebTorrent、HTTP/3
+4. BT v2 / WebTorrent（HTTP/3 已可经 URLSession 的 h3 自动协商，无需额外内核）
 5. WebDAV 目录浏览与上传（PROPFIND 递归）；当前支持单文件下载
-6. aria2 由 HTTP 轮询改为 WebSocket 通知，降低延迟
-7. 任务持久化从 UserDefaults 迁到 SQLite（WAL），支持崩溃恢复与段级续传记录
-8. 沙盒 + Hardened Runtime + Developer ID 签名与公证
-9. 增加 BT 文件选择、Tracker 管理、RSS 订阅与下载完成脚本
+6. 任务持久化从 UserDefaults 迁到 SQLite（WAL），支持崩溃恢复与段级续传记录
+7. 沙盒 + Hardened Runtime + Developer ID 签名与公证
+8. BT 文件选择（Tracker 管理、RSS 订阅、下载完成脚本均已实现）
 
 ---
 

@@ -60,13 +60,23 @@ public final class ED2KEngine: DownloadEngine {
     public let supportedProtocols: Set<DownloadProtocol> = [.ed2k]
     public weak var delegate: (any EngineDelegate)?
 
-    private let backend: ED2KBackend
+    private var backend: ED2KBackend
     private var links: [UUID: ED2KLink] = [:]
     private var destinations: [UUID: URL] = [:]
     private var running: Set<UUID> = []
 
-    public init(backend: ED2KBackend = NativeED2KBackend()) {
-        self.backend = backend
+    public init(backend: ED2KBackend? = nil) {
+        self.backend = backend ?? NativeED2KBackend(servers: ED2KServerList.shared.servers)
+        NotificationCenter.default.addObserver(
+            forName: ED2KServerList.didChange, object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.reloadServers()
+        }
+    }
+
+    /// Rebuild the transfer backend with the latest configured servers/Kad nodes.
+    private func reloadServers() {
+        backend = NativeED2KBackend(servers: ED2KServerList.shared.servers)
     }
 
     public func canHandle(_ p: DownloadProtocol) -> Bool { p == .ed2k }

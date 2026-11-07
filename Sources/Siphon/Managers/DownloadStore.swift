@@ -66,6 +66,11 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
     private var needsReschedule = false
     private var lastTurtleEffective: Int64?
 
+    /// Rolling aggregate-speed samples for the live sparkline (HyperDM speed_graph).
+    @Published public var speedHistory: [Int64] = []
+    private var speedTimer: AnyCancellable?
+    private let speedHistoryMax = 120
+
     public enum TaskFilter: String, CaseIterable, Identifiable {
         case all = "全部", active = "进行中", completed = "已完成", paused = "已暂停"
         public var id: String { rawValue }
@@ -112,6 +117,27 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         restoreIntegrations()
         startSchedulerTick()
         startFeedPolling()
+        startSpeedTimer()
+        // BitTorrent tracker auto-subscription: push merged trackers into aria2 and
+        // keep them refreshed (Motrix tracker-manager model).
+        TrackerManager.shared.onUpdate = { [weak self] trackers in
+            Task { await self?.aria2?.applyBtTracker(trackers) }
+        }
+        TrackerManager.shared.start()
+    }
+
+    /// 1 Hz sample of aggregate throughput for the live sparkline.
+    private func startSpeedTimer() {
+        guard speedTimer == nil else { return }
+        speedTimer = Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                var h = self.speedHistory
+                h.append(self.aggregateSpeed)
+                if h.count > self.speedHistoryMax { h.removeFirst() }
+                self.speedHistory = h
+            }
     }
 
     // MARK: - RSS subscriptions
@@ -245,7 +271,8 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         aria2Ready = false
         do {
             try await Aria2Bootstrap.shared.start()
-            let engine = Aria2Engine(endpoint: Aria2Bootstrap.shared.rpcURL)
+            let engine = Aria2Engine(endpoint: Aria2Bootstrap.shared.rpcURL,
+                                     secret: Aria2Bootstrap.shared.rpcSecret)
             engine.delegate = self
             engine.startPolling()
             aria2 = engine
@@ -255,6 +282,16 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
             aria2Status = "已连接 aria2（用于 BT/Magnet/Metalink/SFTP）"
             aria2Ready = true
             startupError = nil
+            // aria2 reloaded its session file (--input-file): re-bind the persisted
+            // GIDs to the restored tasks and keep them paused until the user resumes.
+            let sourcesByTask = Dictionary(tasks.map { ($0.id, $0.source.absoluteString) },
+                                           uniquingKeysWith: { a, _ in a })
+            let adopted = await engine.adoptPersistedSessions(sourcesByTask)
+            submitted.formUnion(adopted)
+            // Apply persisted seeding preferences (0 = unlimited) once aria2 is up.
+            let ratio = UserDefaults.standard.double(forKey: "Siphon.seedRatio")
+            let time = UserDefaults.standard.integer(forKey: "Siphon.seedTime")
+            Task { await self.aria2?.applySeedRatio(ratio); await self.aria2?.applySeedTime(time) }
         } catch {
             aria2Status = "aria2 不可用（应用未正确打包 aria2c，BT/Magnet/Metalink/SFTP 暂不可用）"
             aria2Ready = false
@@ -355,8 +392,13 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
                 let task = DownloadTask(name: fileName, source: req.url,
                                         destination: destination,
                                         queueName: queueName, options: req.options,
-                                        origin: req.origin, checksum: checksum,
-                                        mirrors: reqs.count == 1 ? mirrorURLs : [],
+                                        origin: req.origin,
+                                        checksum: checksum ?? req.checksum,
+                                        mirrors: req.mirrors.isEmpty
+                                            ? (reqs.count == 1 ? mirrorURLs : [])
+                                            : req.mirrors,
+                                        pieceHashes: req.pieceHashes,
+                                        pieceLength: req.pieceLength,
                                         protoOverride: req.proto)
                 add(task)
             }
@@ -513,6 +555,13 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         }
         tasks[i].state = state
         if let error { tasks[i].errorDescription = error.localizedDescription }
+        if state == .completed {
+            // Flag the finished file as an internet download so Gatekeeper applies its
+            // first-launch checks (FluxDown mark_of_the_web).
+            markDownloadQuarantine(tasks[i].destination)
+            // Auto-extract archives and run any post-processing command (HyperDM model).
+            ArchiveManager.shared.handleCompletion(of: tasks[i].destination)
+        }
         if state.isTerminal { save() }
         // Task-event webhook: fire on every terminal transition (FluxDown model).
         if state == .completed || state == .error || state == .removed {
@@ -527,10 +576,35 @@ public final class DownloadStore: ObservableObject, EngineDelegate {
         Task { await schedule() }
     }
 
+    // MARK: - BT file selection
+    /// Files of a multi-file torrent (empty when the task is not on aria2 or the
+    /// magnet's metadata has not been resolved yet).
+    public func btFiles(for id: UUID) async -> [Aria2Engine.BTFile] {
+        await aria2?.listFiles(taskID: id) ?? []
+    }
+
+    /// Apply the checked file set via aria2's `select-file`. Returns false when
+    /// the selection is empty or aria2 rejected it (metadata not loaded yet).
+    public func applyBTFileSelection(_ id: UUID, indexes: [Int]) async -> Bool {
+        guard let aria2 else { return false }
+        return await aria2.selectFiles(taskID: id, indexes: indexes)
+    }
+
     // MARK: - speed limit
     public func applySpeedLimit(_ text: String) {
         speedLimitText = text
         applyEffectiveGlobalLimit()
+    }
+
+    /// Persist and push BitTorrent seeding preferences (Gopeed SeedRatio/SeedTime).
+    /// `ratio`/`time` of 0 mean unlimited.
+    public func applySeedSettings(ratio: Double, time: Int) {
+        UserDefaults.standard.set(ratio, forKey: "Siphon.seedRatio")
+        UserDefaults.standard.set(time, forKey: "Siphon.seedTime")
+        Task {
+            await aria2?.applySeedRatio(ratio)
+            await aria2?.applySeedTime(time)
+        }
     }
 
     /// Recompute and push the effective global cap = min(manual, turtle).
@@ -739,6 +813,8 @@ private struct TaskRecord: Codable {
     var options: [String: String]?
     var checksum: String?
     var mirrors: [URL]?
+    var pieceHashes: [String]?
+    var pieceLength: Int64?
 
     init(_ t: DownloadTask) {
         id = t.id; name = t.name; source = t.source; destination = t.destination
@@ -748,13 +824,17 @@ private struct TaskRecord: Codable {
         options = t.options.isEmpty ? nil : t.options
         checksum = t.checksum
         mirrors = t.mirrors.isEmpty ? nil : t.mirrors
+        pieceHashes = t.pieceHashes.isEmpty ? nil : t.pieceHashes
+        pieceLength = t.pieceLength > 0 ? t.pieceLength : nil
     }
 
     var task: DownloadTask {
         var t = DownloadTask(id: id, name: name, source: source,
                              destination: destination, queueName: queueName,
                              options: options ?? [:], checksum: checksum,
-                             mirrors: mirrors ?? [])
+                             mirrors: mirrors ?? [],
+                             pieceHashes: pieceHashes ?? [],
+                             pieceLength: pieceLength ?? 0)
         t.protocol = DownloadProtocol(rawValue: proto) ?? .https
         // Engine-side GIDs / segment state do not survive an app restart, so
         // restore non-terminal tasks as paused and let the user resume explicitly.

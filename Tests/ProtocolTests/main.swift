@@ -311,6 +311,34 @@ func asyncTests() async {
     let r8 = try! await URINormalizer.normalize(listURL.absoluteString, settings: settings)
     eq(r8.count, 2, "local M3U expands into tasks")
 
+    print("[8b] parameterized URI (brace) expansion")
+    eq(URINormalizer.expandBraces("http://h/img_{001..004}.jpg"),
+       ["http://h/img_001.jpg", "http://h/img_002.jpg",
+        "http://h/img_003.jpg", "http://h/img_004.jpg"],
+       "zero-padded numeric range")
+    eq(URINormalizer.expandBraces("http://h/{a,b,c}.zip"),
+       ["http://h/a.zip", "http://h/b.zip", "http://h/c.zip"],
+       "comma alternatives")
+    eq(URINormalizer.expandBraces("http://h/{7..9}.bin"),
+       ["http://h/7.bin", "http://h/8.bin", "http://h/9.bin"],
+       "unpadded range")
+    eq(URINormalizer.expandBraces("http://h/{10..8}.bin"),
+       ["http://h/8.bin", "http://h/9.bin", "http://h/10.bin"],
+       "reversed range is ascending")
+    eq(URINormalizer.expandBraces("http://h/x{1..2}_y{a,b}.bin"),
+       ["http://h/x1_ya.bin", "http://h/x1_yb.bin",
+        "http://h/x2_ya.bin", "http://h/x2_yb.bin"],
+       "two groups take the cartesian product")
+    eq(URINormalizer.expandBraces("http://h/{x..y}.bin").count, 1,
+       "non-numeric range is left untouched")
+    eq(URINormalizer.expandBraces("http://h/file{1..5000}.bin").count, 1000,
+       "expansion is capped at 1000")
+    let rBrace = try! await URINormalizer.normalize(
+        "http://a.example/img_{001..003}.jpg", settings: settings)
+    eq(rBrace.count, 3, "normalize expands braces into 3 requests")
+    eq(rBrace[1].url.absoluteString, "http://a.example/img_002.jpg",
+       "second expanded URL is correct")
+
     print("[9] LocalEngine end-to-end")
     let local = LocalEngine()
     let delegate = MockDelegate()
@@ -354,19 +382,23 @@ func asyncTests() async {
     print("[11] thunder:// -> normalization -> real aria2 -> verified bytes")
     do {
         let bootstrap = Aria2Bootstrap.shared
-        // Never share port 6800 with a running Siphon.app instance.
+        // Never share port 6800 with a running Siphon.app instance, and never
+        // touch its session file.
         bootstrap.port = 6801
+        bootstrap.sessionFile = URL(fileURLWithPath:
+            NSTemporaryDirectory() + "siphon-protocol-aria2-session.a2")
         try await bootstrap.start()
         // Regression: start() must not report isRunning until aria2 actually bound
         // the RPC port (the old Thread.sleep(0.3) lied when aria2 crashed early).
         check(bootstrap.isRunning, "aria2 reports running only after RPC port is ready")
         defer { bootstrap.stop() }
-        let aria2 = Aria2Engine(endpoint: bootstrap.rpcURL)
+        let aria2 = Aria2Engine(endpoint: bootstrap.rpcURL, secret: bootstrap.rpcSecret)
         let aria2Delegate = MockDelegate()
         aria2.delegate = aria2Delegate
         aria2.startPolling()
         defer { aria2.suspendPolling() }
-        check((try? await Aria2RPC(endpoint: bootstrap.rpcURL).tellActive()) != nil,
+        check((try? await Aria2RPC(endpoint: bootstrap.rpcURL,
+                                   secret: bootstrap.rpcSecret).tellActive()) != nil,
               "tellActive RPC signature (regression)")
 
         let fixtureURL = "http://127.0.0.1:18765/seg0.ts"
@@ -380,7 +412,7 @@ func asyncTests() async {
         try await aria2.submit(verdict)
         let state = await waitState(aria2Delegate, verdict.id)
         if state != .completed {
-            let probe = Aria2RPC(endpoint: bootstrap.rpcURL)
+            let probe = Aria2RPC(endpoint: bootstrap.rpcURL, secret: bootstrap.rpcSecret)
             do {
                 let a = try await probe.tellActive()
                 let w = try await probe.tellWaiting()

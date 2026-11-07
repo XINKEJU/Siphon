@@ -29,9 +29,12 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(selection: $sidebarSelection)
-        } detail: {
-            TaskListView(selection: $sidebarSelection, searchText: searchText)
-                .navigationTitle(sidebarSelection.title)
+        }         detail: {
+            VStack(spacing: 0) {
+                SpeedGraphView()
+                TaskListView(selection: $sidebarSelection, searchText: searchText)
+                    .navigationTitle(sidebarSelection.title)
+            }
         }
         // System inspector: AppKit owns the divider, the collapse animation
         // and the glass surface. `isPresented` is the single source of truth

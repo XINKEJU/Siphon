@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // merge extra WindowGroup windows into tabs and stack translucent
         // columns on top of each other.
         NSWindow.allowsAutomaticWindowTabbing = false
+        // After a self-update relaunch, the superseded <App>.old bundle lingers.
+        cleanupUpdateBackups()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

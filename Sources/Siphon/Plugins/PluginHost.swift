@@ -60,9 +60,16 @@ public final class PluginHost: @unchecked Sendable {
             for entry in entries {
                 guard entry.isDirectoryFallback,
                       let manifest = Self.loadManifest(at: entry) else { continue }
+                // Least-privilege gate: the sandbox can only honour pure URL
+                // rewriting, so any plugin that asks for more is refused up front.
+                if !manifest.permissions.isEmpty {
+                    Self.log("插件 \"\(manifest.name)\" 请求了沙箱不支持的权限 \(manifest.permissions)，已拒绝加载")
+                    continue
+                }
                 guard let scriptURL = entry.appendingPathComponent(manifest.script)
                         .existsAsFile else { continue }
                 guard let ctx = JSContext() else { continue }
+                Self.harden(ctx)
                 let source = (try? String(contentsOf: scriptURL, encoding: .utf8)) ?? ""
                 ctx.evaluateScript(source)
                 // The script must define a global `resolve`; anything else is
@@ -75,6 +82,28 @@ public final class PluginHost: @unchecked Sendable {
             }
         }
         lock.lock(); plugins = found; loaded = true; lock.unlock()
+    }
+
+    /// Remove every JS global that could reach the network or the filesystem, and
+    /// install an exception handler so a plugin error is logged rather than crashing
+    /// the host. The VM is otherwise standard (pure JS, no bridges), so a malicious
+    /// plugin can at worst rewrite one download URL — never touch the disk or network.
+    private static func harden(_ ctx: JSContext) {
+        let dangerous = ["XMLHttpRequest", "fetch", "WebSocket", "importScripts",
+                         "import", "require", "process", "Worker", "EventSource",
+                         "Notification", "indexedDB", "open", "location"]
+        for name in dangerous {
+            ctx.setObject(nil, forKeyedSubscript: name as NSString)
+        }
+        ctx.exceptionHandler = { _, exc in
+            Self.log("插件脚本异常：\(exc?.toString() ?? "未知")")
+        }
+    }
+
+    private static func log(_ message: String) {
+        #if DEBUG
+        print("[PluginHost] \(message)")
+        #endif
     }
 
     public var count: Int {
@@ -156,6 +185,9 @@ public final class PluginHost: @unchecked Sendable {
         let name: String
         let match: [String]
         let script: String
+        /// Declared privileges. The sandbox only supports pure URL rewriting, so any
+        /// non-empty list causes the plugin to be refused at load time.
+        let permissions: [String]
     }
 
     static func loadManifest(at pluginDir: URL) -> Manifest? {
@@ -168,7 +200,8 @@ public final class PluginHost: @unchecked Sendable {
         let match = (json["match"] as? [String])?.filter { !$0.isEmpty } ?? []
         guard !match.isEmpty else { return nil }
         let script = (json["script"] as? String) ?? "main.js"
-        return Manifest(name: name, match: match, script: script)
+        let permissions = (json["permissions"] as? [String])?.filter { !$0.isEmpty } ?? []
+        return Manifest(name: name, match: match, script: script, permissions: permissions)
     }
 }
 

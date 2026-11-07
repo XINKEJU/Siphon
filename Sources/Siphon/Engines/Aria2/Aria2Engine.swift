@@ -14,25 +14,92 @@ public final class Aria2Engine: DownloadEngine {
     private var taskToGid: [UUID: String] = [:]
     private var gidToTask: [String: UUID] = [:]
     private var pollTask: Task<Void, Never>?
+    /// WebSocket event listener (aria2.onDownloadComplete / …). Best-effort: the
+    /// 1s poll remains the source of truth, this just shortens the latency between a
+    /// real event and the UI reflecting it.
+    private var wsTask: URLSessionWebSocketTask?
+    private var wsLoop: Task<Void, Never>?
 
-    public init(endpoint: URL) { self.rpc = Aria2RPC(endpoint: endpoint) }
+    public init(endpoint: URL, secret: String = "") {
+        self.rpc = Aria2RPC(endpoint: endpoint, secret: secret)
+    }
 
     public func canHandle(_ p: DownloadProtocol) -> Bool { supportedProtocols.contains(p) }
 
-    /// Begin the 1s polling loop. Call once after aria2 is bootstrapped.
+    /// Begin the polling loop and the WebSocket event listener. Call once after
+    /// aria2 is bootstrapped. Polling is adaptive: 1s while any tracked download is
+    /// active (progress needs polling — aria2 pushes no progress notifications),
+    /// 3s idle backoff otherwise; real state changes still arrive instantly via WS.
     public func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.poll()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let active = await self?.poll() ?? false
+                try? await Task.sleep(nanoseconds: active ? 1_000_000_000 : 3_000_000_000)
             }
         }
+        startWebSocket()
     }
 
     public func suspendPolling() {
         pollTask?.cancel()
         pollTask = nil
+        stopWebSocket()
+    }
+
+    // MARK: - WebSocket event notifications (aria2 1.34+)
+
+    /// Open a WebSocket to aria2 and stream event notifications. The loop
+    /// auto-reconnects (with a 1s backoff) until `suspendPolling()` cancels it.
+    private func startWebSocket() {
+        wsLoop?.cancel()
+        wsTask?.cancel(with: .goingAway, reason: nil)
+        let url = Aria2Bootstrap.shared.wsURL
+        wsLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                let task = URLSession.shared.webSocketTask(with: url)
+                self?.wsTask = task
+                task.resume()
+                var alive = true
+                while !Task.isCancelled, alive {
+                    do {
+                        let msg = try await task.receive()
+                        switch msg {
+                        case .string(let s): self?.handleNotification(s)
+                        case .data(let d):
+                            if let s = String(data: d, encoding: .utf8) { self?.handleNotification(s) }
+                        @unknown default: break
+                        }
+                    } catch {
+                        alive = false
+                    }
+                }
+                task.cancel(with: .goingAway, reason: nil)
+                if Task.isCancelled { break }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    private func stopWebSocket() {
+        wsLoop?.cancel()
+        wsLoop = nil
+        wsTask?.cancel(with: .goingAway, reason: nil)
+        wsTask = nil
+    }
+
+    /// aria2 pushes `{"method":"aria2.onDownloadComplete","params":[gid,…]}` style
+    /// notifications. We only use them as a trigger to refresh immediately so the
+    /// state change is visible without waiting for the next poll.
+    private func handleNotification(_ json: String) {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let method = obj["method"] as? String,
+              method.hasPrefix("aria2.on"),
+              let params = obj["params"] as? [Any],
+              let gid = params.first as? String,
+              gidToTask[gid] != nil else { return }
+        Task { _ = await self.poll() }
     }
 
     public func submit(_ task: DownloadTask) async throws {
@@ -55,6 +122,56 @@ public final class Aria2Engine: DownloadEngine {
         }
         taskToGid[task.id] = gid
         gidToTask[gid] = task.id
+    }
+
+    /// After a relaunch, aria2 reloaded its session file (`--input-file`): the
+    /// GIDs of previously incomplete downloads are live again. Bind them back to
+    /// Siphon tasks by source URI and force-pause everything — restored tasks are
+    /// `.paused`, so nothing may download until the user explicitly resumes.
+    ///
+    /// Returns the adopted task IDs; the caller marks them as submitted so
+    /// `schedule()` resumes the bound GID instead of re-adding the download.
+    /// Session GIDs with no matching task (e.g. the task was removed while the
+    /// app was closed) stay paused in aria2 — invisible but harmless, and they
+    /// keep their place in the session file.
+    @discardableResult
+    public func adoptPersistedSessions(_ sourcesByTask: [UUID: String]) async -> Set<UUID> {
+        try? await rpc.forcePauseAll()
+        // forcePauseAll can race a lazily-loaded (--deferred-input) session entry:
+        // it starts after the sweep ran. Keep sweeping until aria2 reports nothing
+        // active (bounded, so a legitimately active download can't spin forever).
+        for _ in 0..<10 {
+            guard let active = try? await rpc.tellActive(), !active.isEmpty else { break }
+            try? await rpc.forcePauseAll()
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        var statuses: [[String: Any]] = []
+        statuses += (try? await rpc.tellActive()) ?? []
+        statuses += (try? await rpc.tellWaiting()) ?? []
+        statuses += (try? await rpc.tellStopped()) ?? []
+        var adopted: Set<UUID> = []
+        for s in statuses {
+            guard let gid = s["gid"] as? String else { continue }
+            // HTTP-style entries carry the submitted URI on the first file; BT
+            // entries expose only their infohash, so magnets match through that.
+            let uri = ((s["files"] as? [[String: Any]])?.first?["uris"]
+                as? [[String: Any]])?.first?["uri"] as? String ?? ""
+            let hash = (s["infoHash"] as? String)?.lowercased()
+            guard let taskID = sourcesByTask.first(where: {
+                $0.value == uri || (hash != nil && hash == Self.btih(of: $0.value))
+            })?.key else { continue }
+            taskToGid[taskID] = gid
+            gidToTask[gid] = taskID
+            adopted.insert(taskID)
+        }
+        return adopted
+    }
+
+    /// Lowercase hex infohash of a magnet link (`urn:btih:<40 hex>`), nil otherwise.
+    static func btih(of uri: String) -> String? {
+        guard let range = uri.range(of: "urn:btih:") else { return nil }
+        let hex = uri[range.upperBound...].prefix(while: \.isHexDigit).lowercased()
+        return hex.count == 40 ? hex : nil
     }
 
     /// Translate UI-style header keys into aria2's documented option names.
@@ -113,26 +230,92 @@ public final class Aria2Engine: DownloadEngine {
         try? await rpc.setPerDownloadLimit(gid, bytesPerSec ?? 0)
     }
 
-    private func poll() async {
+    // MARK: - BT file selection
+
+    /// One entry of a multi-file torrent (`aria2.getFiles`).
+    public struct BTFile: Sendable, Identifiable, Equatable {
+        /// aria2's 1-based file index (the `select-file` key).
+        public var index: Int
+        public var path: String
+        public var length: Int64
+        public var selected: Bool
+        public var id: Int { index }
+        /// Torrent-relative name (last path component of aria2's full path).
+        public var displayName: String {
+            path.split(separator: "/").last.map(String.init) ?? path
+        }
+    }
+
+    /// Files of a BT task. Empty when the task is not on aria2 or its metadata
+    /// has not been resolved yet (magnet still fetching the torrent).
+    public func listFiles(taskID: UUID) async -> [BTFile] {
+        guard let gid = taskToGid[taskID] else { return [] }
+        guard let files = try? await rpc.getFiles(gid) else { return [] }
+        return files.compactMap { f in
+            guard let index = (f["index"] as? String).flatMap(Int.init) else { return nil }
+            return BTFile(index: index,
+                          path: f["path"] as? String ?? "",
+                          length: Int64(f["length"] as? String ?? "0") ?? 0,
+                          selected: f["selected"] as? String == "true")
+        }
+    }
+
+    /// Apply a file selection via `aria2.changeOption select-file`. Fails (false)
+    /// when metadata is not loaded yet or every file is deselected — aria2
+    /// rejects an empty selection.
+    @discardableResult
+    public func selectFiles(taskID: UUID, indexes: [Int]) async -> Bool {
+        guard let gid = taskToGid[taskID], !indexes.isEmpty else { return false }
+        do {
+            try await rpc.changeOption(gid,
+                ["select-file": indexes.sorted().map(String.init).joined(separator: ",")])
+            return true
+        } catch { return false }
+    }
+
+    // MARK: - BitTorrent enhancements (Motrix / Gopeed model)
+
+    /// Apply the auto-subscribed public tracker list to this aria2 session.
+    public func applyBtTracker(_ trackers: [String]) async {
+        try? await rpc.setBtTracker(trackers)
+    }
+
+    /// Set the global seeding ratio (0 = unlimited).
+    public func applySeedRatio(_ ratio: Double) async {
+        try? await rpc.setSeedRatio(ratio)
+    }
+
+    /// Set the global seeding duration in minutes (0 = unlimited).
+    public func applySeedTime(_ minutes: Int) async {
+        try? await rpc.setSeedTime(minutes)
+    }
+
+    /// Poll aria2 once and forward updates to the delegate. Returns whether any
+    /// tracked download is currently active (drives the adaptive poll cadence).
+    @discardableResult
+    private func poll() async -> Bool {
         let statuses: [[String: Any]]
         do {
             statuses = try await rpc.tellActive()
                 + rpc.tellWaiting()
                 + rpc.tellStopped()
-        } catch { return }
+        } catch { return false }
 
         // `submit`/`remove` mutate `gidToTask` on the main actor; this loop runs on a
         // background Task. Snapshot the value-type map so this tick reads a consistent
         // view instead of racing the writer (and never tears mid-iteration).
         let gidToTask = self.gidToTask
+        var hasActive = false
         for s in statuses {
             guard let gid = s["gid"] as? String, let taskID = gidToTask[gid] else { continue }
+            if s["status"] as? String == "active" { hasActive = true }
             let progress = Self.progress(from: s)
             let state = Self.state(from: s)
             let err = (s["errorMessage"] as? String).flatMap { $0.isEmpty ? nil : Aria2Error.rpcFailure($0) }
             await delegate?.engineDidUpdate(taskID: taskID, progress: progress)
             await delegate?.engineDidChangeState(taskID: taskID, state: state, error: err)
         }
+        return hasActive
     }
 
     private static func progress(from s: [String: Any]) -> DownloadProgress {

@@ -27,7 +27,29 @@ public final class Aria2Bootstrap {
     private var process: Process?
     public private(set) var isRunning = false
 
+    /// Secret passed as `--rpc-secret` and prepended as `token:` by `Aria2RPC`.
+    /// Generated once per install; aria2 binds loopback only, but without the
+    /// secret any local process (or any web page, when CORS is open) could drive
+    /// aria2. Stored in UserDefaults rather than the Keychain: the threat is a
+    /// remote page, and Keychain ACL entries created by helper processes would
+    /// prompt on every access.
+    public private(set) var rpcSecret = ""
+
+    /// Session file handed to `--save-session` / `--input-file`: aria2 writes the
+    /// GIDs of incomplete downloads here on graceful shutdown (and every 30 s), and
+    /// reloads them on the next launch. Settable so tests never touch the real one.
+    public var sessionFile: URL = {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                               in: .userDomainMask)[0]
+        return support.appendingPathComponent("Siphon/aria2-session.a2")
+    }()
+
     public var rpcURL: URL { URL(string: "http://127.0.0.1:\(port)/jsonrpc")! }
+
+    /// aria2 also serves JSON-RPC over WebSocket on the same port and *pushes* event
+    /// notifications (onDownloadComplete / onDownloadError / …) to connected clients.
+    /// Siphon uses it for instant state changes without waiting for the next poll tick.
+    public var wsURL: URL { URL(string: "ws://127.0.0.1:\(port)/jsonrpc")! }
 
     private init() {}
 
@@ -59,13 +81,15 @@ public final class Aria2Bootstrap {
     public func start() async throws {
         guard !isRunning else { return }
         let binary = try locateBinary()
-        let proc = Process()
-        proc.executableURL = binary
-        proc.arguments = [
+        let secret = loadOrCreateSecret()
+        rpcSecret = secret
+        try? FileManager.default.createDirectory(at: sessionFile.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        var args = [
             "--enable-rpc",
             "--rpc-listen-all=false",
             "--rpc-listen-port=\(port)",
-            "--rpc-allow-origin-all",
+            "--rpc-secret=\(secret)",
             // Motrix hardening: RPC bodies with huge magnet links need headroom.
             "--rpc-max-request-size=50M",
             "--continue=true",
@@ -91,9 +115,20 @@ public final class Aria2Bootstrap {
             "--peer-id-prefix=-TR3000-",
             "--dht-entry-point=dht.transmissionbt.com:6881",
             "--dir", NSTemporaryDirectory(),
+            "--save-session=\(sessionFile.path)",
             "--save-session-interval=30",
             "--auto-save-interval=30"
         ]
+        // Reload the previous session's incomplete downloads. They would auto-start,
+        // so `Aria2Engine.adoptPersistedSessions` force-pauses everything right after
+        // startup and re-binds the GIDs to the restored Siphon tasks.
+        if FileManager.default.fileExists(atPath: sessionFile.path) {
+            args.append(contentsOf: ["--input-file=\(sessionFile.path)",
+                                     "--deferred-input=true"])
+        }
+        let proc = Process()
+        proc.executableURL = binary
+        proc.arguments = args
         let err = Pipe()
         proc.standardError = err
         proc.standardOutput = Pipe()
@@ -139,8 +174,21 @@ public final class Aria2Bootstrap {
         }
     }
 
+    private func loadOrCreateSecret() -> String {
+        let d = UserDefaults.standard
+        if let s = d.string(forKey: "Siphon.aria2RpcSecret"), !s.isEmpty { return s }
+        let fresh = Keychain.randomToken()
+        d.set(fresh, forKey: "Siphon.aria2RpcSecret")
+        return fresh
+    }
+
     public func stop() {
-        if let p = process, p.isRunning { p.terminate() }
+        if let p = process, p.isRunning {
+            // SIGTERM → aria2 shuts down gracefully and writes the session file;
+            // wait so callers that inspect the file right after stop() see it.
+            p.terminate()
+            p.waitUntilExit()
+        }
         process = nil
         isRunning = false
     }
