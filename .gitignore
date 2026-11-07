@@ -29,3 +29,7 @@ build/
 # Test fixtures are generated deterministically by scripts/verify.sh
 Tests/fixtures-http/big.bin
 Tests/fixtures-ed2k/fixture.bin
+dist/*.zip
+dist/chrome/
+dist/firefox/
+dist/safari/
