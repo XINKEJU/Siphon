@@ -3,45 +3,302 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { font: 13px -apple-system, system-ui, sans-serif; width: 360px; padding: 14px; margin: 0; color: #1d1d1f; }
-    h1 { font-size: 14px; margin: 0 0 8px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-    h2 { font-size: 12px; margin: 14px 0 6px; font-weight: 600; color: #6e6e73; }
-    p { margin: 8px 0; color: #6e6e73; line-height: 1.5; }
-    label { display: flex; align-items: center; gap: 6px; margin: 6px 0; cursor: pointer; }
-    label.inline { display: inline-flex; }
-    #status { font-weight: 500; }
-    #list { max-height: 200px; overflow-y: auto; border-top: 1px solid #e5e5ea; }
-    .item { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid #f2f2f7; }
-    .meta { flex: 1; min-width: 0; }
-    .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .host { display: block; font-size: 11px; color: #8e8e93; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    button { font: inherit; border: 1px solid #d2d2d7; background: #fff; border-radius: 6px; padding: 3px 9px; cursor: pointer; }
-    button:hover { background: #f5f5f7; }
-    button:disabled { opacity: .55; cursor: default; }
-    .row { display: flex; gap: 8px; margin-top: 8px; }
-    .empty { color: #8e8e93; padding: 10px 0; }
-    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 12px; color: #6e6e73; margin: 8px 0; }
-    .stats .val { font-weight: 600; color: #1d1d1f; }
-    .section { border-top: 1px solid #e5e5ea; padding-top: 10px; margin-top: 10px; }
+    :root {
+      --bg: #ffffff;
+      --bg-secondary: #f5f5f7;
+      --text: #1d1d1f;
+      --text-secondary: #6e6e73;
+      --text-tertiary: #8e8e93;
+      --border: #e5e5ea;
+      --accent: #0071e3;
+      --accent-hover: #0077ed;
+      --success: #34c759;
+      --danger: #ff3b30;
+      --warning: #ff9500;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1c1c1e;
+        --bg-secondary: #2c2c2e;
+        --text: #f5f5f7;
+        --text-secondary: #98989d;
+        --text-tertiary: #636366;
+        --border: #38383a;
+        --accent: #0a84ff;
+        --accent-hover: #409cff;
+        --shadow: 0 1px 3px rgba(0,0,0,0.3);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      font-size: 13px;
+      width: 380px;
+      min-height: 400px;
+      padding: 0;
+      margin: 0;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-secondary);
+    }
+    .header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .header h1::before {
+      content: "";
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      background: var(--accent);
+      mask-image: url("icons/icon16.png");
+      -webkit-mask-image: url("icons/icon16.png");
+      mask-size: contain;
+      -webkit-mask-size: contain;
+    }
+    #status {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background: var(--bg);
+    }
+    .tab-bar {
+      display: flex;
+      padding: 8px 12px 0;
+      gap: 4px;
+      background: var(--bg-secondary);
+    }
+    .tab-bar button {
+      flex: 1;
+      border: none;
+      background: transparent;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+      transition: all 0.15s ease;
+    }
+    .tab-bar button:hover {
+      color: var(--text);
+      background: var(--bg);
+    }
+    .tab-bar button.active {
+      color: var(--accent);
+      background: var(--bg);
+      box-shadow: var(--shadow);
+    }
+    .content { padding: 16px; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; animation: fadeIn 0.2s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .section { margin-bottom: 16px; }
+    .section:last-child { margin-bottom: 0; }
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-tertiary);
+      margin: 0 0 8px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+    }
+    .toggle-row:last-child { margin-bottom: 0; }
+    .toggle-row label { margin: 0; cursor: pointer; font-size: 13px; }
+    .switch { position: relative; width: 40px; height: 24px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute;
+      inset: 0;
+      background: var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      bottom: 3px;
+      background: white;
+      border-radius: 50%;
+      transition: 0.2s;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    }
+    input:checked + .slider { background: var(--accent); }
+    input:checked + .slider::before { transform: translateX(16px); }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .stat-card {
+      background: var(--bg-secondary);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1;
+    }
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    button {
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: 8px 14px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      background: var(--bg-secondary);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-danger { background: transparent; color: var(--danger); }
+    .btn-danger:hover { background: rgba(255, 59, 48, 0.1); }
+    .btn-row { display: flex; gap: 8px; margin-top: 12px; }
+    .item-list {
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .item-list:empty::after {
+      content: "未嗅探到媒体链接";
+      display: block;
+      padding: 24px;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 12px;
+    }
+    .item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .item:last-child { border-bottom: none; }
+    .item .meta { flex: 1; min-width: 0; }
+    .item .name {
+      display: block;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .item .host {
+      display: block;
+      font-size: 11px;
+      color: var(--text-tertiary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-top: 2px;
+    }
+    .item button { padding: 5px 10px; font-size: 12px; }
     input[type="text"], input[type="number"] {
-      font: inherit; border: 1px solid #d2d2d7; border-radius: 6px; padding: 4px 8px;
-      width: 100%; box-sizing: border-box;
+      font: inherit;
+      font-size: 13px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      background: var(--bg);
+      color: var(--text);
+      width: 100%;
+    }
+    input[type="text"]:focus, input[type="number"]:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15);
     }
     input[type="number"] { width: 80px; }
-    .exclude-list { max-height: 80px; overflow-y: auto; border: 1px solid #e5e5ea; border-radius: 6px; padding: 4px 8px; margin: 4px 0; font-size: 11px; color: #6e6e73; }
-    .exclude-item { display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
-    .exclude-item button { padding: 1px 6px; font-size: 11px; }
-    .add-row { display: flex; gap: 4px; margin-top: 4px; }
+    .exclude-list {
+      max-height: 80px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 6px 10px;
+      margin: 8px 0;
+      background: var(--bg-secondary);
+    }
+    .exclude-list:empty::after {
+      content: "无排除项";
+      display: block;
+      padding: 4px 0;
+      color: var(--text-tertiary);
+      font-size: 12px;
+    }
+    .exclude-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 0;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .exclude-item + .exclude-item { border-top: 1px solid var(--border); }
+    .exclude-item button { padding: 2px 8px; font-size: 11px; }
+    .add-row { display: flex; gap: 6px; }
     .add-row input { flex: 1; }
-    .tab-bar { display: flex; gap: 0; margin: 8px 0; border-bottom: 1px solid #e5e5ea; }
-    .tab-bar button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 12px; color: #6e6e73; font-size: 12px; }
-    .tab-bar button.active { color: #0071e3; border-bottom-color: #0071e3; font-weight: 500; }
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
+    .help {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin: 6px 0 0;
+      line-height: 1.4;
+    }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
   </style>
 </head>
 <body>
-  <h1>Siphon <span id="status" style="font-size: 11px; font-weight: 400; color: #8e8e93;">检查连接中…</span></h1>
+  <div class="header">
+    <h1>Siphon</h1>
+    <span id="status">检查连接…</span>
+  </div>
 
   <div class="tab-bar">
     <button class="active" data-tab="main">下载拦截</button>
@@ -49,62 +306,70 @@
     <button data-tab="config">设置</button>
   </div>
 
-  <div id="tab-main" class="tab-content active">
-    <label><input type="checkbox" id="captureAll"> 接管浏览器全部下载</label>
-    <label><input type="checkbox" id="notifyOnCapture"> 拦截时显示通知</label>
-
-    <h2>本次统计</h2>
-    <div class="stats">
-      <span>已拦截</span><span class="val" id="stat-intercepted">0</span>
-      <span>已跳过</span><span class="val" id="stat-skipped">0</span>
-      <span>嗅探媒体</span><span class="val" id="stat-media">0</span>
-      <span>错误</span><span class="val" id="stat-errors">0</span>
-    </div>
-    <div class="row">
-      <button id="resetStats">重置统计</button>
-    </div>
-  </div>
-
-  <div id="tab-media" class="tab-content">
-    <h2>本页媒体</h2>
-    <div id="list"><div class="empty">未嗅探到媒体链接。播放视频后再打开此弹窗。</div></div>
-    <div class="row">
-      <button id="sendAll">发送全部</button>
-      <button id="refresh">刷新</button>
-      <button id="clear">清空</button>
-    </div>
-    <p style="font-size: 11px;">也可右键点击链接，选择「用 Siphon 下载」。</p>
-  </div>
-
-  <div id="tab-config" class="tab-content">
-    <h2>文件大小过滤</h2>
-    <label>
-      最小文件大小（MB）：
-      <input type="number" id="minFileSize" min="0" step="0.1" value="1">
-    </label>
-    <p style="font-size: 11px;">小于此大小的文件不拦截，由浏览器直接下载。</p>
-
-    <div class="section">
-      <h2>排除站点</h2>
-      <div id="excludeHostsList" class="exclude-list"><span class="empty">无排除站点</span></div>
-      <div class="add-row">
-        <input type="text" id="newExcludeHost" placeholder="例如：youtube.com">
-        <button id="addExcludeHost">添加</button>
+  <div class="content">
+    <div id="tab-main" class="tab-content active">
+      <div class="section">
+        <div class="toggle-row">
+          <label for="captureAll">接管浏览器全部下载</label>
+          <label class="switch"><input type="checkbox" id="captureAll"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <label for="notifyOnCapture">拦截时显示通知</label>
+          <label class="switch"><input type="checkbox" id="notifyOnCapture"><span class="slider"></span></label>
+        </div>
       </div>
-      <p style="font-size: 11px;">排除站点上的下载将由浏览器处理，不经过 Siphon。</p>
-    </div>
-
-    <div class="section">
-      <h2>排除扩展名</h2>
-      <div id="excludeExtsList" class="exclude-list"><span class="empty">无排除扩展名</span></div>
-      <div class="add-row">
-        <input type="text" id="newExcludeExt" placeholder="例如：html">
-        <button id="addExcludeExt">添加</button>
+      <div class="section">
+        <p class="section-title">本次统计</p>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-value" id="stat-intercepted">0</div><div class="stat-label">已拦截</div></div>
+          <div class="stat-card"><div class="stat-value" id="stat-skipped">0</div><div class="stat-label">已跳过</div></div>
+          <div class="stat-card"><div class="stat-value" id="stat-media">0</div><div class="stat-label">嗅探媒体</div></div>
+          <div class="stat-card"><div class="stat-value" id="stat-errors">0</div><div class="stat-label">错误</div></div>
+        </div>
+        <div class="btn-row"><button class="btn-danger" id="resetStats">重置统计</button></div>
       </div>
     </div>
 
-    <div class="row">
-      <button id="saveConfig">保存设置</button>
+    <div id="tab-media" class="tab-content">
+      <div class="section">
+        <p class="section-title">本页媒体</p>
+        <div id="list" class="item-list"></div>
+        <div class="btn-row">
+          <button class="btn-primary" id="sendAll">发送全部</button>
+          <button class="btn-secondary" id="refresh">刷新</button>
+          <button class="btn-secondary" id="clear">清空</button>
+        </div>
+        <p class="help">也可右键点击链接，选择「用 Siphon 下载」。</p>
+      </div>
+    </div>
+
+    <div id="tab-config" class="tab-content">
+      <div class="section">
+        <p class="section-title">文件大小过滤</p>
+        <div class="toggle-row">
+          <label>最小文件大小（MB）</label>
+          <input type="number" id="minFileSize" min="0" step="0.1" value="1">
+        </div>
+        <p class="help">小于此大小的文件不拦截，由浏览器直接下载。</p>
+      </div>
+      <div class="section">
+        <p class="section-title">排除站点</p>
+        <div id="excludeHostsList" class="exclude-list"></div>
+        <div class="add-row">
+          <input type="text" id="newExcludeHost" placeholder="例如：youtube.com">
+          <button class="btn-secondary" id="addExcludeHost">添加</button>
+        </div>
+        <p class="help">排除站点上的下载将由浏览器处理。</p>
+      </div>
+      <div class="section">
+        <p class="section-title">排除扩展名</p>
+        <div id="excludeExtsList" class="exclude-list"></div>
+        <div class="add-row">
+          <input type="text" id="newExcludeExt" placeholder="例如：html">
+          <button class="btn-secondary" id="addExcludeExt">添加</button>
+        </div>
+      </div>
+      <div class="btn-row"><button class="btn-primary" id="saveConfig">保存设置</button></div>
     </div>
   </div>
 

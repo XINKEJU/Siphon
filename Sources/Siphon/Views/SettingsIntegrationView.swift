@@ -139,20 +139,21 @@ struct IntegrationSettingsView: View {
                 Text("所有请求（除 /ping）需带 Authorization: Bearer <令牌>，防止任意网页跨站调用本机接口。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("浏览器扩展 v2（Chrome / Edge / Brave）") {
-                TextField("扩展 ID（chrome://extensions 中的 32 位 ID）", text: $extensionID)
+            Section("浏览器扩展（Chrome / Edge / Brave / Firefox）") {
+                TextField("扩展 ID（留空则自动绑定）", text: $extensionID)
                     .textFieldStyle(.roundedBorder)
                 HStack(spacing: 10) {
                     Button("安装原生网关") {
                         do {
-                            let written = try NativeMessagingHostInstaller.install(extensionID: extensionID)
+                            let id = extensionID.trimmingCharacters(in: .whitespaces)
+                            let written = try NativeMessagingHostInstaller.install(extensionID: id.isEmpty ? "siphon-connector@inkeju.com" : id)
                             gatewayStatus = "已写入 \(written.count) 份清单"
                                 + "；网关：\(NativeMessagingHostInstaller.gatewayPath()?.lastPathComponent ?? "未找到")"
                         } catch {
                             gatewayStatus = error.localizedDescription
                         }
                     }
-                    .disabled(extensionID.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(false)
                     Button("卸载网关", role: .destructive) {
                         NativeMessagingHostInstaller.uninstall()
                         gatewayStatus = "已卸载"
@@ -164,7 +165,7 @@ struct IntegrationSettingsView: View {
                 if !gatewayStatus.isEmpty {
                     Text(gatewayStatus).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("扩展 v2 会按标签页嗅探媒体地址（m3u8 / mpd / mp4 / mp3…），透传页面 Cookie，并优先通过原生消息直连；未安装网关时自动回退到本地接口。安装后在 chrome://extensions 以「加载已解压的扩展程序」选择上面的目录。")
+                Text("扩展首次连接 Siphon 时会自动绑定扩展 ID，无需手动填写。Chrome/Edge/Brave 使用 chrome://extensions 加载；Firefox 使用 about:debugging 加载。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section("网络代理") {

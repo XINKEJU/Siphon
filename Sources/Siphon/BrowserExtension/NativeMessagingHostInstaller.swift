@@ -24,28 +24,53 @@ public enum NativeMessagingHostInstaller {
     @discardableResult
     public static func install(extensionID rawID: String) throws -> [URL] {
         let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard isValidExtensionID(id) else {
-            throw InstallError(message: "扩展 ID 格式无效：应为 32 位、仅含 a–p 的字母")
+        let isChromeID = isValidExtensionID(id)
+        let isFirefoxID = id.contains("@") || id.contains("-")
+        guard isChromeID || isFirefoxID else {
+            throw InstallError(message: "扩展 ID 格式无效：Chrome 应为 32 位 a-p 字母，Firefox 应为 ID 或邮箱格式")
         }
         guard let gateway = gatewayPath() else {
             throw InstallError(message: "未找到 SiphonNM 网关（请先执行 swift build，或使用打包版 Siphon.app）")
         }
-        let manifest: [String: Any] = [
+        var written: [URL] = []
+
+        // Chromium-based browsers: chrome-extension://<id>/
+        if isChromeID {
+            let manifest: [String: Any] = [
+                "name": hostName,
+                "description": "Siphon native messaging gateway",
+                "path": gateway.path,
+                "type": "stdio",
+                "allowed_origins": ["chrome-extension://\(id)/"]
+            ]
+            let data = try JSONSerialization.data(withJSONObject: manifest,
+                                                  options: [.prettyPrinted, .sortedKeys])
+            for dir in chromiumHostDirectories() {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let file = dir.appendingPathComponent(hostName + ".json")
+                try data.write(to: file, options: .atomic)
+                written.append(file)
+            }
+        }
+
+        // Firefox: moz-extension://<id>/
+        let firefoxID = isFirefoxID ? id : "siphon-connector@inkeju.com"
+        let ffManifest: [String: Any] = [
             "name": hostName,
             "description": "Siphon native messaging gateway",
             "path": gateway.path,
             "type": "stdio",
-            "allowed_origins": ["chrome-extension://\(id)/"]
+            "allowed_origins": ["moz-extension://\(firefoxID)/"]
         ]
-        let data = try JSONSerialization.data(withJSONObject: manifest,
-                                              options: [.prettyPrinted, .sortedKeys])
-        var written: [URL] = []
-        for dir in hostDirectories() {
+        let ffData = try JSONSerialization.data(withJSONObject: ffManifest,
+                                                options: [.prettyPrinted, .sortedKeys])
+        for dir in firefoxHostDirectories() {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let file = dir.appendingPathComponent(hostName + ".json")
-            try data.write(to: file, options: .atomic)
+            try ffData.write(to: file, options: .atomic)
             written.append(file)
         }
+
         UserDefaults.standard.set(id, forKey: extensionIDKey)
         return written
     }
@@ -66,8 +91,13 @@ public enum NativeMessagingHostInstaller {
             .filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 
-    /// Vendor directories Chromium-based browsers read on macOS.
+    /// All vendor directories (Chromium + Firefox).
     public static func hostDirectories() -> [URL] {
+        chromiumHostDirectories() + firefoxHostDirectories()
+    }
+
+    /// Vendor directories for Chromium-based browsers on macOS.
+    public static func chromiumHostDirectories() -> [URL] {
         let support = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support", isDirectory: true)
         return [
@@ -75,7 +105,16 @@ public enum NativeMessagingHostInstaller {
             support.appendingPathComponent("Chromium/NativeMessagingHosts", isDirectory: true),
             support.appendingPathComponent("Microsoft Edge/NativeMessagingHosts", isDirectory: true),
             support.appendingPathComponent("BraveSoftware/Brave-Browser/NativeMessagingHosts",
-                                           isDirectory: true)
+                                           isDirectory: true),
+        ]
+    }
+
+    /// Vendor directory for Firefox on macOS.
+    public static func firefoxHostDirectories() -> [URL] {
+        let support = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return [
+            support.appendingPathComponent("Mozilla/NativeMessagingHosts", isDirectory: true),
         ]
     }
 
@@ -109,7 +148,7 @@ public enum NativeMessagingHostInstaller {
         return FileManager.default.fileExists(atPath: local.path) ? local : nil
     }
 
-    static func isValidExtensionID(_ id: String) -> Bool {
+    public static func isValidExtensionID(_ id: String) -> Bool {
         let allowed = Set("abcdefghijklmnop")
         return id.count == 32 && id.allSatisfy { allowed.contains($0) }
     }

@@ -257,6 +257,10 @@ public final class NativeMessagingServer {
         let path = parts.count > 1 ? String(parts[1]) : ""
 
         if method == "GET" && path == "/ping" {
+            // Auto-bind: extract extension ID from Origin header on first contact.
+            if let origin = header(named: "Origin", in: lines) {
+                Self.autoBindExtensionID(origin)
+            }
             // The token rides along so the extension can bootstrap itself; only
             // extension contexts (host_permissions) and loopback scripts can read
             // the response — web pages get no CORS grant.
@@ -361,5 +365,30 @@ public final class NativeMessagingServer {
     private func http(_ status: String, _ body: String) -> Data {
         let payload = "HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         return payload.data(using: .utf8) ?? Data()
+    }
+
+    /// Auto-bind: extract extension ID from Origin header and save it.
+    /// Supports chrome-extension://, moz-extension://, safari-web-extension://
+    private static func autoBindExtensionID(_ origin: String) {
+        let patterns = ["chrome-extension://", "moz-extension://", "safari-web-extension://"]
+        for prefix in patterns {
+            guard origin.hasPrefix(prefix) else { continue }
+            let rest = origin.dropFirst(prefix.count)
+            // Chrome/Edge: 32-char lowercase a-p ID
+            // Firefox: UUID format {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
+            // Safari: UUID format without braces
+            let id = rest.split(separator: "/").first.map(String.init) ?? ""
+            guard !id.isEmpty else { continue }
+            // Only save if not already saved or different from current
+            let current = NativeMessagingHostInstaller.extensionID
+            if id != current {
+                UserDefaults.standard.set(id, forKey: NativeMessagingHostInstaller.extensionIDKey)
+                // Auto-install native messaging host for this extension ID
+                if NativeMessagingHostInstaller.isValidExtensionID(id) {
+                    _ = try? NativeMessagingHostInstaller.install(extensionID: id)
+                }
+            }
+            break
+        }
     }
 }
