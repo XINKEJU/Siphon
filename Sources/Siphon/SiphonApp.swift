@@ -70,8 +70,37 @@ struct SiphonCommands: Commands {
         CommandMenu("显示") {
             Toggle("显示侧边栏", isOn: $showingInspector)
                 .keyboardShortcut("i", modifiers: [.command, .option])
+            Divider()
+            Button("显示下载弹窗") { DownloadPopupController.shared.toggle(store: store) }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
         }
         CommandMenu("任务") {
+            // 多选操作：与列表批量条、右键菜单共用同一套 store 方法，
+            // 免得三处各写一遍循环、行为慢慢漂移。
+            Button("暂停所选") { store.pauseTasks(store.selectedTaskIDs) }
+                .keyboardShortcut("p", modifiers: [.command, .option])
+                .disabled(!store.selectedTasks.contains {
+                    $0.state == .active || $0.state == .pending
+                })
+
+            Button("继续所选") { store.resumeTasks(store.selectedTaskIDs) }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+                .disabled(!store.selectedTasks.contains {
+                    $0.state == .paused || $0.state == .error
+                })
+
+            Button("拷贝所选链接") { _ = store.copyLinks(store.selectedTaskIDs) }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(store.selectedTaskIDs.isEmpty)
+
+            Button("删除所选…") { store.pendingDeleteIDs = store.selectedTaskIDs }
+                .disabled(store.selectedTaskIDs.isEmpty)
+
+            Button("取消选择") { store.clearSelection() }
+                .disabled(store.selectedTaskIDs.isEmpty)
+
+            Divider()
+
             Button("恢复全部") {
                 for t in store.tasks where t.state == .paused || t.state == .error {
                     store.resume(t.id)

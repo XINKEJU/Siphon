@@ -1312,46 +1312,65 @@ public final class HTTPDownloadEngine: DownloadEngine {
 
     private func probe(url: URL, headers: [String: String]) async throws -> ProbeInfo {
         var result = ProbeInfo()
+        // HEAD 与 Range-GET 都被拒时，现在的行为是「空探测 → 单路 GET 再试」，
+        // 这对「既不回 Content-Length 又不支持 Range」的服务器是对的；但 TCP
+        // 层直接失败（代理端口没开、DNS 失败、连接被拒）时再试必然还是失败，
+        // 只会让任务永远卡在 active 0 B。区分这两种情况：拿到过 HTTP 响应就
+        // 继续宽容，纯连接错误则立即抛出（附上代理信息，方便定位死代理）。
+        var connectError: Error?
+        var gotHTTPResponse = false
         var head = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         head.httpMethod = "HEAD"
         for (k, v) in headers where !["dir", "out"].contains(k.lowercased()) {
             head.setValue(v, forHTTPHeaderField: k)
         }
-        if let (_, resp) = try? await session(for: url).data(for: head),
-           let http = resp as? HTTPURLResponse,
-           (200...299).contains(http.statusCode) {
-            if http.value(forHTTPHeaderField: "Content-Length") != nil { result.knownTotal = true }
-            result.total = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "0") ?? 0
-            result.canRange = (http.value(forHTTPHeaderField: "Accept-Ranges")?
-                .lowercased().contains("bytes")) ?? false
-            result.etag = http.value(forHTTPHeaderField: "ETag")
-            result.lastModified = http.value(forHTTPHeaderField: "Last-Modified")
-            if result.total > 0 || result.canRange { return result }
-        }
+        do {
+            let (_, resp) = try await session(for: url).data(for: head)
+            gotHTTPResponse = true
+            if let http = resp as? HTTPURLResponse,
+               (200...299).contains(http.statusCode) {
+                if http.value(forHTTPHeaderField: "Content-Length") != nil { result.knownTotal = true }
+                result.total = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "0") ?? 0
+                result.canRange = (http.value(forHTTPHeaderField: "Accept-Ranges")?
+                    .lowercased().contains("bytes")) ?? false
+                result.etag = http.value(forHTTPHeaderField: "ETag")
+                result.lastModified = http.value(forHTTPHeaderField: "Last-Modified")
+                if result.total > 0 || result.canRange { return result }
+            }
+        } catch { connectError = error }
         // Zero-length Range GET fallback (also covers FTP, which ignores HEAD).
         var r2 = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         r2.httpMethod = "GET"
         r2.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-        if let (_, resp) = try? await session(for: url).bytes(for: r2),
-           let http = resp as? HTTPURLResponse {
-            if http.statusCode == 206 {
-                result.canRange = true
-                let cr = http.value(forHTTPHeaderField: "Content-Range") ?? ""
-                if let slash = cr.firstIndex(of: "/") {
-                    let denom = String(cr[cr.index(after: slash)...])
-                        .trimmingCharacters(in: .whitespaces)
-                    if denom != "*" {
-                        result.knownTotal = true
-                        result.total = Int64(denom) ?? 0
+        do {
+            let (_, resp) = try await session(for: url).bytes(for: r2)
+            gotHTTPResponse = true
+            if let http = resp as? HTTPURLResponse {
+                if http.statusCode == 206 {
+                    result.canRange = true
+                    let cr = http.value(forHTTPHeaderField: "Content-Range") ?? ""
+                    if let slash = cr.firstIndex(of: "/") {
+                        let denom = String(cr[cr.index(after: slash)...])
+                            .trimmingCharacters(in: .whitespaces)
+                        if denom != "*" {
+                            result.knownTotal = true
+                            result.total = Int64(denom) ?? 0
+                        }
                     }
+                    result.etag = http.value(forHTTPHeaderField: "ETag")
+                    result.lastModified = http.value(forHTTPHeaderField: "Last-Modified")
+                } else if (200...299).contains(http.statusCode) {
+                    result.total = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "0") ?? 0
+                    result.canRange = false
+                    result.knownTotal = http.value(forHTTPHeaderField: "Content-Length") != nil
                 }
-                result.etag = http.value(forHTTPHeaderField: "ETag")
-                result.lastModified = http.value(forHTTPHeaderField: "Last-Modified")
-            } else if (200...299).contains(http.statusCode) {
-                result.total = Int64(http.value(forHTTPHeaderField: "Content-Length") ?? "0") ?? 0
-                result.canRange = false
-                result.knownTotal = http.value(forHTTPHeaderField: "Content-Length") != nil
             }
+        } catch { connectError = connectError ?? error }
+        if !gotHTTPResponse, let connectError {
+            if ProxyRouter.shared.proxyDictionary(for: url) != nil {
+                throw NetFailure.unknown("代理不可用（\(connectError.localizedDescription)）：请检查设置里的代理 / PAC 配置")
+            }
+            throw connectError
         }
         return result
     }

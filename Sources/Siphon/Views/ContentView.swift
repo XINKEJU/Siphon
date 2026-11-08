@@ -102,7 +102,9 @@ struct ContentView: View {
 
     @ViewBuilder
     private var inspectorPanel: some View {
-        if let task = selectedTask {
+        if store.selectedTaskIDs.count > 1 {
+            BatchSelectionPanel()
+        } else if let task = selectedTask {
             TaskDetailView(task: task)
         } else {
             VStack(spacing: 10) {
@@ -147,6 +149,21 @@ struct ContentView: View {
                         .foregroundStyle(.orange)
                         .font(.system(size: 10))
                 }
+            }
+
+            if store.selectedTaskIDs.count > 1 {
+                Label {
+                    Text("已选 \(store.selectedTaskIDs.count) 项")
+                        .font(.system(size: 11, weight: .semibold))
+                } icon: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                        .font(.system(size: 10))
+                }
+                Button("取消") { store.clearSelection() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
 
             if totalSpeed > 0 {
@@ -270,6 +287,139 @@ enum TaskFilter: String, CaseIterable, Identifiable {
         case .paused: return tasks.filter { $0.state == .paused }.count
         case .completed: return tasks.filter { $0.state == .completed }.count
         }
+    }
+}
+
+// MARK: - 多选汇总面板
+
+/// 右侧详情列在多选时的替代内容：一屏看清这组任务的数量、体量与状态分布，
+/// 并把批量动作放在手边 —— 否则「选了十几个却只能回列表右键」很别扭。
+private struct BatchSelectionPanel: View {
+    @Environment(DownloadStore.self) private var store
+
+    var body: some View {
+        content(selected: store.selectedTasks)
+    }
+
+    private func content(selected: [DownloadTask]) -> some View {
+        let ids = store.selectedTaskIDs
+        let totalBytes = selected.reduce(Int64(0)) { $0 + $1.progress.totalBytes }
+        let doneBytes = selected.reduce(Int64(0)) { $0 + $1.progress.downloadedBytes }
+        let active = selected.filter { $0.state == .active || $0.state == .pending }.count
+        let paused = selected.filter { $0.state == .paused }.count
+        let finished = selected.filter { $0.state == .completed }.count
+        let failed = selected.filter { $0.state == .error }.count
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("已选 \(selected.count) 项")
+                        .font(.title3.weight(.semibold))
+                    Text("批量暂停、继续、拷贝链接或删除这一组任务")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    row("总大小", totalBytes > 0 ? Formatting.bytes(totalBytes) : "—")
+                    row("已下载", Formatting.bytes(doneBytes))
+                    if totalBytes > 0 {
+                        ProgressView(value: min(1, Double(doneBytes) / Double(max(1, totalBytes))))
+                            .progressViewStyle(.linear)
+                        row("完成度", Formatting.percent(Double(doneBytes) / Double(max(1, totalBytes))))
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("状态").font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        if active > 0 { chip("进行中 \(active)", .accentColor) }
+                        if paused > 0 { chip("已暂停 \(paused)", .orange) }
+                        if finished > 0 { chip("已完成 \(finished)", .green) }
+                        if failed > 0 { chip("出错 \(failed)", .red) }
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button { store.pauseTasks(ids) } label: {
+                            Label("暂停", systemImage: "pause.fill")
+                        }
+                        .disabled(active == 0)
+                        Button { store.resumeTasks(ids) } label: {
+                            Label("继续", systemImage: "play.fill")
+                        }
+                        .disabled(paused + failed == 0)
+                    }
+                    HStack(spacing: 8) {
+                        Button { store.copyLinks(ids) } label: {
+                            Label("拷贝链接", systemImage: "link")
+                        }
+                        Button(role: .destructive) { store.pendingDeleteIDs = ids } label: {
+                            Label("删除…", systemImage: "trash")
+                        }
+                    }
+                    Button { store.clearSelection() } label: {
+                        Label("取消选择", systemImage: "xmark.circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("包含任务").font(.caption).foregroundStyle(.secondary)
+                    ForEach(selected.prefix(12)) { task in
+                        HStack(spacing: 6) {
+                            Image(systemName: task.state == .completed ? "checkmark.circle.fill"
+                                  : task.state == .error ? "exclamationmark.circle.fill"
+                                  : task.state == .paused ? "pause.circle.fill" : "arrow.down.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(task.state == .completed ? .green
+                                                 : task.state == .error ? .red
+                                                 : task.state == .paused ? .orange : Color.accentColor)
+                            Text(task.name)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            Text(Formatting.percent(task.progress.percent))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    if selected.count > 12 {
+                        Text("…还有 \(selected.count - 12) 项")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func row(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.caption.monospacedDigit())
+        }
+    }
+
+    private func chip(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.14), in: Capsule())
+            .foregroundStyle(color)
     }
 }
 

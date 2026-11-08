@@ -40,6 +40,8 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "显示 Siphon", action: #selector(showMainWindow), keyEquivalent: "")
             .target = self
+        menu.addItem(withTitle: "显示下载弹窗", action: #selector(showPopup), keyEquivalent: "")
+            .target = self
         menu.addItem(withTitle: "偏好设置…", action: #selector(openSettings), keyEquivalent: ",")
             .target = self
         menu.addItem(.separator())
@@ -73,6 +75,11 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate {
         }
         statusItem?.button?.title = " " + text
         NSApp.dockTile.badgeLabel = text
+    }
+
+    @objc private func showPopup() {
+        guard let store else { return }
+        DownloadPopupController.shared.show(store: store)
     }
 
     @objc private func showMainWindow() {

@@ -38,7 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { showMainWindow() }
+        // 下载弹窗也是一个可见窗口，不能因为它在就算「主窗口已打开」——
+        // 否则主窗口关掉、弹窗还在时，点 Dock 图标不会有任何反应。
+        let mainVisible = NSApp.windows.contains {
+            $0.identifier?.rawValue.contains("main-window") == true && $0.isVisible
+        }
+        if !mainVisible { showMainWindow() }
         return true
     }
 
@@ -49,6 +54,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dir = base.appendingPathComponent("Siphon", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let lockPath = dir.appendingPathComponent("app.lock").path
+
+        // 防御：某些异常退出（或 NSDistributedLock 的边界行为）会把锁路径留成一个
+        // 空目录。目录永远无法成为 distributed lock，之后每次启动都会误报
+        // 「Siphon 已在运行」并退出 —— 直接清掉这种坏锁。
+        var lockIsDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: lockPath, isDirectory: &lockIsDir),
+           lockIsDir.boolValue {
+            try? FileManager.default.removeItem(atPath: lockPath)
+        }
 
         // Check for stale lock: read PID from lock file and verify process exists
         if let existingData = FileManager.default.contents(atPath: lockPath),
@@ -87,7 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func showMainWindow() {
+    /// 主窗口的唯一打开路径：菜单栏、Dock 重新激活、下载弹窗的「主窗口」按钮
+    /// 都走这里，避免三份各自实现的窗口查找逻辑逐步漂移。
+    func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
         let main = NSApp.windows.first { $0.identifier?.rawValue.contains("main-window") == true }
             ?? NSApp.windows.first { $0.canBecomeMain }
@@ -116,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   siphon://add?url=<encoded>  → add download
     ///   siphon://pause              → pause all
     ///   siphon://resume             → resume all
+    ///   siphon://popup              → show the compact download popup
     ///   siphon://show               → show main window
     private func handleSiphonURL(_ url: URL) {
         let host = url.host?.lowercased() ?? ""
@@ -127,8 +144,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let urlString = queryItems.first(where: { $0.name == "url" })?.value,
                !urlString.isEmpty {
                 // siphon:// URL scheme gets a priority boost.
+                // 不再顺带把主窗口翻到最前：新任务的反馈统一交给紧凑浮窗，
+                // 否则「点一个链接」会连带整窗跳到前台（NDM 也不会这样）。
                 Task { @MainActor in store?.add(urlString: urlString, priority: 1) }
-                showMainWindow()
+            }
+        case "popup":
+            let current = store
+            Task { @MainActor in
+                if let current { DownloadPopupController.shared.show(store: current) }
             }
         case "pause":
             Task { @MainActor in store?.pauseAll() }

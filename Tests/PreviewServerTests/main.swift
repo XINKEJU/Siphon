@@ -124,7 +124,13 @@ check(generated.allSatisfy { ("0"..."9").contains(String($0)) || ("a"..."f").con
       "preview token is lowercase hex")
 check(generated != PreviewServer.randomToken(), "two preview tokens differ")
 check(PreviewServer.constantTimeEqual(generated, generated), "constant-time equal matches")
-check(!PreviewServer.constantTimeEqual(generated, String(generated.dropLast()) + "0"),
+// Same-length mismatch: flip the last hex digit. Building it as `dropLast() + "0"`
+// silently produced an identical string whenever the token already ended in "0"
+// (1/16 of runs), which made this assertion flaky rather than failing honestly.
+let flipped = String(generated.dropLast()) + (generated.hasSuffix("0") ? "1" : "0")
+check(!PreviewServer.constantTimeEqual(generated, flipped),
+      "constant-time equal rejects same-length mismatch")
+check(!PreviewServer.constantTimeEqual(generated, String(generated.dropLast())),
       "constant-time equal rejects different length")
 
 // A raw socket can omit Host entirely; that used to bypass the rebinding guard.

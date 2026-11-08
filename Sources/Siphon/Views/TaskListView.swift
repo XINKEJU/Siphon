@@ -15,13 +15,13 @@ struct TaskListView: View {
     let searchText: String
     var onSelect: ((DownloadTask) -> Void)? = nil
     @State private var previewTask: DownloadTask?
-    @State private var deleteCandidate: DownloadTask?
     @State private var isDropTargeted = false
 
-    /// Two-way derived binding: local @State + onChange only flowed changes out,
-    /// so programmatic selection (notifications, MCP) never reached the list.
-    private var selectionBinding: Binding<UUID?> {
-        Binding(get: { store.selectedTaskID }, set: { store.selectedTaskID = $0 })
+    /// Two-way derived binding into the store: the list, the 「任务」menu and the
+    /// detail column must all see the same selection, so it lives in one place.
+    /// `Set<UUID>` (not `UUID?`) is what gives ⌘-click and ⇧-click for free.
+    private var selectionBinding: Binding<Set<UUID>> {
+        Binding(get: { store.selectedTaskIDs }, set: { store.selectedTaskIDs = $0 })
     }
 
     private var visible: [DownloadTask] {
@@ -67,15 +67,36 @@ struct TaskListView: View {
             .sheet(item: $previewTask) { task in
                 StreamingPreviewView(task: task)
             }
-            .alert("删除任务及文件？", isPresented: Binding(
-                get: { deleteCandidate != nil },
-                set: { if !$0 { deleteCandidate = nil } }
-            ), presenting: deleteCandidate) { task in
-                Button("删除", role: .destructive) { store.removeAndDelete(task.id) }
-                Button("取消", role: .cancel) { }
-            } message: { task in
-                Text("将从列表移除「\(task.name)」，并永久删除磁盘上的文件（含未完成的分片）。此操作不可撤销。")
+            .alert(deleteTitle, isPresented: Binding(
+                get: { !store.pendingDeleteIDs.isEmpty },
+                set: { if !$0 { store.pendingDeleteIDs = [] } }
+            )) {
+                Button("删除文件并移除", role: .destructive) {
+                    store.deleteTasks(store.pendingDeleteIDs)
+                }
+                Button("仅移出列表") {
+                    store.removeTasks(store.pendingDeleteIDs)
+                }
+                Button("取消", role: .cancel) { store.pendingDeleteIDs = [] }
+            } message: {
+                Text(deleteMessage)
             }
+    }
+
+    private var deleteTargets: [DownloadTask] {
+        store.tasks.filter { store.pendingDeleteIDs.contains($0.id) }
+    }
+
+    private var deleteTitle: String {
+        deleteTargets.count > 1 ? "删除 \(deleteTargets.count) 个任务及文件？"
+                                : "删除任务及文件？"
+    }
+
+    private var deleteMessage: String {
+        if deleteTargets.count == 1, let task = deleteTargets.first {
+            return "将从列表移除「\(task.name)」，并永久删除磁盘上的文件（含未完成的分片）。此操作不可撤销。"
+        }
+        return "将从列表移除这 \(deleteTargets.count) 个任务，并永久删除磁盘上的文件（含未完成的分片）。此操作不可撤销。"
     }
 
     @ViewBuilder
@@ -91,28 +112,105 @@ struct TaskListView: View {
                          : "换个关键词，或清除顶部搜索框中的文字。")
                 }
             } else {
-                List(selection: selectionBinding) {
-                    ForEach(visible) { task in
-                        TaskRowView(task: task)
-                            .tag(task.id)
-                            .contextMenu { contextMenu(for: task) }
-                            .onTapGesture(count: 2) { onSelect?(task) }
+                VStack(spacing: 0) {
+                    // 多选时才出现的上下文操作条：批量动作不该只藏在右键菜单里，
+                    // 选中两项以上就明确告诉用户「现在操作的是这一组」。
+                    if store.selectedTaskIDs.count > 1 {
+                        batchBar
+                        Divider()
                     }
-                }
-                .onChange(of: store.selectedTaskID) { _, newID in
-                    if let id = newID, let task = visible.first(where: { $0.id == id }) {
-                        onSelect?(task)
+                    List(selection: selectionBinding) {
+                        ForEach(visible) { task in
+                            TaskRowView(task: task)
+                                .tag(task.id)
+                                .contextMenu { contextMenu(for: task) }
+                                // 用 simultaneousGesture 而不是 onTapGesture：
+                                // 独占手势会吃掉单击，导致 ⌘/⇧ 多选在 List 里失效。
+                                .simultaneousGesture(TapGesture(count: 2).onEnded {
+                                    onSelect?(task)
+                                })
+                        }
                     }
+                    // macOS 27 paints alternating row backgrounds across the whole
+                    // visible scroll area (including empty space), which looks like
+                    // a stack of phantom tasks. Plain inset keeps only real rows.
+                    .listStyle(.inset)
+                    // Content softly fades under the translucent system toolbar.
+                    .softScrollTopEdge()
                 }
-                // macOS 27 paints alternating row backgrounds across the whole
-                // visible scroll area (including empty space), which looks like
-                // a stack of phantom tasks. Plain inset keeps only real rows.
-                .listStyle(.inset)
-                // Content softly fades under the translucent system toolbar.
-                .softScrollTopEdge()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Esc 只用来「退出多选」，单选时不拦截，避免影响关窗 / 关面板的默认行为。
+        .onExitCommand {
+            if store.selectedTaskIDs.count > 1 { store.clearSelection() }
+        }
+    }
+
+    // MARK: - 批量操作条
+
+    private var batchBar: some View {
+        let selected = store.selectedTasks
+        let ids = store.selectedTaskIDs
+        let canPause = selected.contains { $0.state == .active || $0.state == .pending }
+        let canResume = selected.contains { $0.state == .paused || $0.state == .error }
+        let totalBytes = selected.reduce(Int64(0)) { $0 + $1.progress.totalBytes }
+        return HStack(spacing: 12) {
+            Label("已选 \(selected.count) 项", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .labelStyle(.titleAndIcon)
+
+            if totalBytes > 0 {
+                Text(Formatting.bytes(totalBytes))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button { store.pauseTasks(ids) } label: {
+                Label("暂停", systemImage: "pause.fill")
+            }
+            .disabled(!canPause)
+
+            Button { store.resumeTasks(ids) } label: {
+                Label("继续", systemImage: "play.fill")
+            }
+            .disabled(!canResume)
+
+            Button { store.copyLinks(ids) } label: {
+                Label("拷贝链接", systemImage: "link")
+            }
+
+            Button { revealSelected() } label: {
+                Label("在访达中显示", systemImage: "folder")
+            }
+            .disabled(!selected.contains { FileManager.default.fileExists(atPath: $0.destination.path) })
+
+            Button(role: .destructive) { store.pendingDeleteIDs = ids } label: {
+                Label("删除", systemImage: "trash")
+            }
+
+            Button { store.clearSelection() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("取消选择 (Esc)")
+        }
+        .font(.caption)
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.bar)
+    }
+
+    private func revealSelected() {
+        let urls = store.selectedTasks
+            .map(\.destination)
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 
     // MARK: - Drag & drop
@@ -159,8 +257,53 @@ struct TaskListView: View {
 
     // MARK: - Context menu
 
+    /// Right-clicking inside a multi-selection acts on the whole selection —
+    /// the alternative (silently acting on just the row under the cursor) is the
+    /// classic way batch UI loses people's files.
     @ViewBuilder
     private func contextMenu(for task: DownloadTask) -> some View {
+        if store.selectedTaskIDs.count > 1, store.selectedTaskIDs.contains(task.id) {
+            batchContextMenu
+        } else {
+            singleContextMenu(for: task)
+        }
+    }
+
+    @ViewBuilder
+    private var batchContextMenu: some View {
+        let ids = store.selectedTaskIDs
+        let selected = store.selectedTasks
+        let canPause = selected.contains { $0.state == .active || $0.state == .pending }
+        let canResume = selected.contains { $0.state == .paused || $0.state == .error }
+
+        Text("已选 \(selected.count) 项")
+        Divider()
+        if canPause { Button("暂停") { store.pauseTasks(ids) } }
+        if canResume { Button("继续") { store.resumeTasks(ids) } }
+        Button("拷贝 \(selected.count) 条链接") { store.copyLinks(ids) }
+        Button("在访达中显示") { revealSelected() }
+            .disabled(!selected.contains { FileManager.default.fileExists(atPath: $0.destination.path) })
+        Divider()
+        Menu("限速") {
+            Button("不限速") { store.setSpeedLimit(ids, bytesPerSec: nil) }
+            Button("512 KB/s") { store.setSpeedLimit(ids, bytesPerSec: 524288) }
+            Button("1 MB/s") { store.setSpeedLimit(ids, bytesPerSec: 1048576) }
+            Button("5 MB/s") { store.setSpeedLimit(ids, bytesPerSec: 5242880) }
+        }
+        Menu("优先级") {
+            Button("高") { store.setPriority(ids, 1) }
+            Button("普通") { store.setPriority(ids, 0) }
+            Button("低") { store.setPriority(ids, -1) }
+        }
+        Divider()
+        Button("从列表移除（保留文件）") { store.removeTasks(ids) }
+        Button("删除任务及文件", role: .destructive) { store.pendingDeleteIDs = ids }
+        Divider()
+        Button("取消选择") { store.clearSelection() }
+    }
+
+    @ViewBuilder
+    private func singleContextMenu(for task: DownloadTask) -> some View {
         if task.state == .active || task.state == .pending {
             Button("暂停") { store.pause(task.id) }
         }
@@ -173,6 +316,7 @@ struct TaskListView: View {
         } else if store.isPreviewable(task) {
             Button("边下边播") { previewTask = task }
         }
+        Button("显示详情…") { onSelect?(task) }
         Divider()
         Menu("限速") {
             Button("不限速") { store.setTaskSpeedLimit(task.id, nil) }
@@ -190,8 +334,13 @@ struct TaskListView: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(task.source.absoluteString, forType: .string)
         }
+        if store.selectedTaskIDs.count > 1 {
+            Button("只选这一项") { store.selectedTaskIDs = [task.id] }
+        } else if !store.selectedTaskIDs.isEmpty {
+            Button("取消选择") { store.clearSelection() }
+        }
         Button("从列表移除（保留文件）") { store.remove(task.id) }
-        Button("删除任务及文件", role: .destructive) { deleteCandidate = task }
+        Button("删除任务及文件", role: .destructive) { store.pendingDeleteIDs = [task.id] }
     }
 
     private func reveal(_ task: DownloadTask) {

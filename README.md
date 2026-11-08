@@ -109,6 +109,8 @@ HLS / DASH 共用 `SegmentAssembler`：有界并发、严格有序落盘、按�
 | 就地扩容（TrueSize 修正） | 多段下载途中服务器自报总大小变大时延长预分配、追加尾段，已下字节零丢弃（最多 3 次） | FluxDown `MAX_SIZE_EXPANSIONS` |
 | MCP Server | 回环 HTTP + JSON-RPC 2.0，暴露 add_download / list_tasks / pause / resume / remove | FluxDown / Gopeed `mcpserver` |
 | 自动归类归档 | 按扩展名归入 视频/音乐/图片/文档/压缩包/软件/种子 子目录（可关） | HyperDM `categorizer` |
+| 下载弹窗（NDM 式） | 检测到新任务时右下角浮出紧凑面板：实时速度曲线 + 峰值/均值、全部活动任务的总进度/剩余时间、当前任务的分段进度与最近任务切换；默认浮在当前应用之上**不抢焦点**，也可在设置里改为切前台；全部完成后约 4 秒自动收起；⇧⌘D 或菜单栏随时唤起 | NetTransport / NDM 浮窗 |
+| 列表批量操作 | ⌘ 点选 / ⇧ 区间 / ⌘A 全选后，选中 2 项以上会浮出批量操作条：暂停、继续、拷贝多条链接、在访达中显示、删除；右键菜单作用于**整组选择**；删除前统一确认（删文件 / 仅移出列表）；侧边详情列切换为多选汇总（总大小、已下载、状态分布）；「任务」菜单另有 ⌥⌘P / ⌥⌘R / ⇧⌘C 快捷键 | Motrix / NDM / aria2 GUI |
 | PAC 代理判定 | 读系统 PAC/代理设置，用 JavaScriptCore 执行 `FindProxyForURL`，按主机选代理（回环直连） | FluxDown `pac_js` |
 
 ---
@@ -141,6 +143,8 @@ open build/Siphon.app
 `verify.sh` 共 33 步：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（本机缺 aria2c 时打印 SKIP；CI 设 `SIPHON_REQUIRE_ARIA2=1` 时直接失败）、**协议矩阵 124 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端、**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路，以及新增的 **PAC 解析器**（JavaScriptCore 执行 + 指令解析）与 **MCP JSON-RPC + Webhook 签名/载荷**测试。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
 
 后续安全加固也各有独立回归：本地接口令牌不再经 `/ping` 下发（0600 引导文件 + 权限/符号链接校验）、自动更新强制 HTTPS 与完整 SHA-256 并校验更新包签名身份、文件名与归档条目净化（Zip Slip / 符号链接 / 解压炸弹）、`Content-Length` 分片解析、REST/MCP handler 的 MainActor 隔离、校验和全引擎覆盖、Webhook SSRF 与载荷脱敏、发布签名资产一致性。
+
+下载弹窗同样有回归断言（第 33 步）：所有新任务必须经 `DownloadStore.add` 统一走 `DownloadPopupController.present`（启动恢复不经过该入口，不会误弹）；面板必须是 `nonactivatingPanel` 悬浮层，弹出不得把主窗口翻到最前（`siphon://add` 处理器不再调用主窗口）；弹窗内容必须包含 `segmentSnapshot` 分段进度，偏好设置里的 `Siphon.popupOnDownload` 开关必须真实生效；弹窗底板必须是实心 `PopupSurface`（禁止 `.bar` 材质 / `NSVisualEffectView`，否则桌面会透出来）。列表批量操作也有断言：选择状态必须是 `selectedTaskIDs` 集合、`List(selection:)` 挂集合绑定、批量条与批量右键菜单存在、删除走 `pendingDeleteIDs` 统一确认、「任务」菜单必须提供所选操作。凭证作用域测试的固定端口 fixture 前会先清理上次中断遗留的 `echo_server` 孤儿进程，避免「端口被占」的假失败。
 
 最近一批工程化收尾：MCP 与边下边播服务器的 Host 空值 / `Content-Length` 解析和 REST 端统一（含 DNS rebinding 回归断言），预览令牌改为 `SecRandomCopyBytes` 派生的 256-bit 值并做常量时间比较；新增 `CompletionSizePolicy`，让 curl / `file:` / `data:` / scp / rsync / NFS 引擎在报 `.completed` 前用**独立字节数**（curl `%{size_download}` + 续传偏移、源文件大小、解码后载荷长度）核对落盘文件，零字节或截断不再被当成功；关键路径的静默 `try?` / 空 `catch` 改为 `os_log` 上报。第 32 步同时覆盖校验和策略与完成尺寸策略，第 33 步校验发布资产、脚本语法、源码清单一致性和 README 关键声明。
 

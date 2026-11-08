@@ -124,17 +124,43 @@ func startServer(port: Int) -> Process {
     p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
     p.arguments = ["Tests/fixtures-credscope/echo_server.py", String(port)]
     p.standardOutput = FileHandle.nullDevice
-    p.standardError = FileHandle.nullDevice
-    try? p.run()
+    // Keep stderr in a file: when the fixture dies on startup (port taken,
+    // interpreter blocked) the failure used to be invisible and looked like a
+    // random "fixture servers unreachable" flake.
+    let logPath = NSTemporaryDirectory() + "siphon-credscope-\(port).log"
+    FileManager.default.createFile(atPath: logPath, contents: nil)
+    if let handle = FileHandle(forWritingAtPath: logPath) {
+        p.standardError = handle
+    } else {
+        p.standardError = FileHandle.nullDevice
+    }
+    do {
+        try p.run()
+    } catch {
+        print("FAIL  fixture server on \(port) could not launch: \(error)")
+    }
     return p
 }
 
-func waitForServer(port: Int, timeout: Double = 10) async -> Bool {
+func fixtureLog(_ port: Int) -> String {
+    let logPath = NSTemporaryDirectory() + "siphon-credscope-\(port).log"
+    let text = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
+    return text.isEmpty ? "(no stderr output)" : text
+}
+
+var lastProbeError: [Int: String] = [:]
+
+func waitForServer(port: Int, timeout: Double = 20) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     let probe = u("http://127.0.0.1:\(port)/ping")
     while Date() < deadline {
-        if let (_, resp) = try? await URLSession.shared.data(from: probe),
-           (resp as? HTTPURLResponse)?.statusCode == 200 { return true }
+        do {
+            let (_, resp) = try await URLSession.shared.data(from: probe)
+            if (resp as? HTTPURLResponse)?.statusCode == 200 { return true }
+            lastProbeError[port] = "status \((resp as? HTTPURLResponse)?.statusCode ?? -1)"
+        } catch {
+            lastProbeError[port] = "\(error)"
+        }
         try? await Task.sleep(nanoseconds: 100_000_000)
     }
     return false
@@ -229,14 +255,25 @@ struct CredentialScopeTests {
     static func main() async {
         pureLogic()
 
-        let port = 18791
-        let otherPort = 18792
+        // RSSFeedTests binds an IPv4-only listener on 18791. This fixture binds
+        // an IPv6 dual-stack socket, which also claims the IPv4 port; reusing
+        // 18791 fails while the earlier listener's TIME_WAIT is still alive
+        // (a fast verify.sh run can reach this step in a few seconds).
+        let port = 18891
+        let otherPort = 18892
         let a = startServer(port: port)
         let b = startServer(port: otherPort)
         func shutdown() { a.terminate(); b.terminate(); a.waitUntilExit(); b.waitUntilExit() }
 
         guard await waitForServer(port: port), await waitForServer(port: otherPort) else {
-            check("fixture servers reachable", false, "ports \(port)/\(otherPort)")
+            let states = [a, b].map { p -> String in
+                p.isRunning ? "running(pid \(p.processIdentifier))"
+                            : "exited(status \(p.terminationStatus))"
+            }
+            check("fixture servers reachable", false,
+                  "ports \(port)/\(otherPort) state=\(states) "
+                  + "stderr=\(fixtureLog(port)) | \(fixtureLog(otherPort)) "
+                  + "probe=\(lastProbeError[port] ?? "?") | \(lastProbeError[otherPort] ?? "?")")
             shutdown()
             exit(1)
         }

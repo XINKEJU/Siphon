@@ -89,6 +89,27 @@ struct GeneralSettingsView: View {
                 Text("每个队列还可单独设置并发数与下载时段（见「队列」标签页）。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
+            Section("下载弹窗") {
+                Toggle("新任务出现时弹出", isOn: Binding(
+                    get: { DownloadPopupController.showsOnNewDownload },
+                    set: { UserDefaults.standard.set($0, forKey: DownloadPopupController.PrefKey.onDownload) }))
+                Text("检测到新下载（浏览器接管、剪贴板链接、拖放或接口提交）时，右下角浮出紧凑面板：实时速度曲线、总进度与分段进度；不再把整个主窗口翻到最前。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("弹出时切到 Siphon 前台", isOn: Binding(
+                    get: { DownloadPopupController.activatesOnShow },
+                    set: { UserDefaults.standard.set($0, forKey: DownloadPopupController.PrefKey.activate) }))
+                Text("关闭时弹窗只浮在当前应用之上，不抢键盘焦点，也不会把主窗口一起带到前面。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("全部完成后自动收起", isOn: Binding(
+                    get: { DownloadPopupController.autoHidesWhenIdle },
+                    set: { UserDefaults.standard.set($0, forKey: DownloadPopupController.PrefKey.autoHide) }))
+                Text("所有任务进入完成 / 失败状态后停留约 4 秒再收起，留出查看结果的时间。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Button("预览弹窗") { DownloadPopupController.shared.show(store: store) }
+            }
             Section("传输统计") {
                 LabeledContent("今日", value: "\(Formatting.bytes(stats.todayBytes)) · \(stats.todayCompleted) 个完成")
                 LabeledContent("近 7 天", value: Formatting.bytes(stats.last7DaysBytes))

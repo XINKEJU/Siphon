@@ -364,6 +364,10 @@ swiftc -framework Network -o "$TMP/localauth" \
 "$TMP/localauth"
 
 echo "== [24/33] credential scoping (site/origin filter, redirect guard, segment assembler) =="
+# The fixtures bind fixed ports (18891/18892). A run that was interrupted leaves
+# an echo_server orphaned, and the next run then fails with "fixture servers
+# unreachable" for no code reason — reap them first.
+pkill -f "fixtures-credscope/echo_server.py" 2>/dev/null || true
 swiftc -parse-as-library -o "$TMP/credscope" Tests/CredentialScopeTests/main.swift \
     "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/credscope"
@@ -460,7 +464,42 @@ grep -q "chrome.runtime.id" Resources/BrowserExtension/background.js
 grep -q "browser_specific_settings" Resources/BrowserExtension/manifest.json
 grep -q "installedManifestSummary" Sources/Siphon/Views/SettingsIntegrationView.swift
 ! grep -q "自动绑定扩展 ID，无需手动填写" Sources/Siphon/Views/SettingsIntegrationView.swift
+# Download popup: every new task must surface the compact NDM-style panel
+# (speed / overall / per-segment), it must float without activating the app,
+# and a new download must no longer raise the full main window.
+grep -q "DownloadPopupController.shared.present" Sources/Siphon/Managers/DownloadStore.swift
+grep -q "nonactivatingPanel" Sources/Siphon/Managers/DownloadPopupController.swift
+grep -q "segmentSnapshot(for: taskID)" Sources/Siphon/Views/DownloadPopupView.swift
+grep -q "DownloadPopupController.PrefKey.onDownload" Sources/Siphon/Views/SettingsGeneralView.swift
+! sed -n '/case "add":/,/case "pause":/p' Sources/Siphon/AppDelegate.swift | grep -q "showMainWindow"
+# The panel content must stay fully opaque: a transparent底板 lets the desktop
+# bleed through and makes the compact window look like floating frosted glass.
+grep -q "PopupSurface()" Sources/Siphon/Views/DownloadPopupView.swift
+! grep -q "background(.bar" Sources/Siphon/Views/DownloadPopupView.swift
+! grep -q "NSVisualEffectView" Sources/Siphon/Views/DownloadPopupView.swift
+# Batch operations: selection is a set (⌘/⇧-click), the list exposes a bulk bar,
+# the context menu acts on the whole selection, deletes are confirmed once for
+# the group, and the 「任务」menu reuses the same store methods.
+grep -q "public var selectedTaskIDs" Sources/Siphon/Managers/DownloadStore.swift
+grep -q "func deleteTasks" Sources/Siphon/Managers/DownloadStore.swift
+grep -q "func pauseTasks" Sources/Siphon/Managers/DownloadStore.swift
+grep -q "List(selection: selectionBinding)" Sources/Siphon/Views/TaskListView.swift
+grep -q "private var batchBar" Sources/Siphon/Views/TaskListView.swift
+grep -q "private var batchContextMenu" Sources/Siphon/Views/TaskListView.swift
+grep -q "BatchSelectionPanel" Sources/Siphon/Views/ContentView.swift
+grep -q "暂停所选" Sources/Siphon/SiphonApp.swift
+! grep -q "deleteCandidate" Sources/Siphon/Views/TaskListView.swift
+# Probe fail-fast: a TCP-level failure (dead manual proxy, refused connection)
+# must surface as a task error instead of looping forever at "active 0 B".
+grep -q "gotHTTPResponse" Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift
+grep -q "代理不可用" Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift
+# A stale `captureAll: false` in extension storage silently disables capture;
+# keep the one-time upgrade repair and the version bump that triggers it.
+grep -q "CAPTURE_MIGRATION_KEY" Resources/BrowserExtension/background.js
+grep -q '"version": "0.4.1"' Resources/BrowserExtension/manifest.json
+grep -q '"version": "0.4.1"' Resources/BrowserExtension/manifest-firefox.json
 python3 -c 'import json; json.load(open("Resources/BrowserExtension/manifest.json"))'
+python3 -c 'import json; json.load(open("Resources/BrowserExtension/manifest-firefox.json"))'
 if command -v node >/dev/null 2>&1; then
     node --check Resources/BrowserExtension/background.js
     node --check Resources/BrowserExtension/popup.js

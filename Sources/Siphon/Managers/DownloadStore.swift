@@ -12,7 +12,20 @@ private let storeLog = Logger(subsystem: "com.xinkeju.siphon.macos", category: "
 @Observable
 public final class DownloadStore: EngineDelegate {
     public var tasks: [DownloadTask] = []
-    public var selectedTaskID: UUID?
+    /// 列表选中项。批量暂停 / 继续 / 删除 / 拷贝链接都以这组 id 为准；
+    /// 单选只是它的退化情形，所以选择状态只存这一份，避免两套状态漂移。
+    public var selectedTaskIDs: Set<UUID> = []
+    /// 「恰好选中一个」时的便捷视图：详情列、弹窗、通知都按它取任务。
+    /// 多选时返回 nil —— 与其随便挑其中一个假装是「当前任务」，不如明确没有。
+    public var selectedTaskID: UUID? {
+        get { selectedTaskIDs.count == 1 ? selectedTaskIDs.first : nil }
+        set {
+            if let newValue { selectedTaskIDs = [newValue] }
+            else if !selectedTaskIDs.isEmpty { selectedTaskIDs = [] }
+        }
+    }
+    /// 等待二次确认的批量删除目标（菜单和列表都能触发同一个确认框）。
+    public var pendingDeleteIDs: Set<UUID> = []
     public var filter: TaskFilter = .all
     public var aria2Status: String = "未启动"
     /// Prefer this over string-matching `aria2Status`: the human-readable status
@@ -633,6 +646,9 @@ public final class DownloadStore: EngineDelegate {
                     == task.destination.deletingLastPathComponent().path
         }) {
             selectedTaskID = existing.id
+            // 重复提交也把弹窗叫出来，指向已有任务：用户刚点了一个链接，
+            // 需要看到「已经在下了」，否则会以为没生效。
+            DownloadPopupController.shared.present(taskID: existing.id, store: self)
             return
         }
         // 同一链接已完成（同目录）：按重复策略跳过或重新下载。
@@ -675,6 +691,9 @@ public final class DownloadStore: EngineDelegate {
         broadcastTask(task)
         SystemPresence.shared.refresh(tasks: tasks)
         Task { await schedule() }
+        // NDM 式反馈：新任务先弹紧凑浮窗（速度 / 总进度 / 分段），
+        // 而不是把整个主窗口翻到最前。
+        DownloadPopupController.shared.present(taskID: task.id, store: self)
     }
 
     /// Ask the server for `Content-Disposition` only when the URL path cannot
@@ -872,6 +891,10 @@ public final class DownloadStore: EngineDelegate {
         boostPausedIDs.remove(id)
         statsLastBytes.removeValue(forKey: id)
         tasks.removeAll { $0.id == id }
+        // 选中的任务被删掉后必须从选择集合里剔除，否则批量操作会拿着幽灵 id
+        // 到处跑（数量对不上、按钮状态也不对）。
+        selectedTaskIDs.remove(id)
+        pendingDeleteIDs.remove(id)
         save()
         SystemPresence.shared.refresh(tasks: tasks)
         enforceBoost()
@@ -895,6 +918,73 @@ public final class DownloadStore: EngineDelegate {
 
     public func removeCompleted() {
         for t in tasks where t.state == .completed { remove(t.id) }
+    }
+
+    // MARK: - 批量操作（列表多选 / 右键菜单 / 「任务」菜单共用）
+
+    /// 当前选中的任务，按列表顺序返回（顺序稳定，批量结果才可预期）。
+    public var selectedTasks: [DownloadTask] {
+        guard !selectedTaskIDs.isEmpty else { return [] }
+        return tasks.filter { selectedTaskIDs.contains($0.id) }
+    }
+
+    public func clearSelection() {
+        guard !selectedTaskIDs.isEmpty else { return }
+        selectedTaskIDs = []
+        pendingDeleteIDs = []
+    }
+
+    public func selectAll(_ ids: [UUID]) {
+        selectedTaskIDs = Set(ids)
+    }
+
+    public func pauseTasks(_ ids: Set<UUID>) {
+        for t in tasks where ids.contains(t.id) && (t.state == .active || t.state == .pending) {
+            pause(t.id)
+        }
+    }
+
+    public func resumeTasks(_ ids: Set<UUID>) {
+        for t in tasks where ids.contains(t.id) && (t.state == .paused || t.state == .error) {
+            resume(t.id)
+        }
+    }
+
+    /// 只移出列表，保留磁盘文件。
+    public func removeTasks(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        for id in tasks.map(\.id) where ids.contains(id) { remove(id) }
+    }
+
+    /// 移出列表并删除磁盘文件（成品 / .part / 续传 sidecar）。
+    public func deleteTasks(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        for id in tasks.map(\.id) where ids.contains(id) { removeAndDelete(id) }
+        pendingDeleteIDs = []
+    }
+
+    public func setSpeedLimit(_ ids: Set<UUID>, bytesPerSec: Int64?) {
+        guard !ids.isEmpty else { return }
+        for id in tasks.map(\.id) where ids.contains(id) {
+            setTaskSpeedLimit(id, bytesPerSec)
+        }
+    }
+
+    public func setPriority(_ ids: Set<UUID>, _ priority: Int) {
+        guard !ids.isEmpty else { return }
+        for id in tasks.map(\.id) where ids.contains(id) {
+            setTaskPriority(id, priority)
+        }
+    }
+
+    /// 多选时拷出的链接按列表顺序每行一条，粘回「新建下载」可直接批量添加。
+    @discardableResult
+    public func copyLinks(_ ids: Set<UUID>) -> Int {
+        let links = tasks.filter { ids.contains($0.id) }.map(\.source.absoluteString)
+        guard !links.isEmpty else { return 0 }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(links.joined(separator: "\n"), forType: .string)
+        return links.count
     }
 
     // MARK: - 边下边播
@@ -1696,6 +1786,9 @@ public final class DownloadStore: EngineDelegate {
             return
         }
         tasks = records.map { $0.task }
+        // Selection is per-session view state; a restored list must not inherit
+        // ids the user picked before quitting.
+        selectedTaskIDs = []
         // Remember which tasks were mid-flight; `start()` resumes them once
         // engines are ready. Records without the marker (older files) stay paused.
         interruptedIDs = Set(records.filter { $0.wasInterrupted }.map { $0.id })
