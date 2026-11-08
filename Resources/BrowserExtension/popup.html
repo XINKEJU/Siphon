@@ -288,6 +288,19 @@
       margin: 6px 0 0;
       line-height: 1.4;
     }
+    .diag-id {
+      display: block;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      word-break: break-all;
+      padding: 7px 9px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-secondary);
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+    .diag-text { white-space: pre-line; line-height: 1.6; }
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -345,12 +358,19 @@
 
     <div id="tab-config" class="tab-content">
       <div class="section">
+        <p class="section-title">连接诊断</p>
+        <code class="diag-id" id="extensionId">读取中…</code>
+        <div class="add-row"><button class="btn-secondary" id="copyExtensionId">复制扩展 ID</button></div>
+        <p class="help diag-text" id="diagText">检查中…</p>
+        <p class="help">把扩展 ID 粘贴到 Siphon 设置 → 集成 →「扩展 ID」，点「安装原生网关」，然后完全退出并重启浏览器（浏览器只在启动时读取网关清单）。</p>
+      </div>
+      <div class="section">
         <p class="section-title">文件大小过滤</p>
         <div class="toggle-row">
           <label>最小文件大小（MB）</label>
-          <input type="number" id="minFileSize" min="0" step="0.1" value="1">
+          <input type="number" id="minFileSize" min="0" step="0.1" value="0">
         </div>
-        <p class="help">小于此大小的文件不拦截，由浏览器直接下载。</p>
+        <p class="help">0 表示不限制。小于此大小的文件不拦截，由浏览器直接下载。</p>
       </div>
       <div class="section">
         <p class="section-title">排除站点</p>

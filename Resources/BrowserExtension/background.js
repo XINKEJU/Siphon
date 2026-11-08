@@ -109,7 +109,7 @@ function hasHeader(headers, name) {
 
 const DEFAULTS = {
   captureAll: true,
-  minFileSize: 1048576,
+  minFileSize: 0,
   excludeHosts: [],
   excludeExts: [],
   notifyOnCapture: true,
@@ -148,17 +148,30 @@ function bumpStat(key) {
 
 // MARK: - native messaging
 
+// A missing / mismatched native host fails immediately. Retrying it on every
+// download adds a 4 s delay before the HTTP fallback, by which time Chrome has
+// already finished the download and `chrome.downloads.cancel` can no longer
+// undo it. Back off briefly instead.
+let nativeBlockedUntil = 0;
+
 function sendNative(payload) {
+  if (Date.now() < nativeBlockedUntil) {
+    return Promise.resolve({ ok: false, nativeError: "原生网关暂不可用（已退避）" });
+  }
   return new Promise(resolve => {
     let done = false;
     let port;
     try {
       port = chrome.runtime.connectNative(NATIVE_HOST);
-    } catch (_) {
-      resolve({ ok: false });
+    } catch (e) {
+      nativeBlockedUntil = Date.now() + 30_000;
+      resolve({ ok: false, nativeError: String(e) });
       return;
     }
-    const timer = setTimeout(() => finish({ ok: false }), 4000);
+    const timer = setTimeout(() => {
+      nativeBlockedUntil = Date.now() + 30_000;
+      finish({ ok: false, nativeError: "原生网关响应超时" });
+    }, 4000);
     function finish(value) {
       if (done) return;
       done = true;
@@ -168,10 +181,20 @@ function sendNative(payload) {
     }
     port.onMessage.addListener(msg => finish(msg));
     port.onDisconnect.addListener(() => {
+      // Our own `port.disconnect()` after a successful reply also fires this;
+      // only treat an unexpected disconnect as a broken host.
+      if (done) return;
+      const reason = chrome.runtime.lastError?.message || "原生网关未安装或扩展 ID 不在白名单";
       void chrome.runtime.lastError;
-      finish({ ok: false });
+      nativeBlockedUntil = Date.now() + 30_000;
+      finish({ ok: false, nativeError: reason });
     });
-    port.postMessage(payload);
+    try {
+      port.postMessage(payload);
+    } catch (e) {
+      nativeBlockedUntil = Date.now() + 30_000;
+      finish({ ok: false, nativeError: String(e) });
+    }
   });
 }
 
@@ -241,7 +264,9 @@ async function send(url, { headers = {}, referer = "", useCookies = true, filena
   if (Object.keys(merged).length) payload.headers = merged;
   const viaNative = await sendNative(payload);
   if (viaNative && viaNative.ok) return { ok: true, via: "native" };
-  return sendHTTP(payload);
+  const viaHTTP = await sendHTTP(payload);
+  if (viaHTTP.ok) return viaHTTP;
+  return { ...viaHTTP, nativeError: viaNative?.nativeError || "" };
 }
 
 // MARK: - URL analysis helpers
@@ -327,26 +352,35 @@ function getTrackedResponse(url) {
   return info;
 }
 
-chrome.webRequest.onHeadersReceived.addListener(
-  details => {
-    if (details.tabId < 0) return;
-    if (details.type === "main_frame" || details.type === "sub_frame") {
-      const headers = details.responseHeaders || [];
-      let ctype = "", clen = -1, cdisp = "";
-      for (const h of headers) {
-        const n = (h.name || "").toLowerCase();
-        if (n === "content-type") ctype = h.value || "";
-        else if (n === "content-length") clen = parseInt(h.value, 10) || -1;
-        else if (n === "content-disposition") cdisp = h.value || "";
-      }
-      if (ctype || cdisp) {
-        trackResponse(details.url, { ctype, clen, cdisp, tabId: details.tabId });
-      }
-    }
-  },
-  { urls: ["http://*/*", "https://*/*"] },
-  ["responseHeaders"]
-);
+const TRACKED_TYPES = new Set(["main_frame", "sub_frame", "xmlhttprequest", "other", "media"]);
+
+function onResponseHeaders(details) {
+  // Downloads are usually `other` or `xmlhttprequest`, not main_frame — only
+  // tracking frames meant Content-Disposition was never recorded.
+  if (details.tabId < 0 || !TRACKED_TYPES.has(details.type)) return;
+  const headers = details.responseHeaders || [];
+  let ctype = "", clen = -1, cdisp = "";
+  for (const h of headers) {
+    const n = (h.name || "").toLowerCase();
+    if (n === "content-type") ctype = h.value || "";
+    else if (n === "content-length") clen = parseInt(h.value, 10) || -1;
+    else if (n === "content-disposition") cdisp = h.value || "";
+  }
+  if (ctype || cdisp) {
+    trackResponse(details.url, { ctype, clen, cdisp, tabId: details.tabId });
+  }
+}
+
+const RESPONSE_FILTER = { urls: ["http://*/*", "https://*/*"] };
+try {
+  // MV3 needs extraHeaders to expose Content-Disposition on Chromium.
+  chrome.webRequest.onHeadersReceived.addListener(
+    onResponseHeaders, RESPONSE_FILTER, ["responseHeaders", "extraHeaders"]);
+} catch (_) {
+  // Firefox's webRequest does not accept extraHeaders.
+  chrome.webRequest.onHeadersReceived.addListener(
+    onResponseHeaders, RESPONSE_FILTER, ["responseHeaders"]);
+}
 
 // MARK: - media sniffing
 
@@ -421,30 +455,25 @@ async function shouldIntercept(item, config) {
   if (!item.url || BAD_URL_RE.test(item.url)) return false;
   if (isExcluded(item.url, config)) return false;
 
-  if (item.fileSize && item.fileSize > 0 && item.fileSize < config.minFileSize) {
-    return false;
-  }
+  // Chrome's DownloadItem exposes `totalBytes`, never `fileSize`. A download
+  // often reports 0 until response headers arrive, so only skip when the size
+  // is positively known and below the user's threshold.
+  const size = Number(item.totalBytes ?? item.fileSize ?? 0);
+  const min = Number(config.minFileSize ?? 0);
+  if (size > 0 && min > 0 && size < min) return false;
 
   const tracked = getTrackedResponse(item.url);
-  if (tracked) {
-    if (isSkippableCType(tracked.ctype)) return false;
-    if (isDownloadableCType(tracked.ctype)) return true;
-    if (tracked.cdisp && /attachment/i.test(tracked.cdisp)) return true;
-  }
+  const ctype = ((tracked?.ctype) || item.mime || "").split(";")[0].trim().toLowerCase();
+  const forced = !!tracked?.cdisp && /attachment/i.test(tracked.cdisp);
+  // "Save page as" is the one common onCreated event that is not a file fetch.
+  if (!forced && (ctype === "text/html" || ctype === "application/xhtml+xml")) return false;
 
-  if (isDownloadableExt(item.url)) return true;
-
-  if (item.mime) {
-    if (isDownloadableCType(item.mime)) return true;
-    if (isSkippableCType(item.mime)) return false;
-  }
-
-  if (item.filename) {
-    const ext = item.filename.split(".").pop()?.toLowerCase();
-    if (ext && (DOWNLOAD_EXTS.has(ext) || MEDIA_EXTS.has(ext))) return true;
-  }
-
-  return false;
+  // `onCreated` only fires for things the browser has already classified as a
+  // download. Content-Disposition downloads routinely have no file extension
+  // and an empty `mime` at this point, so the old extension/Content-Type
+  // allow-list silently skipped most of them. With captureAll on, trust the
+  // browser's classification and hand everything else to Siphon.
+  return true;
 }
 
 chrome.downloads.onCreated.addListener(async item => {
@@ -454,6 +483,8 @@ chrome.downloads.onCreated.addListener(async item => {
     return;
   }
 
+  // Chrome DownloadItem has no requestHeaders (cookies/referrer are added by
+  // send()), so this is usually empty; keep the hook for engines that supply it.
   const headers = sanitizeHeaders(item.requestHeaders);
   const referer = item.referrer || "";
   const filename = getFilename(item.url) || item.filename || "";
@@ -467,8 +498,32 @@ chrome.downloads.onCreated.addListener(async item => {
     }
   } else {
     bumpStat("errors");
+    // Never fail silently: the browser download just continued, which is
+    // exactly what users perceive as "接管不了" with no explanation.
+    showFailureNotification(result, filename || item.url);
   }
 });
+
+function showFailureNotification(result, name) {
+  let reason;
+  if (result?.status === 401) {
+    reason = result.error || "令牌无效，请在扩展「设置」里重新粘贴本地接口令牌";
+  } else if (result?.nativeError) {
+    reason = "原生网关不可用（" + result.nativeError + "）。请在 Siphon 设置 → 集成 填入本扩展 ID 并点「安装原生网关」，然后完全退出并重启浏览器；或在扩展「设置」里粘贴令牌走 HTTP 回退。";
+  } else {
+    reason = result?.error || "Siphon 未运行或本地接口不可达";
+  }
+  try {
+    const short = name.length > 40 ? name.slice(0, 37) + "..." : name;
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: "Siphon 接管失败：" + short,
+      message: reason,
+    }, () => { void chrome.runtime.lastError; });
+  } catch (_) {}
+  console.warn("[Siphon] capture failed", reason, result);
+}
 
 function showCaptureNotification(filename) {
   try {
@@ -516,6 +571,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       const token = await getToken();
       reply({ ok: r.ok, tokenConfigured: !!token });
     }).catch(() => reply({ ok: false, tokenConfigured: false }));
+    return true;
+  }
+  // The popup sends { type: "diagnose" } to probe both transports at once.
+  if (msg?.type === "diagnose") {
+    (async () => {
+      const token = await getToken();
+      const native = await sendNative({ type: "ping" });
+      let appReachable = false;
+      try { const r = await fetch(PING); appReachable = r.ok; } catch (_) {}
+      reply({
+        ok: true,
+        extensionId: chrome.runtime.id,
+        appReachable,
+        nativeOk: !!native?.ok,
+        nativeError: native?.nativeError || "",
+        tokenConfigured: !!token,
+      });
+    })();
     return true;
   }
   if (msg?.type === "getToken") {

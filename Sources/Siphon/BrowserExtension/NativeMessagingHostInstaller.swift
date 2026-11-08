@@ -91,6 +91,25 @@ public enum NativeMessagingHostInstaller {
             .filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 
+    /// Human-readable view of installed manifests and the origins they whitelist.
+    /// A stale Chrome whitelist is the most common reason `connectNative` fails,
+    /// so Settings surfaces it instead of leaving users to guess.
+    public static func installedManifestSummary() -> String {
+        let urls = installedManifestURLs()
+        guard !urls.isEmpty else { return "未检测到已安装的原生网关清单" }
+        return urls.map { url -> String in
+            var origin = "读取失败"
+            if let data = try? Data(contentsOf: url),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let allowed = json["allowed_origins"] as? [String] {
+                origin = allowed.joined(separator: ", ")
+            }
+            let vendor = url.deletingLastPathComponent()
+                .deletingLastPathComponent().lastPathComponent
+            return "\(vendor)：\(origin)"
+        }.joined(separator: "\n")
+    }
+
     /// All vendor directories (Chromium + Firefox).
     public static func hostDirectories() -> [URL] {
         chromiumHostDirectories() + firefoxHostDirectories()

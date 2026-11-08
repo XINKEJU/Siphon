@@ -3,6 +3,12 @@
   "name": "Siphon Connector",
   "version": "0.4.0",
   "description": "Send browser downloads to the native Siphon macOS app. Supports Chrome, Edge, Brave, and Firefox.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "siphon-connector@inkeju.com",
+      "strict_min_version": "109.0"
+    }
+  },
   "permissions": [
     "downloads",
     "contextMenus",

@@ -175,8 +175,15 @@ struct IntegrationSettingsView: View {
                 if !gatewayStatus.isEmpty {
                     Text(gatewayStatus).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("扩展首次连接 Siphon 时会自动绑定扩展 ID，无需手动填写。Chrome/Edge/Brave 使用 chrome://extensions 加载；Firefox 使用 about:debugging 加载。")
+                Text("Chrome / Edge / Brave：在 chrome://extensions 开启「开发者模式」，加载 App 内的 BrowserExtension 目录；在扩展弹窗「设置 → 连接诊断」复制扩展 ID，填入上方并点「安装原生网关」，然后完全退出并重启浏览器（浏览器只在启动时读取网关清单）。")
+                Text("Firefox：在 about:debugging 加载前，先把扩展目录里的 manifest-firefox.json 复制为 manifest.json（Firefox 需要 background.scripts 而不是 service_worker），留空即使用默认 ID。")
                     .font(.caption).foregroundStyle(.tertiary)
+                Text("出于安全考虑，/ping 不再自动绑定扩展 ID：清单里的白名单必须与扩展实际 ID 完全一致，否则浏览器会拒绝建立原生连接。")
+                    .font(.caption).foregroundStyle(.tertiary)
+                Text("当前已安装清单：\n" + NativeMessagingHostInstaller.installedManifestSummary())
+                    .font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Section("网络代理") {
                 Toggle("使用系统代理（PAC / 自动发现）", isOn: $proxyPACEnabled)

@@ -19,6 +19,9 @@ const excludeExtsListEl = document.getElementById("excludeExtsList");
 const apiTokenEl = document.getElementById("apiToken");
 const saveTokenBtn = document.getElementById("saveToken");
 const tokenStatusEl = document.getElementById("tokenStatus");
+const extensionIdEl = document.getElementById("extensionId");
+const copyExtensionIdBtn = document.getElementById("copyExtensionId");
+const diagTextEl = document.getElementById("diagText");
 
 const statEls = {
   intercepted: document.getElementById("stat-intercepted"),
@@ -72,9 +75,9 @@ async function loadConfig() {
   try {
     const res = await chrome.runtime.sendMessage({ type: "getConfig" });
     if (res?.ok && res.config) {
-      captureAllEl.checked = res.config.captureAll ?? false;
+      captureAllEl.checked = res.config.captureAll ?? true;
       notifyOnCaptureEl.checked = res.config.notifyOnCapture ?? true;
-      minFileSizeEl.value = ((res.config.minFileSize ?? 1048576) / 1048576).toFixed(1);
+      minFileSizeEl.value = ((res.config.minFileSize ?? 0) / 1048576).toFixed(1);
       excludeHosts = res.config.excludeHosts || [];
       excludeExts = res.config.excludeExts || [];
       renderExcludeLists();
@@ -275,6 +278,44 @@ clearBtn.addEventListener("click", async () => {
 chrome.runtime.sendMessage({ type: "ping" }, res => {
   statusEl.textContent = res?.ok ? "● 已连接 Siphon" : "○ Siphon 未运行";
   statusEl.style.color = res?.ok ? "#0f6e56" : "#a32d2d";
+});
+
+// MARK: - connection diagnostics
+
+chrome.runtime.sendMessage({ type: "diagnose" }, res => {
+  if (!res?.ok) {
+    diagTextEl.textContent = "诊断失败：扩展后台未响应，请在扩展页重新加载本扩展。";
+    return;
+  }
+  extensionIdEl.textContent = res.extensionId || "未知";
+  const lines = [
+    res.appReachable ? "● Siphon 本地接口在线" : "○ Siphon 本地接口不可达：请先启动 App",
+    res.nativeOk
+      ? "● 原生网关可用（推荐通道）"
+      : "○ 原生网关不可用：清单未安装，或其中允许的扩展 ID 与上方不一致",
+    res.tokenConfigured
+      ? "● HTTP 回退令牌已配置"
+      : "○ HTTP 回退令牌未配置：若原生网关不可用，请在下方粘贴令牌",
+  ];
+  if (res.nativeError) lines.push("错误详情：" + res.nativeError);
+  diagTextEl.textContent = lines.join("\n");
+});
+
+copyExtensionIdBtn.addEventListener("click", async () => {
+  const id = extensionIdEl.textContent || "";
+  try {
+    await navigator.clipboard.writeText(id);
+  } catch (_) {
+    const range = document.createRange();
+    range.selectNodeContents(extensionIdEl);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    try { document.execCommand("copy"); } catch (_) {}
+    sel.removeAllRanges();
+  }
+  copyExtensionIdBtn.textContent = "已复制";
+  setTimeout(() => { copyExtensionIdBtn.textContent = "复制扩展 ID"; }, 1500);
 });
 
 // MARK: - init

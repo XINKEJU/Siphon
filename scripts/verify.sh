@@ -450,6 +450,21 @@ grep -q "SecRandomCopyBytes" Sources/Siphon/Managers/PreviewServer.swift
 grep -q "constantTimeEqual" Sources/Siphon/Managers/PreviewServer.swift
 [[ -f .github/workflows/verify.yml ]] || { echo "CI workflow missing" >&2; exit 1; }
 grep -q "SIPHON_REQUIRE_ARIA2" .github/workflows/verify.yml
+# Browser capture: onCreated downloads must not be vetoed by an extension
+# allow-list, failed hand-offs must be visible, and the popup must expose its
+# own ID so the native-host whitelist can be configured correctly.
+grep -q "item.totalBytes" Resources/BrowserExtension/background.js
+grep -q "showFailureNotification" Resources/BrowserExtension/background.js
+grep -q 'type: "diagnose"' Resources/BrowserExtension/background.js
+grep -q "chrome.runtime.id" Resources/BrowserExtension/background.js
+grep -q "browser_specific_settings" Resources/BrowserExtension/manifest.json
+grep -q "installedManifestSummary" Sources/Siphon/Views/SettingsIntegrationView.swift
+! grep -q "自动绑定扩展 ID，无需手动填写" Sources/Siphon/Views/SettingsIntegrationView.swift
+python3 -c 'import json; json.load(open("Resources/BrowserExtension/manifest.json"))'
+if command -v node >/dev/null 2>&1; then
+    node --check Resources/BrowserExtension/background.js
+    node --check Resources/BrowserExtension/popup.js
+fi
 # The suite hand-lists swiftc inputs. Report coverage and fail on stale paths:
 # a newly added source that is referenced must be added to the right list, or a
 # step breaks; a path that was deleted must be removed from the list.
