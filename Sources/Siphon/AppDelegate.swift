@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import SwiftUI
 
 /// Handles real application-level lifecycle events. View `onDisappear` is not a
@@ -7,7 +8,11 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var store: DownloadStore?
     /// 进程级单实例锁：两个实例同时写 tasks.json 会互相覆盖。
-    private var instanceLock: NSDistributedLock?
+    /// 用 flock(2) 而不是 NSDistributedLock：后者把锁表示成一个目录，进程被
+    /// SIGKILL 后目录会留下，下一次启动 `try()` 永远失败并被误判成「已在运行」；
+    /// 反过来，为了绕开这种坏锁去删目录，又会把正在运行实例的锁删掉。
+    /// flock 由内核在进程退出时释放，两个方向都不会留残渣。
+    private var instanceLockFD: Int32 = -1
 
     override init() {
         super.init()
@@ -55,37 +60,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let lockPath = dir.appendingPathComponent("app.lock").path
 
-        // 防御：某些异常退出（或 NSDistributedLock 的边界行为）会把锁路径留成一个
-        // 空目录。目录永远无法成为 distributed lock，之后每次启动都会误报
-        // 「Siphon 已在运行」并退出 —— 直接清掉这种坏锁。
+        // 旧版本用 NSDistributedLock，锁就是个目录；升级后第一次启动会撞见它。
+        // 那是死锁残留（旧代码从没能往里写过 PID），改名备份而不是删除，避免
+        // 万一还有旧实例在跑时把别人的锁拆了。
         var lockIsDir: ObjCBool = false
         if FileManager.default.fileExists(atPath: lockPath, isDirectory: &lockIsDir),
            lockIsDir.boolValue {
-            try? FileManager.default.removeItem(atPath: lockPath)
+            let stamp = Int(Date().timeIntervalSince1970)
+            try? FileManager.default.moveItem(atPath: lockPath,
+                                              toPath: "\(lockPath).legacy-\(stamp)")
         }
 
-        // Check for stale lock: read PID from lock file and verify process exists
-        if let existingData = FileManager.default.contents(atPath: lockPath),
-           let pidString = String(data: existingData, encoding: .utf8),
-           let pid = pid_t(pidString.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            // Check if process is still running
-            if kill(pid, 0) != 0 && errno == ESRCH {
-                // Process not running — stale lock, remove it
-                try? FileManager.default.removeItem(atPath: lockPath)
-            } else {
-                // Process is still running — another instance exists
-                let alert = NSAlert()
-                alert.messageText = "Siphon 已在运行"
-                alert.informativeText = "同时运行两个实例会互相覆盖任务列表，请切换到已打开的窗口。"
-                alert.addButton(withTitle: "好")
-                alert.runModal()
-                return false
-            }
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else {
+            // 拿不到锁文件（权限/磁盘异常）时不该把用户挡在门外：任务列表的
+            // 并发写入还有 save() 的原子替换兜底。
+            NSLog("Siphon: cannot open instance lock at %@ (errno %d)", lockPath, errno)
+            return true
         }
-
-        // Try to acquire NSDistributedLock as backup
-        guard let lock = NSDistributedLock(path: lockPath),
-              lock.try() else {
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            close(fd)
             let alert = NSAlert()
             alert.messageText = "Siphon 已在运行"
             alert.informativeText = "同时运行两个实例会互相覆盖任务列表，请切换到已打开的窗口。"
@@ -94,10 +88,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
 
-        // Write our PID so future instances can detect stale locks
-        let pidData = "\(ProcessInfo.processInfo.processIdentifier)\n".data(using: .utf8)
-        try? pidData?.write(to: URL(fileURLWithPath: lockPath))
-        instanceLock = lock
+        // 记下 PID 便于排查；锁的权威性来自 flock，不靠这个数字。
+        let pid = "\(getpid())\n"
+        _ = ftruncate(fd, 0)
+        pid.withCString { _ = write(fd, $0, strlen($0)) }
+        instanceLockFD = fd
         return true
     }
 
@@ -113,8 +108,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         store?.stop()
         TransferStats.shared.flush()
-        instanceLock?.unlock()
-        instanceLock = nil
+        if instanceLockFD >= 0 {
+            // 显式解锁不是必需的（进程退出内核就会释放），但能让紧接着的
+            // 自更新重启立刻拿到锁，不必等本进程完全消失。
+            _ = flock(instanceLockFD, LOCK_UN)
+            close(instanceLockFD)
+            instanceLockFD = -1
+        }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

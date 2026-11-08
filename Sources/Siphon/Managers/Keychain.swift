@@ -17,6 +17,25 @@ public enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Existence check that never decrypts. Keychain ACLs guard secret *data*,
+    /// so asking for nothing back cannot raise the "wants to use secret info"
+    /// prompt even when the item was written by a differently-signed build.
+    /// Callers use this before migrating self-generated secrets out of the
+    /// keychain (reinstall of an ad-hoc-signed app changes its CDHash and
+    /// would otherwise prompt on every launch).
+    public static func hasSecret(account: String) -> Bool {
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: false,
+            kSecReturnRef as String: false,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        return SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess
+    }
+
     @discardableResult
     public static func setSecret(_ value: String, account: String) -> Bool {
         let q: [String: Any] = [

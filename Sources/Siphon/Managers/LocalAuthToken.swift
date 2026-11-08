@@ -19,8 +19,8 @@ public enum LocalAuthToken {
     private static let lock = NSLock()
     private static var cached: String?
 
-    /// Test seam: when non-nil it replaces Keychain-backed storage entirely, so
-    /// CLI test binaries never touch the login keychain.
+    /// Test seam: when non-nil it replaces file-backed storage entirely, so
+    /// CLI test binaries never touch the login keychain or the real support dir.
     nonisolated(unsafe) public static var testingToken: String?
 
     /// GUI end-to-end seam: the restart-verification script launches the app with
@@ -31,18 +31,35 @@ public enum LocalAuthToken {
         ProcessInfo.processInfo.environment["SIPHON_LOCAL_API_TOKEN"]
 
     /// Loads the token, generating and persisting one on first use.
+    ///
+    /// Storage is a 0600 file (via `LocalAuthBootstrap`), not the login
+    /// keychain: an ad-hoc-signed app gets a new CDHash on every rebuild, and
+    /// keychain ACL checks against the old signature raise a modal "wants to
+    /// use secret info" prompt on every launch after reinstalling. The
+    /// keychain remains only for user-configured secrets (webhook, pairing…)
+    /// where a one-time prompt after reinstall is acceptable.
     public static func current() -> String {
         lock.lock(); defer { lock.unlock() }
         if let testingToken { return testingToken }
         if let environmentOverride, !environmentOverride.isEmpty { return environmentOverride }
         if let cached { return cached }
-        if let stored = Keychain.secret(account: account), !stored.isEmpty {
+        // One-time migration away from the keychain. Reading an item the
+        // current binary does not trust (any reinstall of an ad-hoc-signed
+        // build) would raise the modal keychain prompt, so the old value is
+        // deliberately NOT read out — the existence probe asks for no secret
+        // data and therefore cannot prompt. Losing the old token only means
+        // the freshly generated one rotates it, which propagates to the NM
+        // gateway through the bootstrap file automatically.
+        if Keychain.hasSecret(account: account) {
+            Keychain.setSecret("", account: account)
+        }
+        if let stored = LocalAuthBootstrap.read() {
             cached = stored
             return stored
         }
         let fresh = Keychain.randomToken() ?? UUID().uuidString
         cached = fresh
-        Keychain.setSecret(fresh, account: account)
+        LocalAuthBootstrap.publish(fresh)
         return fresh
     }
 
@@ -74,9 +91,6 @@ public enum LocalAuthToken {
         }
         let fresh = Keychain.randomToken() ?? UUID().uuidString
         if testingToken == nil {
-            Keychain.setSecret(fresh, account: account)
-            // Rotation must reach the NM gateway too, or every extension call
-            // starts returning 401 until the app restarts.
             LocalAuthBootstrap.publish(fresh)
         } else {
             testingToken = fresh

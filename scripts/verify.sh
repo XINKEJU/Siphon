@@ -493,6 +493,20 @@ grep -q "暂停所选" Sources/Siphon/SiphonApp.swift
 # must surface as a task error instead of looping forever at "active 0 B".
 grep -q "gotHTTPResponse" Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift
 grep -q "代理不可用" Sources/Siphon/Engines/NativeHTTP/HTTPDownloadEngine.swift
+# Single-instance lock must use flock: NSDistributedLock represents the lock as a
+# directory, so a SIGKILLed instance left behind a "bad lock" that bricked every
+# later launch — and deleting that directory would release a *live* peer's lock.
+grep -q "flock(fd, LOCK_EX | LOCK_NB)" Sources/Siphon/AppDelegate.swift
+! grep -q "NSDistributedLock" Sources/Siphon/AppDelegate.swift
+# Self-generated secrets (REST token, aria2 RPC secret) must live in 0600
+# files, not the keychain: every reinstall of an ad-hoc-signed build changes
+# its CDHash, and the keychain ACL check would raise a modal prompt at launch.
+# Reading migrated keychain items is forbidden — only the data-free existence
+# probe (Keychain.hasSecret) may be used before deletion.
+grep -q "LocalAuthBootstrap.read()" Sources/Siphon/Managers/LocalAuthToken.swift
+grep -q 'LocalAuthBootstrap.read(fileName: fileName)' Sources/Siphon/Engines/Aria2/Aria2Bootstrap.swift
+! grep -q "Keychain.secret" Sources/Siphon/Managers/LocalAuthToken.swift
+! grep -q "Keychain.secret" Sources/Siphon/Engines/Aria2/Aria2Bootstrap.swift
 # A stale `captureAll: false` in extension storage silently disables capture;
 # keep the one-time upgrade repair and the version bump that triggers it.
 grep -q "CAPTURE_MIGRATION_KEY" Resources/BrowserExtension/background.js

@@ -1,5 +1,10 @@
 import Foundation
 import Darwin
+// SwiftPM builds SiphonBridge as a separate module; the CLI regression suite
+// compiles all sources into one module, where the symbols are already visible.
+#if canImport(SiphonBridge)
+import SiphonBridge
+#endif
 
 public enum Aria2Error: Error, LocalizedError {
     case binaryNotFound
@@ -209,19 +214,28 @@ public final class Aria2Bootstrap {
            !injected.isEmpty {
             return injected
         }
-        let account = "aria2-rpc-secret"
-        // Migrate the legacy plaintext UserDefaults blob, then keep the secret
-        // in the Keychain only.
+        // Storage is a 0600 file next to the REST token (LocalAuthBootstrap).
+        // The keychain is deliberately no longer consulted: an ad-hoc-signed
+        // app gets a new CDHash on every rebuild, and the keychain ACL check
+        // against the old signature raised a modal prompt after every
+        // reinstall. Aria2 is launched by this very process with the secret on
+        // its command line, so owner-only file permissions are equivalent.
+        let fileName = "aria2-rpc-secret"
+        // Migrate the legacy plaintext UserDefaults blob, if any.
         let d = UserDefaults.standard
         if let legacy = d.string(forKey: "Siphon.aria2RpcSecret"), !legacy.isEmpty {
-            Keychain.setSecret(legacy, account: account)
             d.removeObject(forKey: "Siphon.aria2RpcSecret")
+            LocalAuthBootstrap.publish(legacy, fileName: fileName)
             return legacy
         }
-        if let s = Keychain.secret(account: account), !s.isEmpty { return s }
+        if Keychain.hasSecret(account: "aria2-rpc-secret") {
+            // Pre-migration leftover: drop it (cannot prompt — no data read).
+            Keychain.setSecret("", account: "aria2-rpc-secret")
+        }
+        if let stored = LocalAuthBootstrap.read(fileName: fileName) { return stored }
         let fresh = Keychain.randomToken()
             ?? UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        Keychain.setSecret(fresh, account: account)
+        LocalAuthBootstrap.publish(fresh, fileName: fileName)
         return fresh
     }
 
