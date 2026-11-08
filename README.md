@@ -297,9 +297,9 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 
 所有全局操作从原来的**底部悬浮命令条**收回到窗口顶部 —— macOS 没有底部工具栏这一惯例：
 
-- **传输控制**：`[恢复全部][全部暂停]` 放在同一个 `ToolbarItemGroup(.primaryAction)`，形成一组
+- **传输控制**：`[恢复全部][全部暂停]` 放在同一个 `ToolbarItemGroup(.primaryAction)`，形成一组；两者用 `bordered` + `tint` 着色区分（恢复 = 绿色、暂停 = 橙色），一眼可辨
 - **主操作**：`[+ 新建下载]` 是唯一 `.borderedProminent` + `tint` 的蓝色胶囊
-- **更多操作**：`Menu` 收纳清理、打开下载目录、重启 aria2 与「显示侧边栏」开关
+- ~~更多操作~~：原 `ellipsis` 菜单（清理 / 打开目录 / 重启 aria2 / 显示侧边栏）已移除 —— 四项功能在设置页、侧边栏、顶栏目录按钮与菜单栏中均有入口，独立按钮无人使用
 - **搜索**：系统 `.searchable`，不再是自绘字段；组间用 `ToolbarSpacer(.fixed, placement: .primaryAction)` 分隔（macOS 26+ API，必须与被分隔项同 placement 才生效）
 - `SiphonCommands` 让每个工具栏动作在菜单栏都有对应项（⌘N、「显示」菜单、「任务」菜单），因为工具栏可被隐藏或自定义
 
@@ -309,7 +309,7 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 
 当前主窗口是简化布局：顶部筛选标签、紧凑任务列表、底部状态栏。**不再**使用三栏 `NavigationSplitView`，也不再依赖系统 `.inspector(isPresented:)`。
 
-「更多操作 → 显示侧边栏」（以及菜单栏「显示 → 显示侧边栏」，⌘⌥I）由 `SiphonApp` 中的 `@AppStorage("Siphon.showInspector")` 驱动，控制面板显隐并跨启动保留，同一绑定下发给 `ContentView` 与 `SiphonCommands`：
+「菜单栏 → 显示 → 显示侧边栏」（⌘⌥I）由 `SiphonApp` 中的 `@AppStorage("Siphon.showInspector")` 驱动，控制面板显隐并跨启动保留，同一绑定下发给 `ContentView` 与 `SiphonCommands`：
 
 - 面板关闭：点击任务通过 `.sheet` 打开 `TaskDetailView`；
 - 面板开启：右侧显示 300 pt 的 `TaskDetailView` 详情列，点击任务只更新选中项、不再叠加 sheet；未选中时显示空状态提示。

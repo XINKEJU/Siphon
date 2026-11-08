@@ -213,6 +213,8 @@ struct ContentView: View {
             } label: {
                 Label("恢复全部", systemImage: "play.fill")
             }
+            .buttonStyle(.bordered)
+            .tint(.green)
             .help("恢复所有已暂停或出错的任务")
             .disabled(!store.tasks.contains { $0.state == .paused || $0.state == .error })
 
@@ -221,6 +223,8 @@ struct ContentView: View {
             } label: {
                 Label("全部暂停", systemImage: "pause.fill")
             }
+            .buttonStyle(.bordered)
+            .tint(.orange)
             .help("暂停所有进行中的任务")
             .disabled(!store.tasks.contains { $0.state == .active })
         }
@@ -238,26 +242,6 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .tint(Color.accentColor)
             .help("添加链接、专用链、网关地址或批量列表 (⌘N)")
-        }
-
-        if #available(macOS 26.0, *) {
-            ToolbarSpacer(.fixed, placement: .primaryAction)
-        }
-
-        ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Button("清理已完成") { store.removeCompleted() }
-                Button("在访达中打开下载目录") {
-                    NSWorkspace.shared.open(store.downloadDirectory)
-                }
-                Divider()
-                Button("重新启动 aria2") { Task { await store.restartAria2() } }
-                Divider()
-                Toggle("显示侧边栏", isOn: $showingInspector)
-            } label: {
-                Label("更多操作", systemImage: "ellipsis.circle")
-            }
-            .help("更多任务操作")
         }
     }
 
