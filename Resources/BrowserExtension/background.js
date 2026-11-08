@@ -119,11 +119,32 @@ const DEFAULTS = {
   interceptInstallers: true,
 };
 
+// Older builds defaulted the size filter to 1 MiB and could persist
+// `captureAll: false` from a popup that read an uninitialised config. That
+// combination silently lets every browser download through, so repair the
+// capture defaults exactly once on upgrade. Explicit user changes made after
+// the migration are preserved.
+const CAPTURE_MIGRATION_KEY = "captureDefaultsV2";
+
 async function getConfig() {
-  const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));
+  const stored = await chrome.storage.local.get(
+    [...Object.keys(DEFAULTS), CAPTURE_MIGRATION_KEY]);
   const config = { ...DEFAULTS };
   for (const [k, v] of Object.entries(stored)) {
+    if (k === CAPTURE_MIGRATION_KEY) continue;
     if (v !== undefined) config[k] = v;
+  }
+  if (!stored[CAPTURE_MIGRATION_KEY]) {
+    const repaired = {
+      captureAll: true,
+      minFileSize: 0,
+      notifyOnCapture: true,
+      [CAPTURE_MIGRATION_KEY]: true,
+    };
+    await chrome.storage.local.set(repaired);
+    config.captureAll = repaired.captureAll;
+    config.minFileSize = repaired.minFileSize;
+    config.notifyOnCapture = repaired.notifyOnCapture;
   }
   return config;
 }
@@ -551,6 +572,9 @@ chrome.runtime.onInstalled.addListener(() => {
     contexts: ["page"],
   });
   loadStats();
+  // Apply the one-time capture-defaults repair immediately on upgrade so the
+  // popup shows the corrected state without waiting for the first download.
+  getConfig();
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -640,4 +664,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
 
 chrome.runtime.onStartup.addListener(() => {
   loadStats();
+  getConfig();
 });
