@@ -44,6 +44,12 @@ struct IntegrationSettingsView: View {
 
     // Local API token
     @State private var apiToken = LocalAuthToken.current()
+    @State private var postProcessStatus = ""
+    @State private var archiveStatus = ""
+    @State private var webhookAllowPrivate = UserDefaults.standard.bool(
+        forKey: WebhookPolicy.allowPrivateKey)
+    @State private var webhookStatus = ""
+    @State private var webhookDeliveryStatus = ""
 
     // Browser extension v2 (native messaging)
     @State private var extensionID = NativeMessagingHostInstaller.extensionID
@@ -132,15 +138,19 @@ struct IntegrationSettingsView: View {
                     }.help("复制令牌")
                     Button {
                         apiToken = LocalAuthToken.rotate()
+                        LocalAuthToken.publishBootstrapFile()
                     } label: {
                         Image(systemName: "arrow.clockwise")
-                    }.help("重新生成令牌（已配置的扩展会通过 /ping 自动获取新令牌，curl 调用需更新）")
+                    }.help("重新生成令牌（本机网关自动同步；HTTP 回退的扩展与 curl 调用需更新）")
                 }
                 Text("所有请求（除 /ping）需带 Authorization: Bearer <令牌>，防止任意网页跨站调用本机接口。")
                     .font(.caption).foregroundStyle(.secondary)
+                Text("令牌不会通过 /ping 下发。原生网关从本机受保护文件读取：\(LocalAuthToken.bootstrapFileURL.path)（目录 0700 / 文件 0600）。仅当扩展使用 HTTP 回退时，才需手动粘贴上方令牌。")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
             }
             Section("浏览器扩展（Chrome / Edge / Brave / Firefox）") {
-                TextField("扩展 ID（留空则自动绑定）", text: $extensionID)
+                TextField("扩展 ID（留空使用 Firefox 默认 ID）", text: $extensionID)
                     .textFieldStyle(.roundedBorder)
                 HStack(spacing: 10) {
                     Button("安装原生网关") {
@@ -332,16 +342,34 @@ struct IntegrationSettingsView: View {
                         .textFieldStyle(.roundedBorder)
                     Button("添加") {
                         let url = webhookURLText.trimmingCharacters(in: .whitespaces)
-                        if URL(string: url)?.scheme != nil {
+                        if WebhookPolicy.isAllowed(url,
+                                allowPrivate: webhookAllowPrivate) != nil {
                             WebhookManager.shared.add(url: url)
                             webhookURLText = ""
+                            webhookStatus = ""
                             reloadWebhooks()
+                        } else {
+                            webhookStatus = "地址被拒绝：仅接受 http/https；默认禁止本机与内网地址（可在下方显式开启）"
                         }
                     }
                     .disabled(!webhookURLText.contains("://"))
                 }
-                Text("任务进入完成 / 出错 / 移除终态时向每个地址 POST JSON；可选签名验证。失败不阻塞下载。")
+                Toggle("允许本机 / 内网 Webhook 地址", isOn: Binding(
+                    get: { webhookAllowPrivate },
+                    set: {
+                        webhookAllowPrivate = $0
+                        UserDefaults.standard.set($0, forKey: WebhookPolicy.allowPrivateKey)
+                    }))
+                Text("任务进入完成 / 出错 / 移除终态时向每个地址 POST JSON；可选签名验证。仅允许 http/https，重定向逐跳复查，任务 URL 中的凭据与预签名参数会被脱敏后发送。失败不阻塞下载，最近一次错误显示在下方。")
                     .font(.caption).foregroundStyle(.tertiary)
+                if !webhookStatus.isEmpty {
+                    Text(webhookStatus).font(.caption).foregroundStyle(.orange)
+                }
+                if !webhookDeliveryStatus.isEmpty {
+                    Text("最近一次投递：\(webhookDeliveryStatus)")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
             Section("RSS 订阅下载") {
                 ForEach(store.feedManager.feeds) { feed in
@@ -514,7 +542,31 @@ struct IntegrationSettingsView: View {
                           prompt: Text("例如：mv \"$SIPHON_DIR\"/* ~/Movies/"))
                     .textFieldStyle(.roundedBorder)
                     .disabled(!postProcessEnabled)
-                Text("可用环境变量：$SIPHON_FILE（文件路径）、$SIPHON_NAME（文件名）、$SIPHON_DIR（解压目录，未解压时为文件所在目录）。失败不阻塞下载。")
+                    .onChange(of: postProcessCommand) { _, newValue in
+                        UserDefaults.standard.set(newValue,
+                            forKey: ArchiveManager.postProcessCommandKey)
+                        postProcessStatus = "命令已修改，需重新确认后才会执行"
+                    }
+                HStack(spacing: 10) {
+                    Button("确认并启用命令") {
+                        UserDefaults.standard.set(postProcessCommand,
+                            forKey: ArchiveManager.postProcessCommandKey)
+                        ArchiveManager.shared.confirmPostProcessCommand(postProcessCommand)
+                        postProcessStatus = "已确认：命令将在下载完成后执行"
+                    }
+                    .disabled(!postProcessEnabled
+                              || postProcessCommand.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Text(postProcessStatus)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("可用环境变量：$SIPHON_FILE（文件路径）、$SIPHON_NAME（文件名）、$SIPHON_DIR（解压目录，未解压时为文件所在目录）。命令以当前用户权限执行，须在此处显式确认；超时 60 秒自动终止，退出码与错误会显示在下方。")
+                    .font(.caption).foregroundStyle(.tertiary)
+                if !archiveStatus.isEmpty {
+                    Text(archiveStatus)
+                        .font(.caption).foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                }
+                Text("归档解压前会校验条目路径（拒绝 ../ 与绝对路径）、符号链接及 2 GiB 展开上限，防止 Zip Slip 与解压炸弹。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section("UPnP / NAT-PMP 端口映射（BT 入站）") {
@@ -618,7 +670,7 @@ struct IntegrationSettingsView: View {
                         pluginItems = PluginHost.shared.pluginInfos
                     }
                 }
-                Text("插件在隔离的 JSContext 中运行，已移除 XMLHttpRequest / fetch / WebSocket / import / require / process 等可触网或触盘 API，且仅允许纯 URL 改写；声明额外权限的插件会被拒绝加载。API v2 支持 priority、mirrors、checksum 与 queue 字段，v1 插件保持兼容。恶意插件最多只能误改一个下载链接。")
+                Text("插件在 JSContext 中运行，已移除常见触网/触盘 API，脚本路径被限制在插件目录内且不超过 1 MiB，声明额外权限的插件会被拒绝加载。注意：这不是进程级沙箱，JavaScriptCore 与 App 同进程、无执行超时，恶意脚本仍可能卡住线程或利用 JSC 漏洞——请只安装可信插件。API v2 支持 priority、mirrors、checksum 与 queue 字段，v1 插件保持兼容。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             Section("远程设备配对（MDXP 设备码）") {
@@ -710,6 +762,11 @@ struct IntegrationSettingsView: View {
             autoExtract = UserDefaults.standard.bool(forKey: ArchiveManager.autoExtractKey)
             postProcessEnabled = UserDefaults.standard.bool(forKey: ArchiveManager.postProcessKey)
             postProcessCommand = UserDefaults.standard.string(forKey: ArchiveManager.postProcessCommandKey) ?? ""
+            postProcessStatus = ArchiveManager.shared.isPostProcessConfirmed
+                ? "已确认：命令将在下载完成后执行" : "尚未确认命令"
+            archiveStatus = ArchiveManager.shared.lastError ?? ""
+            webhookAllowPrivate = UserDefaults.standard.bool(forKey: WebhookPolicy.allowPrivateKey)
+            webhookDeliveryStatus = WebhookManager.shared.lastError ?? ""
             ed2kServersText = ED2KServerList.shared.servers
                 .map { "\($0.host):\($0.port)" }.joined(separator: "\n")
             ed2kKadText = ED2KServerList.shared.kadBootstrap.joined(separator: "\n")

@@ -1,6 +1,9 @@
 import Foundation
 import CryptoKit
 import os
+import OSLog
+
+private let httpEngineLog = Logger(subsystem: "com.xinkeju.siphon.macos", category: "native-http")
 
 /// Native, dependency-free download engine for HTTP/HTTPS/FTP and every URI
 /// front-end (`thunder`, `webdav`, `s3`, `ipfs`, …) that `URINormalizer` rewrites
@@ -98,7 +101,10 @@ public final class HTTPDownloadEngine: DownloadEngine {
             let runner = ExternalRunner(executable: URL(fileURLWithPath: curl),
                                         arguments: args, destination: tmp)
             self.runner = runner
-            do { try runner.start() } catch { return nil }
+            do { try runner.start() } catch {
+                httpEngineLog.error("curl mirror probe failed to launch: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
             let expected = range.upperBound - range.lowerBound
             self.task = Task { [weak runner] in
                 guard let runner else { return false }
@@ -621,7 +627,10 @@ public final class HTTPDownloadEngine: DownloadEngine {
         }
         let handle: FileHandle
         do { handle = try FileHandle(forWritingTo: out) }
-        catch { return .failed(error) }
+        catch {
+            httpEngineLog.error("cannot open segment destination \(out.path, privacy: .private): \(error.localizedDescription, privacy: .public)")
+            return .failed(error)
+        }
         defer { try? handle.close() }
         if canRange && info.total > 0 {
             if (fileSize(out) ?? 0) == 0 {

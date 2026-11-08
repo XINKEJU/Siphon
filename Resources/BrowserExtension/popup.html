@@ -369,6 +369,15 @@
           <button class="btn-secondary" id="addExcludeExt">添加</button>
         </div>
       </div>
+      <div class="section">
+        <p class="section-title">本地接口令牌（仅 HTTP 回退需要）</p>
+        <div class="add-row">
+          <input type="password" id="apiToken" placeholder="从 Siphon 设置 → 集成 复制" autocomplete="off">
+          <button class="btn-secondary" id="saveToken">保存</button>
+        </div>
+        <p class="help">推荐在 Siphon 中「安装原生网关」：令牌由本机 0600 文件自动传递，无需填写。仅当扩展走 HTTP 回退时，才需要把 Siphon 设置里的令牌粘贴到这里。出于安全考虑，/ping 不再下发令牌。</p>
+        <p class="help" id="tokenStatus"></p>
+      </div>
       <div class="btn-row"><button class="btn-primary" id="saveConfig">保存设置</button></div>
     </div>
   </div>

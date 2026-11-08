@@ -2,6 +2,9 @@ import Foundation
 import SwiftUI
 import Combine
 import AppKit
+import OSLog
+
+private let storeLog = Logger(subsystem: "com.xinkeju.siphon.macos", category: "store")
 
 /// Central, main-actor store. Owns the task list, routes each task to the right engine,
 /// and funnels engine callbacks into SwiftUI state.
@@ -104,11 +107,13 @@ public final class DownloadStore: EngineDelegate {
     /// 「启动时自动恢复」is enabled.
     private var interruptedIDs: Set<UUID> = []
 
-    /// Tasks whose finished bytes are being hashed off the main actor, and tasks
-    /// that already failed that check. Aria2/HTTP verify inline; HLS/DASH/curl/
-    /// ssh/mount never see the payload, so the store verifies once on completion.
+    /// Tasks whose finished bytes are being hashed off the main actor, tasks
+    /// that already failed that check, and tasks marked completed without a
+    /// verifiable single file (e.g. multi-file torrents). Only the native
+    /// URLSession engine verifies inline; every other engine is checked here.
     private var checksumVerifying: Set<UUID> = []
     private var checksumFailed: Set<UUID> = []
+    public private(set) var checksumUnverified: Set<UUID> = []
     /// Throttles SSE progress frames to ~1 Hz per task instead of每次轮询.
     private var lastProgressPush: [UUID: Date] = [:]
     private var didStart = false
@@ -225,7 +230,7 @@ public final class DownloadStore: EngineDelegate {
                 dir = categorizedDirectory(for: fileName)
             }
             guard let destination = uniqueDestination(for: fileName, in: dir) else { continue }
-            add(DownloadTask(name: fileName, source: url, destination: destination,
+            add(DownloadTask(name: destination.lastPathComponent, source: url, destination: destination,
                              queueName: feed.effectiveQueueName, options: [:],
                              origin: "rss:\(feed.title)", checksum: nil))
         }
@@ -492,7 +497,7 @@ public final class DownloadStore: EngineDelegate {
             let targetQueue = resolved.queueName.flatMap {
                 queues.queue(named: $0) != nil ? $0 : nil
             } ?? queueName
-            add(DownloadTask(name: fileName, source: resolved.url,
+            add(DownloadTask(name: destination.lastPathComponent, source: resolved.url,
                              destination: destination,
                              queueName: targetQueue,
                              options: opts, origin: "plugin",
@@ -552,7 +557,7 @@ public final class DownloadStore: EngineDelegate {
                     skipped = fileName
                     continue
                 }
-                let task = DownloadTask(name: fileName, source: req.url,
+                let task = DownloadTask(name: destination.lastPathComponent, source: req.url,
                                         destination: destination,
                                         queueName: queueName, options: reqOptions,
                                         origin: req.origin,
@@ -604,7 +609,7 @@ public final class DownloadStore: EngineDelegate {
             fileName = SiteRuleStore.shared.adjustedFileName(fileName, for: src)
             guard let destination = uniqueDestination(for: fileName,
                                                       in: categorizedDirectory(for: fileName)) else { continue }
-            let task = DownloadTask(name: fileName,
+            let task = DownloadTask(name: destination.lastPathComponent,
                                     source: src,
                                     destination: destination,
                                     queueName: queueName, options: opts,
@@ -706,9 +711,17 @@ public final class DownloadStore: EngineDelegate {
     /// the caller drops the task, and `.overwrite` reuses the name when no other
     /// task owns it (the existing file is removed when the task is enqueued).
     private func uniqueDestination(for fileName: String, in dir: URL? = nil) -> URL? {
-        let base = dir ?? downloadDirectory
+        // `name` reaches us from REST `/add`, MCP `add_download`, MDXP, plugins,
+        // yt-dlp titles and RSS entries. None of them is a trusted path. Without
+        // this, `../../…/authorized_keys` plus a `data:` source writes anywhere
+        // the app can reach. Reuse the same sanitizer as Content-Disposition.
+        guard let fileName = ContentDisposition.safeName(fileName) else { return nil }
+        let base = (dir ?? downloadDirectory).standardizedFileURL
+        let path = base.appendingPathComponent(fileName).standardizedFileURL
+        // Belt and braces: even if the sanitizer changes, the final destination
+        // must remain a direct child of the chosen download directory.
+        guard path.deletingLastPathComponent().path == base.path else { return nil }
         let taken = Set(tasks.map { $0.destination.lastPathComponent })
-        let path = base.appendingPathComponent(fileName)
         let existsOnDisk = FileManager.default.fileExists(atPath: path.path)
         if !taken.contains(fileName) {
             switch ConflictPolicy.current {
@@ -824,6 +837,7 @@ public final class DownloadStore: EngineDelegate {
         // Manual resume re-arms a deferred integrity check (and lets the engine
         // report "completed" again instead of being pinned to the old failure).
         checksumFailed.remove(id)
+        checksumUnverified.remove(id)
         checksumVerifying.remove(id)
         tasks[i].state = .pending
         save()
@@ -853,6 +867,7 @@ public final class DownloadStore: EngineDelegate {
         taskSpeedLimits.removeValue(forKey: id)
         checksumVerifying.remove(id)
         checksumFailed.remove(id)
+        checksumUnverified.remove(id)
         PreviewRegistry.shared.unregister(taskID: id)
         boostPausedIDs.remove(id)
         statsLastBytes.removeValue(forKey: id)
@@ -1103,25 +1118,39 @@ public final class DownloadStore: EngineDelegate {
             let spec = tasks[i].checksum ?? ""
             let destination = tasks[i].destination
             Task {
-                let ok = await Task.detached(priority: .utility) { () -> Bool in
+                let outcome: ChecksumPolicy.Outcome = await Task.detached(priority: .utility) {
                     var isDirectory: ObjCBool = false
                     guard FileManager.default.fileExists(atPath: destination.path,
                                                          isDirectory: &isDirectory),
                           !isDirectory.boolValue else {
                         // Multi-file torrents / missing files have no single hash.
-                        return true
+                        // Report "unverifiable" instead of claiming success.
+                        return .unverifiable
                     }
-                    return (try? ChecksumVerifier.verify(fileAt: destination, spec: spec)) ?? false
+                    do {
+                        return try ChecksumVerifier.verify(fileAt: destination, spec: spec)
+                            ? .verified : .mismatched
+                    } catch {
+                        // An unreadable file or an unsupported spec is a failure,
+                        // never a silent pass.
+                        return .mismatched
+                    }
                 }.value
                 checksumVerifying.remove(taskID)
                 // The list may have shifted (insert/remove) while hashing.
                 guard let index = tasks.firstIndex(where: { $0.id == taskID }) else { return }
-                if ok {
+                switch outcome {
+                case .verified:
+                    checksumUnverified.remove(taskID)
                     applyState(index: index, state: .completed, error: nil)
-                } else {
+                case .mismatched:
                     checksumFailed.insert(taskID)
                     applyState(index: index, state: .error,
                                error: NetFailure.checksumMismatch)
+                case .unverifiable:
+                    checksumUnverified.insert(taskID)
+                    tasks[index].errorDescription = "校验和未验证"
+                    applyState(index: index, state: .completed, error: nil)
                 }
             }
             return
@@ -1129,15 +1158,12 @@ public final class DownloadStore: EngineDelegate {
         applyState(index: i, state: state, error: error)
     }
 
-    /// A checksum is only deferred for engines that never hand us the finished
-    /// bytes. Native HTTP already verifies inline; aria2 verifies HTTP/FTP and
-    /// relies on piece hashes for BT/Metalink; eD2K hashes its own protocol.
+    /// Delegates to the pure `ChecksumPolicy` so the coverage rule is unit-tested.
     private func needsPostCompletionChecksum(_ task: DownloadTask) -> Bool {
-        guard let spec = task.checksum, !spec.isEmpty else { return false }
-        switch task.protocol.transport {
-        case .curl, .hls, .dash, .ssh, .mount: return true
-        default: return false
-        }
+        ChecksumPolicy.needsPostCompletionChecksum(
+            isNative: task.protocol.transport == .native,
+            ytdlp: task.ytdlp,
+            checksum: task.checksum)
     }
 
     private func applyState(index i: Int, state: DownloadState, error: Error?) {
@@ -1363,8 +1389,13 @@ public final class DownloadStore: EngineDelegate {
             nativeMessaging?.stop()
             nativeMessaging = nil
             storeMDXPBackend = nil
+            // No listener means no reason to leave a token file behind.
+            LocalAuthToken.unpublishBootstrapFile()
             return
         }
+        // The NM gateway is launched by the browser as a separate process and
+        // cannot inherit in-memory state, so publish the token out of band.
+        LocalAuthToken.publishBootstrapFile()
         // The loopback server is shared by browser capture and MDXP, so it is
         // created once when either feature turns on and kept alive while either
         // remains enabled.
@@ -1377,8 +1408,12 @@ public final class DownloadStore: EngineDelegate {
                               mirrors: mirrors, priority: 1)
                 }
             }, api: { [weak self] method, path, body in
-                self?.handleRESTAPI(method: method, path: path, body: body)
-                    ?? Data(#"{"ok":false}"#.utf8)
+                // This closure runs on the server's private queue. The store is
+                // @MainActor @Observable, so hop before touching any task state.
+                guard let self else { return Data(#"{"ok":false}"#.utf8) }
+                return runOnMainActor {
+                    self.handleRESTAPI(method: method, path: path, body: body)
+                } ?? Data(#"{"ok":false,"error":"main actor timeout"}"#.utf8)
             })
             nativeMessaging = server
         }
@@ -1419,7 +1454,11 @@ public final class DownloadStore: EngineDelegate {
     }
 
     /// Tool handlers bound to the store (FluxDown 12-tool MCP model).
+    /// Tool handlers bound to the store. Every store access hops to the main
+    /// actor: `MCPServer.process` runs on its own `DispatchQueue`, and reading
+    /// `tasks` / calling `pause` there used to race with UI mutations.
     private func mcpHandlers() -> [String: MCPServer.ToolHandler] {
+        let timeoutMessage = "error: main actor timeout"
         return [
             "add_download": { [weak self] args in
                 guard let self, let url = args["url"] as? String, !url.isEmpty else {
@@ -1427,33 +1466,32 @@ public final class DownloadStore: EngineDelegate {
                 }
                 let name = args["name"] as? String
                 let mirrors = args["mirrors"] as? [String] ?? []
-                Task { @MainActor in
+                return runOnMainActor {
                     self.add(urlString: url, name: name, mirrors: mirrors)
-                }
-                return "ok: enqueued \(url)"
+                    return "ok: enqueued \(url)"
+                } ?? timeoutMessage
             },
             "list_tasks": { [weak self] _ in
                 guard let self else { return "error: store unavailable" }
-                let lines = self.tasks.map {
-                    "\($0.id.uuidString) [\($0.state.rawValue)] \($0.name) " +
-                    "(\($0.progress.downloadedBytes)/\($0.progress.totalBytes))"
-                }
-                return lines.isEmpty ? "no tasks" : lines.joined(separator: "\n")
+                return runOnMainActor {
+                    let lines = self.tasks.map {
+                        "\($0.id.uuidString) [\($0.state.rawValue)] \($0.name) " +
+                        "(\($0.progress.downloadedBytes)/\($0.progress.totalBytes))"
+                    }
+                    return lines.isEmpty ? "no tasks" : lines.joined(separator: "\n")
+                } ?? timeoutMessage
             },
             "pause_task": { [weak self] args in
                 guard let self, let id = Self.taskID(from: args) else { return "error: missing id" }
-                self.pause(id)
-                return "ok"
+                return runOnMainActor { self.pause(id); return "ok" } ?? timeoutMessage
             },
             "resume_task": { [weak self] args in
                 guard let self, let id = Self.taskID(from: args) else { return "error: missing id" }
-                self.resume(id)
-                return "ok"
+                return runOnMainActor { self.resume(id); return "ok" } ?? timeoutMessage
             },
             "remove_task": { [weak self] args in
                 guard let self, let id = Self.taskID(from: args) else { return "error: missing id" }
-                self.remove(id)
-                return "ok"
+                return runOnMainActor { self.remove(id); return "ok" } ?? timeoutMessage
             },
         ]
     }
@@ -1608,10 +1646,20 @@ public final class DownloadStore: EngineDelegate {
 
     private func save() {
         let codable = tasks.map { TaskRecord($0, limit: taskSpeedLimits[$0.id]) }
-        guard let d = try? JSONEncoder().encode(codable) else { return }
+        let d: Data
+        do {
+            d = try JSONEncoder().encode(codable)
+        } catch {
+            storeLog.error("task list encoding failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
         // 覆盖前先把上一份留作备份：写失败或文件损坏时还能回滚。
         if let old = try? Data(contentsOf: tasksFileURL) {
-            try? old.write(to: tasksBackupURL, options: .atomic)
+            do {
+                try old.write(to: tasksBackupURL, options: .atomic)
+            } catch {
+                storeLog.error("task list backup failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
         do {
             try d.write(to: tasksFileURL, options: .atomic)
@@ -1629,7 +1677,11 @@ public final class DownloadStore: EngineDelegate {
                   let decoded = try? JSONDecoder().decode([TaskRecord].self, from: d) {
             // 主文件损坏时用备份恢复，并立刻覆盖主文件，避免下次保存把坏文件再备份一次。
             records = decoded
-            try? d.write(to: tasksFileURL, options: .atomic)
+            do {
+                try d.write(to: tasksFileURL, options: .atomic)
+            } catch {
+                storeLog.error("restoring tasks.json from backup failed: \(error.localizedDescription, privacy: .public)")
+            }
         } else if let d = UserDefaults.standard.data(forKey: defaultsKey),
                   let decoded = try? JSONDecoder().decode([TaskRecord].self, from: d) {
             // One-time migration from the old UserDefaults blob.
@@ -1732,7 +1784,9 @@ private struct TaskRecord: Codable {
 }
 
 /// Bridges MDXP JSON-RPC calls back to the main-actor store. The server handler
-/// runs on its own queue, so every access hops to the main thread synchronously.
+/// runs on its own queue, so every access hops to the main thread. Use the
+/// bounded `runOnMainActor` bridge rather than `DispatchQueue.main.sync`, which
+/// can deadlock when the main thread is already waiting on the server queue.
 private final class StoreMDXPBackend: MDXPBackend {
     private weak var store: DownloadStore?
 
@@ -1740,12 +1794,9 @@ private final class StoreMDXPBackend: MDXPBackend {
         self.store = store
     }
 
-    private func onMain<T>(_ body: @MainActor (DownloadStore) -> T) -> T? {
+    private func onMain<T>(_ body: @escaping @Sendable @MainActor (DownloadStore) -> T) -> T? {
         guard let store else { return nil }
-        if Thread.isMainThread {
-            return MainActor.assumeIsolated { body(store) }
-        }
-        return DispatchQueue.main.sync { MainActor.assumeIsolated { body(store) } }
+        return runOnMainActor { body(store) }
     }
 
     private static func payload(_ t: DownloadTask) -> [String: Any] {

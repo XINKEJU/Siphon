@@ -1,0 +1,53 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install aria2 (required for the RPC end-to-end step)
+        run: brew install aria2
+
+      - name: Toolchain
+        run: |
+          swift --version
+          xcrun --show-sdk-version
+
+      # `ToolbarSpacer` / `.glassEffect` are macOS 26 SDK symbols guarded by
+      # `if #available`. An older SDK cannot compile them even with the guard,
+      # so fail early with an actionable message rather than a flood of errors.
+      - name: Require macOS 26+ SDK
+        run: |
+          sdk="$(xcrun --show-sdk-version)"
+          major="${sdk%%.*}"
+          if [ "$major" -lt 26 ]; then
+            echo "::error::Siphon needs the macOS 26+ SDK (got $sdk); pin a newer runner image."
+            exit 1
+          fi
+
+      - name: Build (warnings are errors for this project)
+        run: |
+          set -o pipefail
+          swift build 2>&1 | tee /tmp/swift-build.log
+
+      # verify.sh is invoked *without* a pipe: its exit status must reach CI.
+      - name: Full regression suite
+        env:
+          SIPHON_REQUIRE_ARIA2: "1"
+        run: ./scripts/verify.sh
+
+      - name: Check for unexpected warnings
+        run: |
+          if grep -q "warning:" /tmp/swift-build.log; then
+            echo "::error::swift build emitted warnings"
+            grep "warning:" /tmp/swift-build.log
+            exit 1
+          fi

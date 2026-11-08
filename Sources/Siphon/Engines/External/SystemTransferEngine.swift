@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Bridges SSH-family and macOS network-filesystem protocols using tools Apple
 /// already ships: `/usr/bin/scp`, `/usr/bin/rsync`, `/sbin/mount_nfs`,
@@ -19,6 +20,9 @@ public final class SystemTransferEngine: DownloadEngine {
     private var runners: [UUID: ExternalRunner] = [:]
     private var tasks: [UUID: DownloadTask] = [:]
     private var limit: Int64?
+
+    private static let logger = Logger(subsystem: "com.xinkeju.siphon.macos",
+                                       category: "system-transfer")
 
     public init() {}
     public func canHandle(_ p: DownloadProtocol) -> Bool { supportedProtocols.contains(p) }
@@ -152,9 +156,17 @@ public final class SystemTransferEngine: DownloadEngine {
             try? fm.removeItem(at: task.destination)
             try fm.copyItem(at: source, to: task.destination)
             try? await unmount(mountPoint)
-            let attrs = try? fm.attributesOfItem(atPath: task.destination.path)
-            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-            var p = DownloadProgress(); p.totalBytes = size; p.downloadedBytes = size
+            let expected = ((try? fm.attributesOfItem(atPath: source.path))?[.size]
+                as? NSNumber)?.int64Value
+            let evidence = CompletionSizePolicy.evidence(
+                at: task.destination, expected: expected, allowsEmpty: expected == 0)
+            if let reason = CompletionSizePolicy.failure(evidence) {
+                Self.logger.error("NFS copy completion check failed: \(reason, privacy: .public)")
+                throw ExternalRunnerError.transferFailed(reason)
+            }
+            var p = DownloadProgress()
+            p.totalBytes = evidence.actualBytes
+            p.downloadedBytes = evidence.actualBytes
             await delegate?.engineDidUpdate(taskID: task.id, progress: p)
             await delegate?.engineDidChangeState(taskID: task.id, state: .completed, error: nil)
         } catch {
@@ -186,9 +198,19 @@ public final class SystemTransferEngine: DownloadEngine {
                     outcome.stderr.isEmpty ? "exit=\(outcome.exitCode)" : outcome.stderr))
             return
         }
-        let attrs = try? FileManager.default.attributesOfItem(atPath: task.destination.path)
-        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-        var p = DownloadProgress(); p.totalBytes = size; p.downloadedBytes = size
+        // scp/rsync run quiet (`-q`), so there is no independent byte count.
+        // At minimum require a real, non-empty regular file: an exit code of 0
+        // with nothing written used to be reported as a successful download.
+        let evidence = CompletionSizePolicy.evidence(at: task.destination)
+        if let reason = CompletionSizePolicy.failure(evidence) {
+            Self.logger.error("scp/rsync completion check failed: \(reason, privacy: .public)")
+            delegate?.engineDidChangeState(taskID: task.id, state: .error,
+                error: ExternalRunnerError.transferFailed(reason))
+            return
+        }
+        var p = DownloadProgress()
+        p.totalBytes = evidence.actualBytes
+        p.downloadedBytes = evidence.actualBytes
         delegate?.engineDidUpdate(taskID: task.id, progress: p)
         delegate?.engineDidChangeState(taskID: task.id, state: .completed, error: nil)
     }

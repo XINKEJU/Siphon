@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Bridges protocols the bundled aria2 cannot speak but the macOS system libcurl
 /// can: FTPS, SMB/SMBS, TFTP, Gopher, RTSP, DICT, IMAP/POP3/SMTP/LDAP (URL fetch),
@@ -16,6 +17,9 @@ public final class CurlEngine: DownloadEngine {
     private var tasks: [UUID: DownloadTask] = [:]
     private var limit: Int64?
     private var perTaskLimit: [UUID: Int64] = [:]
+
+    private static let logger = Logger(subsystem: "com.xinkeju.siphon.macos",
+                                       category: "curl-engine")
 
     public init() {}
     public func canHandle(_ p: DownloadProtocol) -> Bool { supportedProtocols.contains(p) }
@@ -84,9 +88,17 @@ public final class CurlEngine: DownloadEngine {
             "--no-progress-meter", "--output", task.destination.path,
             "--write-out", "%{size_download}"
         ]
-        if resume || (fm.fileExists(atPath: task.destination.path)) {
+        let willResume = resume || fm.fileExists(atPath: task.destination.path)
+        if willResume {
             args += ["--continue-at", "-"]
         }
+        // curl's `%{size_download}` counts only bytes received in this run.
+        // With --continue-at those are appended to the existing file, so the
+        // authoritative expected size is (pre-run size + this run's bytes).
+        let startBytes: Int64 = willResume
+            ? (((try? fm.attributesOfItem(atPath: task.destination.path))?[.size]
+                as? NSNumber)?.int64Value ?? 0)
+            : 0
         if let eff = effectiveLimit(for: task.id), eff > 0 {
             args += ["--limit-rate", String(eff)]
         }
@@ -125,13 +137,14 @@ public final class CurlEngine: DownloadEngine {
         Task { [weak self] in
             guard let self else { return }
             let outcome = await runner.wait()
-            await self.finish(task: task, runner: runner, outcome: outcome)
+            await self.finish(task: task, runner: runner, outcome: outcome,
+                              startBytes: startBytes)
         }
     }
 
     @MainActor
     private func finish(task: DownloadTask, runner: ExternalRunner,
-                        outcome: ExternalRunner.Outcome) {
+                        outcome: ExternalRunner.Outcome, startBytes: Int64) {
         // A relaunch (speed-limit change / resume) replaces runners[id]; a
         // stale finish from the old runner must not remove the new one or
         // report a state the new runner contradicts.
@@ -147,11 +160,22 @@ public final class CurlEngine: DownloadEngine {
                                            error: ExternalRunnerError.transferFailed(msg))
             return
         }
-        let attrs = try? FileManager.default.attributesOfItem(atPath: task.destination.path)
-        let size = Int64(outcome.stdout) ?? (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let reported = Int64(outcome.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+        let expected = reported.map { startBytes + $0 }
+        let evidence = CompletionSizePolicy.evidence(
+            at: task.destination, reported: reported, expected: expected,
+            // An HTTP 200 with Content-Length: 0 is a legitimate empty file
+            // when curl reports zero bytes received.
+            allowsEmpty: true)
+        if let reason = CompletionSizePolicy.failure(evidence) {
+            Self.logger.error("completion size check failed for \(task.name, privacy: .private): \(reason, privacy: .public)")
+            delegate?.engineDidChangeState(taskID: task.id, state: .error,
+                error: ExternalRunnerError.transferFailed(reason))
+            return
+        }
         var p = DownloadProgress()
-        p.totalBytes = size
-        p.downloadedBytes = size
+        p.totalBytes = evidence.actualBytes
+        p.downloadedBytes = evidence.actualBytes
         delegate?.engineDidUpdate(taskID: task.id, progress: p)
         delegate?.engineDidChangeState(taskID: task.id, state: .completed, error: nil)
     }

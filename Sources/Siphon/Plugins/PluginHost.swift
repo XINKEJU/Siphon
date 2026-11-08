@@ -1,5 +1,6 @@
 import Foundation
 import JavaScriptCore
+import OSLog
 
 /// JavaScript plugin system (ABD's app.js plugins, minimal viable shape).
 ///
@@ -16,10 +17,15 @@ import JavaScriptCore
 ///
 /// When a submitted URL matches a plugin's `match` wildcard, the plugin's
 /// `resolve` function may rewrite it into a direct download URL (rename it,
-/// attach headers, add mirrors / checksum / queue). Plugins run in an isolated
-/// `JSContext` with **no** network or filesystem access — they are pure URL
-/// rewriters, which keeps the trust model simple: a malicious plugin can at
-/// worst misdirect one download.
+/// attach headers, add mirrors / checksum / queue). Plugins run in a
+/// `JSContext` whose obvious network/filesystem globals are removed and whose
+/// manifest may not request extra permissions.
+///
+/// **This is defence in depth, not a process sandbox.** JavaScriptCore runs
+/// in-process, with no execution timeout or memory cap: a deliberately hostile
+/// script can still hang the calling thread or exploit a JSC bug with the app's
+/// full privileges. Only install plugins you trust; the Settings page states
+/// the same. A future process-isolated plugin host would remove that caveat.
 ///
 /// API v2 additions are all optional, so v1 plugins keep working unchanged:
 /// `apiVersion` (default 1, values > 2 are refused), `priority` (higher runs
@@ -153,13 +159,26 @@ public final class PluginHost: @unchecked Sendable {
                                                  error: msg))
                     continue
                 }
-                guard let scriptURL = entry.appendingPathComponent(manifest.script)
-                        .existsAsFile else {
+                // `manifest.script` comes from a package on disk. Force it to a
+                // single component inside the plugin directory (no `../../`),
+                // and cap the source size before handing it to JavaScriptCore.
+                let scriptName = (manifest.script as NSString).lastPathComponent
+                let pluginRoot = entry.standardizedFileURL.path
+                let candidate = entry.appendingPathComponent(scriptName).standardizedFileURL
+                guard !scriptName.isEmpty, scriptName != ".", scriptName != "..",
+                      candidate.path.hasPrefix(pluginRoot + "/"),
+                      let scriptURL = candidate.existsAsFile,
+                      let attrs = try? FileManager.default.attributesOfItem(
+                          atPath: scriptURL.path),
+                      let size = attrs[.size] as? NSNumber,
+                      size.uint64Value <= 1 << 20 else {
+                    let msg = "脚本路径越界、缺失或超过 1 MiB：\(manifest.script)"
+                    Self.log("插件 \"\(manifest.name)\" \(msg)，已拒绝加载")
                     foundInfos.append(PluginInfo(name: manifest.name, version: manifest.version,
                                                  apiVersion: manifest.apiVersion,
                                                  priority: manifest.priority,
                                                  matches: manifest.match, enabled: enabled,
-                                                 error: "缺少脚本 \(manifest.script)"))
+                                                 error: msg))
                     continue
                 }
                 guard let ctx = JSContext() else { continue }
@@ -205,10 +224,11 @@ public final class PluginHost: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Remove every JS global that could reach the network or the filesystem, and
-    /// install an exception handler so a plugin error is logged rather than crashing
-    /// the host. The VM is otherwise standard (pure JS, no bridges), so a malicious
-    /// plugin can at worst rewrite one download URL — never touch the disk or network.
+    /// Remove the obvious JS globals that could reach the network or filesystem
+    /// and install an exception handler. This is a denylist of names JSC does not
+    /// normally expose anyway — useful as defence in depth, **not** a security
+    /// boundary (see the class documentation). JS exceptions are logged in both
+    /// debug and release builds so a broken plugin is diagnosable.
     private static func harden(_ ctx: JSContext) {
         let dangerous = ["XMLHttpRequest", "fetch", "WebSocket", "importScripts",
                          "import", "require", "process", "Worker", "EventSource",
@@ -221,10 +241,11 @@ public final class PluginHost: @unchecked Sendable {
         }
     }
 
+    private static let logger = Logger(subsystem: "com.xinkeju.siphon.macos",
+                                       category: "plugins")
+
     private static func log(_ message: String) {
-        #if DEBUG
-        print("[PluginHost] \(message)")
-        #endif
+        logger.error("\(message, privacy: .public)")
     }
 
     public var count: Int {

@@ -22,6 +22,10 @@ struct SiphonApp: App {
     // toolbar operate on exactly the same values (HIG: every toolbar command
     // must also be available from the menu bar).
     @State private var showingAdd = false
+    /// Persisted so the detail column reopens in the same state on next launch.
+    /// This used to be passed as `.constant(false)`, which made the "显示侧边栏"
+    /// toggle in the More menu a no-op.
+    @AppStorage("Siphon.showInspector") private var showingInspector = false
 
     var body: some Scene {
         // Single-window scene: opening a magnet:/ed2k: URL (or re-activating
@@ -30,7 +34,7 @@ struct SiphonApp: App {
         // HIG: don't title a window with the app name — the current library
         // selection supplies the real title via .navigationTitle.
         Window("下载", id: "main-window") {
-            ContentView(showingAdd: $showingAdd, showingInspector: .constant(false))
+            ContentView(showingAdd: $showingAdd, showingInspector: $showingInspector)
                 .environment(store)
                 .frame(minWidth: 700, minHeight: 450)
                 .onAppear {
@@ -40,7 +44,8 @@ struct SiphonApp: App {
         }
         .windowResizability(.contentSize)
         .commands {
-            SiphonCommands(showingAdd: $showingAdd, store: store)
+            SiphonCommands(showingAdd: $showingAdd,
+                           showingInspector: $showingInspector, store: store)
         }
 
         Settings {
@@ -54,12 +59,17 @@ struct SiphonApp: App {
 /// people customise the toolbar, so no command may live only in the toolbar.
 struct SiphonCommands: Commands {
     @Binding var showingAdd: Bool
+    @Binding var showingInspector: Bool
     var store: DownloadStore
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("新建下载…") { showingAdd = true }
                 .keyboardShortcut("n", modifiers: .command)
+        }
+        CommandMenu("显示") {
+            Toggle("显示侧边栏", isOn: $showingInspector)
+                .keyboardShortcut("i", modifiers: [.command, .option])
         }
         CommandMenu("任务") {
             Button("恢复全部") {

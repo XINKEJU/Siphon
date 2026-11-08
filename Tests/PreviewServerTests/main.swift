@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // Streaming preview server: Range handling, token/host guards, and the live
 // watermark that lets a player read bytes appended after the request opened.
@@ -105,7 +106,56 @@ let beyond = request(makeURL(token: token), range: "bytes=9000-")
 check(beyond.status == 416, "range beyond total → 416")
 check(beyond.headers["content-range"] == "bytes */8192", "416 advertises total size")
 
-// 6. Pure parser checks.
+// 6. Host guard, CSPRNG token and constant-time comparison.
+check(PreviewServer.isLoopbackHost(["GET /x HTTP/1.1", "Host: 127.0.0.1:18768"]),
+      "loopback Host accepted")
+check(PreviewServer.isLoopbackHost(["GET /x HTTP/1.1", "Host: [::1]:18768"]),
+      "bracketed IPv6 Host accepted")
+check(PreviewServer.hostName(from: "[::1]:17803") == "::1", "IPv6 brackets stripped")
+check(PreviewServer.hostName(from: "127.0.0.1:17803") == "127.0.0.1", "port stripped")
+check(!PreviewServer.isLoopbackHost(["GET /x HTTP/1.1"]),
+      "missing Host header is rejected")
+check(!PreviewServer.isLoopbackHost(["GET /x HTTP/1.1", "Host: evil.example"]),
+      "foreign Host is rejected")
+
+let generated = PreviewServer.randomToken()
+check(generated.count == 64, "preview token is 64 hex chars (256-bit CSPRNG)")
+check(generated.allSatisfy { ("0"..."9").contains(String($0)) || ("a"..."f").contains(String($0)) },
+      "preview token is lowercase hex")
+check(generated != PreviewServer.randomToken(), "two preview tokens differ")
+check(PreviewServer.constantTimeEqual(generated, generated), "constant-time equal matches")
+check(!PreviewServer.constantTimeEqual(generated, String(generated.dropLast()) + "0"),
+      "constant-time equal rejects different length")
+
+// A raw socket can omit Host entirely; that used to bypass the rebinding guard.
+func rawStatus(_ request: String) -> Int {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { return 0 }
+    defer { close(fd) }
+    var timeout = timeval(tv_sec: 3, tv_usec: 0)
+    _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                   socklen_t(MemoryLayout<timeval>.size))
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = port.bigEndian
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let connected = withUnsafePointer(to: &addr) { p in
+        p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard connected == 0 else { return 0 }
+    _ = request.withCString { Darwin.write(fd, $0, strlen($0)) }
+    var buf = [CChar](repeating: 0, count: 256)
+    let n = Darwin.read(fd, &buf, buf.count - 1)
+    guard n > 0 else { return 0 }
+    let statusLine = String(cString: buf).components(separatedBy: " ").dropFirst().first ?? ""
+    return Int(statusLine) ?? 0
+}
+check(rawStatus("GET /preview/\(taskID.uuidString)?token=\(token) HTTP/1.1\r\n\r\n") == 403,
+      "raw request without Host → 403")
+
+// 7. Pure parser checks.
 let full = PreviewServer.parseRange(nil, total: 100)
 check(!full.invalid && full.start == 0 && full.end == 99, "no Range → whole file")
 let suffix = PreviewServer.parseRange("bytes=-20", total: 100)

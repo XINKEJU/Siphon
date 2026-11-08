@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let cookieLog = Logger(subsystem: "com.xinkeju.siphon.macos", category: "cookies")
 
 /// Host-scoped cookie cache fed by the browser extension.
 ///
@@ -193,7 +196,11 @@ public final class CookieJar: @unchecked Sendable {
         let snapshot = cookies
         lock.unlock()
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        do {
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            cookieLog.error("cookie jar persistence failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
 

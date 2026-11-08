@@ -2,7 +2,8 @@ import SwiftUI
 import AppKit
 
 /// NDM-style simplified main window: filter tabs at top, compact task list,
-/// bottom status bar. Task details open in a sheet instead of an inspector.
+/// bottom status bar. Task details open in a sheet, or in an optional right
+/// detail column when "显示侧边栏" is on (never both at once).
 struct ContentView: View {
     @Environment(DownloadStore.self) private var store
     @Binding var showingAdd: Bool
@@ -12,12 +13,23 @@ struct ContentView: View {
     @State private var showingDetail = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            filterTabs
-            Divider()
-            taskList
-            Divider()
-            statusBar
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                filterTabs
+                Divider()
+                taskList
+                Divider()
+                statusBar
+            }
+            .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+
+            if showingInspector {
+                Divider()
+                inspectorPanel
+                    .frame(width: 300)
+                    .frame(maxHeight: .infinity)
+                    .background(.background)
+            }
         }
         .searchable(text: $searchText, prompt: "搜索任务")
         .toolbar { toolbarContent }
@@ -30,6 +42,11 @@ struct ContentView: View {
             }
         }
         .task { await store.start() }
+        .onChange(of: showingInspector) { _, visible in
+            // A sheet left over from the sheet-only layout must not stack on
+            // top of the new detail column.
+            if visible { showingDetail = false }
+        }
         .alert("无法添加任务", isPresented: Binding(
             get: { store.lastError != nil },
             set: { if !$0 { store.lastError = nil } }
@@ -75,8 +92,33 @@ struct ContentView: View {
     private var taskList: some View {
         TaskListView(filter: filter, searchText: searchText, onSelect: { task in
             store.selectedTaskID = task.id
-            showingDetail = true
+            // With the detail column visible the selection is already shown;
+            // opening a second copy as a sheet would be redundant.
+            if !showingInspector { showingDetail = true }
         })
+    }
+
+    // MARK: - Detail column
+
+    @ViewBuilder
+    private var inspectorPanel: some View {
+        if let task = selectedTask {
+            TaskDetailView(task: task)
+        } else {
+            VStack(spacing: 10) {
+                Image(systemName: "sidebar.right")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.tertiary)
+                Text("未选择任务")
+                    .font(.headline)
+                Text("点击左侧列表中的任务，详情会显示在这里。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     // MARK: - Status bar

@@ -1,4 +1,9 @@
 import Foundation
+// SwiftPM builds SiphonBridge as a separate module; the CLI regression suite
+// compiles all sources into one module, where the symbols are already visible.
+#if canImport(SiphonBridge)
+import SiphonBridge
+#endif
 
 /// Bearer token guarding the loopback control surfaces (REST :17801, MCP :17802).
 ///
@@ -41,6 +46,24 @@ public enum LocalAuthToken {
         return fresh
     }
 
+    /// Ensure the out-of-band bootstrap file exists (e.g. when the control
+    /// interface is enabled, or the user deleted the file). Never sends the
+    /// token over the loopback socket.
+    @discardableResult
+    public static func publishBootstrapFile() -> URL? {
+        guard testingToken == nil, environmentOverride?.isEmpty ?? true else { return nil }
+        return LocalAuthBootstrap.publish(current())
+    }
+
+    /// Remove the bootstrap file when the control interface is switched off.
+    public static func unpublishBootstrapFile() {
+        guard testingToken == nil else { return }
+        LocalAuthBootstrap.remove()
+    }
+
+    /// Shown in Settings so users can locate the file if the gateway cannot.
+    public static var bootstrapFileURL: URL { LocalAuthBootstrap.fileURL() }
+
     /// Replaces the token (Settings "rotate"). Callers must re-read `current()`.
     @discardableResult
     public static func rotate() -> String {
@@ -52,6 +75,9 @@ public enum LocalAuthToken {
         let fresh = Keychain.randomToken() ?? UUID().uuidString
         if testingToken == nil {
             Keychain.setSecret(fresh, account: account)
+            // Rotation must reach the NM gateway too, or every extension call
+            // starts returning 401 until the app restarts.
+            LocalAuthBootstrap.publish(fresh)
         } else {
             testingToken = fresh
         }

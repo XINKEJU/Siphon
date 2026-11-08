@@ -16,6 +16,9 @@ const excludeHostsListEl = document.getElementById("excludeHostsList");
 const newExcludeExtEl = document.getElementById("newExcludeExt");
 const addExcludeExtBtn = document.getElementById("addExcludeExt");
 const excludeExtsListEl = document.getElementById("excludeExtsList");
+const apiTokenEl = document.getElementById("apiToken");
+const saveTokenBtn = document.getElementById("saveToken");
+const tokenStatusEl = document.getElementById("tokenStatus");
 
 const statEls = {
   intercepted: document.getElementById("stat-intercepted"),
@@ -275,6 +278,19 @@ chrome.runtime.sendMessage({ type: "ping" }, res => {
 });
 
 // MARK: - init
+
+// The token is no longer discoverable over the loopback API. Load whatever the
+// user previously pasted and let them replace it after a rotation in the app.
+chrome.runtime.sendMessage({ type: "getToken" }, res => {
+  if (res?.ok) apiTokenEl.value = res.token || "";
+});
+
+saveTokenBtn.addEventListener("click", () => {
+  chrome.runtime.sendMessage({ type: "setToken", token: apiTokenEl.value }, res => {
+    tokenStatusEl.textContent = res?.ok ? "已保存令牌" : "保存失败，请重试";
+    tokenStatusEl.style.color = res?.ok ? "#0f6e56" : "#a32d2d";
+  });
+});
 
 loadConfig();
 loadStats();

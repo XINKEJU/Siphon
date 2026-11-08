@@ -132,19 +132,67 @@ echo "    Frameworks: $(ls -1 "$FRAMEWORKS" | tr '\n' ' ')"
 # re-sign helper executables in Resources/ or dylibs in Frameworks/, and an
 # install_name_tool-modified binary with a stale signature is SIGKILLed (137)
 # by the kernel at launch.
-echo "==> Signing nested binaries"
+# --- Code signing ----------------------------------------------------------
+# Local builds stay adhoc (no Developer ID required). For distribution:
+#   SIPHON_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
+#   SIPHON_SANDBOX=1 ./scripts/build-app.sh
+#   ./scripts/make-dmg.sh
+#   NOTARY_PROFILE=AC_PASSWORD ./scripts/notarize.sh
+# Hardened Runtime and entitlements are only applied to non-adhoc builds, so
+# the default path keeps the existing helper/dylib behaviour intact.
+SIGN_IDENTITY="${SIPHON_SIGN_IDENTITY:--}"
+ENABLE_SANDBOX="${SIPHON_SANDBOX:-0}"
+SIGN_OPTS=()
+APP_ENTITLEMENTS=()
+HELPER_ENTITLEMENTS=()
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+    SIGN_OPTS=(--options runtime --timestamp)
+    if [[ "$ENABLE_SANDBOX" == "1" ]]; then
+        APP_ENTITLEMENTS=(--entitlements "$ROOT/Resources/Siphon.entitlements")
+        HELPER_ENTITLEMENTS=(--entitlements "$ROOT/Resources/SiphonHelper.entitlements")
+    fi
+fi
+
+echo "==> Signing nested binaries (identity: $SIGN_IDENTITY)"
 for img in "$CONTENTS/Resources/aria2c" \
            "$CONTENTS/Resources/SiphonNM" \
            "$FRAMEWORKS"/*.dylib; do
-    [[ -f "$img" ]] && codesign --force --sign - "$img" 2>/dev/null || true
+    [[ -f "$img" ]] || continue
+    # macOS ships bash 3.2: with `set -u`, expanding an empty array via
+    # "${ARR[@]}" raises "unbound variable". The +"..." form expands to zero
+    # arguments instead. Keep this pattern for every optional flag array.
+    if ! codesign --force --sign "$SIGN_IDENTITY" \
+            ${SIGN_OPTS[@]+"${SIGN_OPTS[@]}"} \
+            ${HELPER_ENTITLEMENTS[@]+"${HELPER_ENTITLEMENTS[@]}"} \
+            "$img" >/dev/null 2>&1; then
+        echo "!!  codesign failed for $img" >&2
+        exit 1
+    fi
 done
-codesign --force --sign - "$APP" 2>/dev/null || \
-    echo "!!  codesign unavailable; app will still run locally"
+if ! codesign --force --sign "$SIGN_IDENTITY" \
+        ${SIGN_OPTS[@]+"${SIGN_OPTS[@]}"} \
+        ${APP_ENTITLEMENTS[@]+"${APP_ENTITLEMENTS[@]}"} \
+        "$APP" >/dev/null 2>&1; then
+    echo "!!  codesign failed for $APP" >&2
+    exit 1
+fi
 
-if codesign --verify --deep --strict --verbose=1 "$APP" 2>/dev/null; then
+if codesign --verify --deep --strict --verbose=1 "$APP" >/dev/null 2>&1; then
     echo "==> Signature verified"
 else
-    echo "!!  Signature verification failed"
+    echo "!!  Signature verification failed" >&2
+    exit 1
+fi
+
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    echo "!!  adhoc signature: this build runs locally but Gatekeeper will reject"
+    echo "    it after download/quarantine. Use a Developer ID + notarization to ship."
+else
+    echo "==> Hardened Runtime: $( [[ ${#SIGN_OPTS[@]} -gt 0 ]] && echo enabled || echo disabled )"
+    echo "==> Sandbox entitlements: $( [[ ${#APP_ENTITLEMENTS[@]} -gt 0 ]] && echo enabled || echo disabled )"
+    if ! spctl -a -vvv -t execute "$APP" 2>&1 | tail -3; then
+        echo "!!  Gatekeeper not yet satisfied (expected before notarization)"
+    fi
 fi
 
 echo "==> Done: $APP"

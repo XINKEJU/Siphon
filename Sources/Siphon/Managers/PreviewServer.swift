@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Security
 
 /// Live state for streaming previews. Engines report downloaded bytes through
 /// `DownloadStore.engineDidUpdate`; the preview server uses that watermark to
@@ -95,8 +96,30 @@ public final class PreviewServer {
         self.registry = registry
     }
 
+    /// 256 bits from the system CSPRNG. `NSUUID` is documented as random but
+    /// not as a cryptographic source; this token guards direct reads of files
+    /// on disk, so derive it from `SecRandomCopyBytes` instead.
     public static func randomToken() -> String {
-        UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = bytes.withUnsafeMutableBytes {
+            SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!)
+        }
+        guard status == errSecSuccess else {
+            // CSPRNG failure must never produce an empty (trivially guessable)
+            // token; NSUUID is still 122 bits of system randomness.
+            return UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Length-independent, branch-free comparison so a guess cannot be refined
+    /// byte by byte from response timing.
+    public static func constantTimeEqual(_ lhs: String, _ rhs: String) -> Bool {
+        let a = Array(lhs.utf8), b = Array(rhs.utf8)
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for i in a.indices { diff |= a[i] ^ b[i] }
+        return diff == 0
     }
 
     public func url(for taskID: UUID) -> URL? {
@@ -191,7 +214,7 @@ public final class PreviewServer {
             send(conn, status: "405 Method Not Allowed", body: "method not allowed")
             return
         }
-        guard isLoopbackHost(lines) else {
+        guard Self.isLoopbackHost(lines) else {
             send(conn, status: "403 Forbidden", body: "invalid host")
             return
         }
@@ -200,8 +223,9 @@ public final class PreviewServer {
         let split = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let path = String(split[0])
         let query = split.count > 1 ? String(split[1]) : ""
-        guard let tokenValue = PreviewServer.queryValue("token", in: query),
-              tokenValue == token else {
+        guard !token.isEmpty,
+              let tokenValue = PreviewServer.queryValue("token", in: query),
+              PreviewServer.constantTimeEqual(tokenValue, token) else {
             send(conn, status: "403 Forbidden", body: "invalid token")
             return
         }
@@ -220,7 +244,7 @@ public final class PreviewServer {
             return
         }
 
-        let rangeHeader = header(named: "Range", in: lines)
+        let rangeHeader = PreviewServer.header(named: "Range", in: lines)
         let range = PreviewServer.parseRange(rangeHeader, total: total)
         guard !range.invalid, range.start < total, range.end >= range.start else {
             send(conn, status: "416 Range Not Satisfiable",
@@ -319,18 +343,32 @@ public final class PreviewServer {
 
     // MARK: - helpers
 
-    private func isLoopbackHost(_ lines: [String]) -> Bool {
-        guard let host = header(named: "Host", in: lines), !host.isEmpty else { return true }
-        let name: String
-        if host.hasPrefix("[") {
-            name = String(host.prefix(while: { $0 != "]" }))
-        } else {
-            name = String(host.split(separator: ":").first ?? "")
-        }
-        return ["127.0.0.1", "localhost", "[::1", "::1"].contains(name.lowercased())
+    private static let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "::1"]
+
+    /// DNS-rebinding guard. A request with no Host header used to be accepted:
+    /// a raw loopback socket could omit it entirely and skip the check.
+    static func isLoopbackHost(_ lines: [String]) -> Bool {
+        guard let host = header(named: "Host", in: lines),
+              !host.isEmpty,
+              let name = hostName(from: host) else { return false }
+        return loopbackHosts.contains(name)
     }
 
-    private func header(named name: String, in lines: [String]) -> String? {
+    /// Strip an optional port and IPv6 brackets: `[::1]:17803` → `::1`.
+    static func hostName(from host: String) -> String? {
+        let value = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return nil }
+        if value.hasPrefix("[") {
+            guard let close = value.firstIndex(of: "]") else { return nil }
+            let inner = String(value[value.index(after: value.startIndex)..<close])
+            return inner.isEmpty ? nil : inner
+        }
+        if value.filter({ $0 == ":" }).count > 1 { return value }
+        let name = String(value.split(separator: ":").first ?? "")
+        return name.isEmpty ? nil : name
+    }
+
+    private static func header(named name: String, in lines: [String]) -> String? {
         for line in lines.dropFirst() {
             guard let idx = line.firstIndex(of: ":") else { continue }
             let field = String(line[..<idx]).trimmingCharacters(in: .whitespaces)

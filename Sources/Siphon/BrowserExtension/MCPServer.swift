@@ -79,14 +79,30 @@ public final class MCPServer {
 
     /// Same completeness rule as the REST server: full header block plus the
     /// entire POST body per Content-Length (byte-accurate for UTF-8 payloads).
+    ///
+    /// Content-Length is parsed **line by line** and case-insensitively. The old
+    /// `range(of: "Content-Length: ")` then `Int(everything after it)` approach
+    /// silently failed whenever another header followed Content-Length, so a
+    /// TCP-split POST was handed to the JSON parser half-received.
     static func hasCompleteRequest(_ data: Data) -> Bool {
         let terminator: [UInt8] = [0x0D, 0x0A, 0x0D, 0x0A]
         guard let headerEnd = data.range(of: Data(terminator)) else { return false }
         let header = String(data: data[..<headerEnd.lowerBound], encoding: .utf8) ?? ""
-        guard header.hasPrefix("POST"),
-              let cl = header.range(of: "Content-Length: "),
-              let len = Int(header[cl.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines))
-        else { return true }
+        guard header.hasPrefix("POST") else {
+            // Non-POST has no body to wait for.
+            return true
+        }
+        var declared: Int?
+        for line in header.components(separatedBy: "\r\n").dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let field = String(line[..<colon]).trimmingCharacters(in: .whitespaces).lowercased()
+            guard field == "content-length" else { continue }
+            let value = String(line[line.index(after: colon)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            declared = Int(value)
+            break
+        }
+        guard let len = declared, len >= 0 else { return true }
         if len > 10 << 20 { return true }   // reject oversized bodies, cap buffer growth
         return (data.count - headerEnd.upperBound) >= len
     }
@@ -101,17 +117,12 @@ public final class MCPServer {
         let headerLines = raw[..<bodyStart].components(separatedBy: "\r\n")
         // DNS-rebinding guard: only loopback Host names are ours (see the REST
         // server for the full rationale).
-        let host = headerLines.first { $0.lowercased().hasPrefix("host:") }
-            .map { String($0.dropFirst("host:".count)).trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
-        let hostName: String
-        if host.hasPrefix("[") {                       // [::1]:8080
-            hostName = String(host.prefix(while: { $0 != "]" }))
-        } else {
-            hostName = String(host.split(separator: ":").first ?? "")
-        }
-        if !hostName.isEmpty,
-           hostName != "127.0.0.1", hostName != "localhost",
-           hostName != "[::1", hostName != "::1" {
+        let host = Self.header(named: "Host", in: headerLines)?
+            .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        // A missing Host must not silently bypass the rebinding guard: the REST
+        // server rejects it, so MCP must behave identically.
+        guard !host.isEmpty, let hostName = Self.hostName(from: host),
+              Self.loopbackHosts.contains(hostName) else {
             return http("403 Forbidden",
                         Self.jsonRPCError(id: nil, code: -32000, message: "Forbidden"))
         }
@@ -193,6 +204,37 @@ public final class MCPServer {
     private static func tool(_ name: String, _ description: String,
                              _ inputSchema: [String: Any]) -> [String: Any] {
         ["name": name, "description": description, "inputSchema": inputSchema]
+    }
+
+    // MARK: - Host / header parsing
+
+    private static let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "::1"]
+
+    /// Case-insensitive header lookup, restricted to fields after the request line.
+    static func header(named name: String, in lines: [String]) -> String? {
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let field = String(line[..<colon]).trimmingCharacters(in: .whitespaces)
+            guard field.caseInsensitiveCompare(name) == .orderedSame else { continue }
+            return String(line[line.index(after: colon)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+
+    /// Strip an optional port and IPv6 brackets: `[::1]:17802` → `::1`.
+    static func hostName(from host: String) -> String? {
+        let value = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        if value.hasPrefix("[") {
+            guard let close = value.firstIndex(of: "]") else { return nil }
+            let inner = String(value[value.index(after: value.startIndex)..<close])
+            return inner.isEmpty ? nil : inner.lowercased()
+        }
+        // A bare IPv6 literal contains more than one colon; don't split it.
+        if value.filter({ $0 == ":" }).count > 1 { return value.lowercased() }
+        let name = String(value.split(separator: ":").first ?? "")
+        return name.isEmpty ? nil : name.lowercased()
     }
 
     // MARK: - JSON-RPC 2.0 helpers

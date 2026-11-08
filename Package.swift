@@ -38,6 +38,8 @@ let package = Package(
         ),
         .executableTarget(
             name: "Siphon",
+            // LocalAuthBootstrap shares the token file path with SiphonNM.
+            dependencies: ["SiphonBridge"],
             path: "Sources/Siphon",
             swiftSettings: [
                 // Optimize the shipped binary for size (smaller .app, often better

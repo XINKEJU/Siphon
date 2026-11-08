@@ -32,7 +32,7 @@ struct AboutSettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("软件更新").font(.headline)
                 HStack {
-                    TextField("更新源 JSON（如 GitHub Releases latest.json）", text: $updateFeedText)
+                    TextField("HTTPS 更新源 JSON（如 GitHub Releases latest.json）", text: $updateFeedText)
                         .textFieldStyle(.roundedBorder)
                     Button("保存") { updater.feedURL = updateFeedText }
                 }
@@ -54,7 +54,7 @@ struct AboutSettingsView: View {
                 if !updater.status.isEmpty {
                     Text(updater.status).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("默认无更新源，保持静默。配置后：下载更新包 → SHA-256 校验 → 解压替换 .app（失败自动还原）→ 重启。")
+                Text("默认无更新源，保持静默。更新源与更新包地址均要求 HTTPS，feed 必须提供完整 SHA-256；安装前还会校验 bundle ID 与代码签名身份，并经用户确认。校验失败即取消，替换失败自动还原。adhoc 构建下更新源哈希是唯一信任根；正式分发请启用 Developer ID 签名与公证。")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 8)

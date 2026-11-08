@@ -26,9 +26,9 @@
 
 | 需求 | 决策 |
 |---|---|
-| 稳定 + 性能 | aria2（C++，20 年验证）承担主流协议，Swift 只做编排 |
+| 稳定 + 性能 | HTTP/HTTPS/FTP 及所有前端协议由**零依赖 Swift 原生引擎**（`URLSession` + Range 分段 + work-stealing）承担；aria2 只作可选外挂 |
 | 小体积 | Swift 原生编译，无 Electron / Flutter / JVM 运行时；aria2c 单文件约 3–5 MB |
-| 全协议 | aria2 覆盖 HTTP(S)/FTP/SFTP/BT/Metalink/磁力；原生引擎补 HLS / DASH 与 eD2K 原生 C2C 传输；适配层补专用链、WebDAV、S3、IPFS、SMB、SCP/rsync、本地文件与批量列表（§2） |
+| 全协议 | 原生引擎覆盖 HTTP(S)/FTP 与专用链、WebDAV、S3、IPFS 网关等；aria2 独立进程覆盖 BT / Magnet / Metalink / SFTP；另有 HLS / DASH / eD2K / curl 协议族 / SCP / rsync / NFS / 本地文件与批量列表（§2） |
 | 真原生 | SwiftUI + AppKit，`.app` bundle，非 WebView 外壳 |
 | 集各家所长 | 队列与调度（AB DM / HyperDM）、限速（Motrix / HyperDM）、剪贴板监听（HyperDM）、浏览器/REST 集成（Gopeed / AB DM）、aria2 JSON-RPC（Motrix / Persepolis）、**动态分段 work-stealing（FluxDown）**、**任务事件 Webhook（FluxDown）**、**多 CDN 故障转移（FluxDown）**、**就地扩容 TrueSize 修正（FluxDown）**、**MCP Server（FluxDown / Gopeed）**、**自动归类归档（HyperDM）**、**PAC 代理判定（FluxDown）** |
 
@@ -138,7 +138,13 @@ open build/Siphon.app
 
 `build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-0.1.0.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
 
-`verify.sh` 共 21 步：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（未安装 aria2c 时自动跳过）、**协议矩阵 102+ 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端、**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路，以及新增的 **PAC 解析器**（JavaScriptCore 执行 + 指令解析）与 **MCP JSON-RPC + Webhook 签名/载荷**测试。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
+`verify.sh` 共 33 步：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（本机缺 aria2c 时打印 SKIP；CI 设 `SIPHON_REQUIRE_ARIA2=1` 时直接失败）、**协议矩阵 124 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端、**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路，以及新增的 **PAC 解析器**（JavaScriptCore 执行 + 指令解析）与 **MCP JSON-RPC + Webhook 签名/载荷**测试。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
+
+后续安全加固也各有独立回归：本地接口令牌不再经 `/ping` 下发（0600 引导文件 + 权限/符号链接校验）、自动更新强制 HTTPS 与完整 SHA-256 并校验更新包签名身份、文件名与归档条目净化（Zip Slip / 符号链接 / 解压炸弹）、`Content-Length` 分片解析、REST/MCP handler 的 MainActor 隔离、校验和全引擎覆盖、Webhook SSRF 与载荷脱敏、发布签名资产一致性。
+
+最近一批工程化收尾：MCP 与边下边播服务器的 Host 空值 / `Content-Length` 解析和 REST 端统一（含 DNS rebinding 回归断言），预览令牌改为 `SecRandomCopyBytes` 派生的 256-bit 值并做常量时间比较；新增 `CompletionSizePolicy`，让 curl / `file:` / `data:` / scp / rsync / NFS 引擎在报 `.completed` 前用**独立字节数**（curl `%{size_download}` + 续传偏移、源文件大小、解码后载荷长度）核对落盘文件，零字节或截断不再被当成功；关键路径的静默 `try?` / 空 `catch` 改为 `os_log` 上报。第 32 步同时覆盖校验和策略与完成尺寸策略，第 33 步校验发布资产、脚本语法、源码清单一致性和 README 关键声明。
+
+GitHub Actions 在每次 push / PR 上执行 `swift build` 与完整 33 步套件；`./scripts/verify.sh` 请直接运行（不要用管道接 `tail`，否则退出码会被管道末端的命令覆盖）。
 
 也可直接调试运行（需已在 `Resources/` 或 `~/Library/Application Support/Siphon/` 放置 `aria2c`）：
 
@@ -211,7 +217,7 @@ scripts/
   build-app.sh                   release 编译 + .app 组装 + SDK 标记提升 + dylib 重链接 + 重签名
   make-dmg.sh                    可拖拽安装的 DMG（含挂载后签名校验）
   make-icon.sh / MakeIcon.swift  矢量图标生成器
-  verify.sh                      6 组可复现验证
+  verify.sh                      33 步可复现验证（含 CI 严格模式）
 Tests/                           向量、解析、协议矩阵与端到端测试
   ProtocolTests/                 协议适配与 file/data/libcurl 真实落盘
 ```
@@ -287,17 +293,24 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 
 所有全局操作从原来的**底部悬浮命令条**收回到窗口顶部 —— macOS 没有底部工具栏这一惯例：
 
-- **前缘**：系统侧栏开关（独立玻璃胶囊）+ 当前资料库标题（`.navigationTitle`，不用 app 名作窗口标题）
-- **中间**：传输控制 `[恢复全部][全部暂停]`，一个 `ToolbarItemGroup` 形成一组
-- **后缘**：`[+ 新建下载]`（唯一 `.borderedProminent` + `tint`，蓝色独立胶囊）、`[检查器]`、`[更多操作]` 菜单，再由系统 `.searchable` 提供独立玻璃搜索字段
-- 组间用 `ToolbarSpacer(.fixed, placement: .primaryAction)` 分隔（macOS 26+ API，必须与被分隔项同 placement 才生效）
-- `SiphonCommands` 让每个工具栏动作在菜单栏都有对应项（⌘N、「任务」菜单），因为工具栏可被隐藏或自定义
+- **传输控制**：`[恢复全部][全部暂停]` 放在同一个 `ToolbarItemGroup(.primaryAction)`，形成一组
+- **主操作**：`[+ 新建下载]` 是唯一 `.borderedProminent` + `tint` 的蓝色胶囊
+- **更多操作**：`Menu` 收纳清理、打开下载目录、重启 aria2 与「显示侧边栏」开关
+- **搜索**：系统 `.searchable`，不再是自绘字段；组间用 `ToolbarSpacer(.fixed, placement: .primaryAction)` 分隔（macOS 26+ API，必须与被分隔项同 placement 才生效）
+- `SiphonCommands` 让每个工具栏动作在菜单栏都有对应项（⌘N、「显示」菜单、「任务」菜单），因为工具栏可被隐藏或自定义
 
-搜索作用于整个 `NavigationSplitView`，按任务名 / 规范化后 URL / 原始专用链 / 协议名过滤。检查器列不再声明自己的 `.toolbar`，避免向窗口工具栏注入未分组的第四组。
+搜索按任务名 / 规范化后 URL / 原始专用链 / 协议名过滤。详情区不声明自己的 `.toolbar`，避免向窗口工具栏注入未分组的第四组。
 
-### 7.4 可折叠的右侧检查器
+### 7.4 详情呈现与侧边栏开关
 
-早期实现用三栏 `NavigationSplitView` 的 `detail` 列放详情，工具栏按钮只切换**列里显示的视图**。该列本身无法隐藏，且未选中任务时开/关都显示同一个空状态 —— 表现为「点了没反应」。现在改成两栏 `NavigationSplitView`（侧栏 + 任务列表）加系统 `.inspector(isPresented:)`（macOS 14+）：AppKit 负责分隔线、折叠动画与玻璃背景，`isPresented` 才是真正的开关。`showingInspector` 用 `@AppStorage` 持久化，工具栏按钮、⌘⌥I 与「任务」菜单的 Toggle 共享同一状态；「剪贴板监听 / 本地控制接口」两个开关同样改为重启后保留。
+当前主窗口是简化布局：顶部筛选标签、紧凑任务列表、底部状态栏。**不再**使用三栏 `NavigationSplitView`，也不再依赖系统 `.inspector(isPresented:)`。
+
+「更多操作 → 显示侧边栏」（以及菜单栏「显示 → 显示侧边栏」，⌘⌥I）由 `SiphonApp` 中的 `@AppStorage("Siphon.showInspector")` 驱动，控制面板显隐并跨启动保留，同一绑定下发给 `ContentView` 与 `SiphonCommands`：
+
+- 面板关闭：点击任务通过 `.sheet` 打开 `TaskDetailView`；
+- 面板开启：右侧显示 300 pt 的 `TaskDetailView` 详情列，点击任务只更新选中项、不再叠加 sheet；未选中时显示空状态提示。
+
+早期版本把该绑定传成 `.constant(false)`，导致开关点了没有任何效果 —— 已修正为真实状态绑定，并把菜单栏对应项补齐（HIG：工具栏动作必须能从菜单栏访问）。
 
 **兼容性**：部署目标仍是 macOS 14。`glassEffect`、`ToolbarSpacer` 等 26 API 全部收敛在 `if #available(macOS 26.0, *)`；14/15 回退到 `Material`、`.bordered` 按钮与标准工具栏，单一二进制覆盖两代外观。
 
@@ -340,14 +353,20 @@ aria2 会话持久化：启动即带 `--save-session`（每 30 秒落盘），�
 
 ## 9. 后续路线建议
 
-1. eD2K 补齐 eMule 栈：Kad UDP DHT 找源、协议混淆/加密、源交换与信用系统（客户端 TCP 传输已完成，见 §5）
-2. HLS→通用单文件 MP4 的重封装管线（DASH 已由 AVFoundation 完成）；若捆绑 `ffmpeg` 可直接 `-c copy`，否则需纯 Swift MP4 demux/remux
-3. Usenet：NNTP over TLS + NZB + yEnc + PAR2 修复
-4. BT v2 / WebTorrent（HTTP/3 已可经 URLSession 的 h3 自动协商，无需额外内核）
-5. WebDAV 目录浏览与上传（PROPFIND 递归）；当前支持单文件下载
-6. 任务持久化从 UserDefaults 迁到 SQLite（WAL），支持崩溃恢复与段级续传记录
-7. 沙盒 + Hardened Runtime + Developer ID 签名与公证
-8. BT 文件选择（Tracker 管理、RSS 订阅、下载完成脚本均已实现）
+> 状态：✅ 已完成 · ⚠️ 部分完成 · ⬜ 未开始（本轮安全加固后同步）
+
+1. ⬜ eD2K 补齐 eMule 栈：Kad UDP DHT 找源、协议混淆/加密、源交换与信用系统（客户端 TCP 传输已完成，见 §5）
+2. ⬜ HLS→通用单文件 MP4 的重封装管线（DASH 已由 AVFoundation 完成）；若捆绑 `ffmpeg` 可直接 `-c copy`，否则需纯 Swift MP4 demux/remux
+3. ⬜ Usenet：NNTP over TLS + NZB + yEnc + PAR2 修复
+4. ⬜ BT v2 / WebTorrent；HTTP/3 跟随系统 `URLSession` 协商，工程内没有独立 QUIC 内核
+5. ⚠️ WebDAV 目录浏览与上传（PROPFIND 递归）；当前支持单文件下载
+6. ✅ 持久化已改为 `tasks.json` 原子写 + `.bak` 回滚 + 崩溃恢复；⚠️ 段级续传记录仍是 sidecar JSON，可评估迁到 SQLite/WAL
+7. ✅ 签名基础设施（entitlements、Hardened Runtime 可选签名、`notarize.sh`、更新包签名身份校验）已就位；⚠️ **实际 Developer ID 签名与公证仍需账号凭据**，见 §11
+8. ⬜ BT 文件选择（Tracker 管理、RSS 订阅、下载完成脚本均已实现 ✅）
+9. ⬜ 进程级插件沙箱：当前 JavaScriptCore 与 App 同进程、无执行超时，见设置页说明
+10. ⚠️ 关键路径的 XCTest / UI 测试与覆盖率门槛：当前是手写 `swiftc` 回归套件（33 步）+ GitHub Actions CI；套件已自带源码清单一致性检查，但尚无行覆盖率门槛
+11. ✅ 本轮 P0/P1 加固已落地：本地令牌带外分发、更新链来源与签名校验、文件名/归档/后处理加固、MainActor 隔离、签名与公证基础设施、校验和全引擎覆盖、Webhook SSRF 防护、UI 侧栏死开关与文档一致性
+12. ⬜ 剩余 P2：Keychain ACL 收紧、S3 Access Key 移出 UserDefaults、resume sidecar HMAC、Strict Concurrency complete、`@unchecked Sendable` 逐个复核、ExternalRunner 超时、URL scheme 白名单、本地化 / 无障碍 / 通用二进制
 
 ---
 
@@ -367,7 +386,25 @@ aria2 会话持久化：启动即带 `--save-session`（每 30 秒落盘），�
 
 ---
 
-## 11. 许可证与第三方
+## 11. 签名、沙盒与公证
+
+**当前交付状态：adhoc 签名，未公证，未启用 App Sandbox。** 本机没有 Developer ID 证书，因此 `build-app.sh` 默认产物只能在本机直接打开；一旦通过下载/网络传输带上 `com.apple.quarantine`，Gatekeeper 会拒绝。正式分发必须完成下表三步。
+
+| 步骤 | 命令 | 前置条件 |
+|---|---|---|
+| 1. 用开发者身份签名 | `SIPHON_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" SIPHON_SANDBOX=1 ./scripts/build-app.sh` | Apple Developer Program、`Developer ID Application` 证书 |
+| 2. 生成 DMG | `./scripts/make-dmg.sh` | 同上 |
+| 3. 公证 + staple | `NOTARY_PROFILE=AC_PASSWORD ./scripts/notarize.sh build/Siphon.app` → 重新执行第 2 步 | `xcrun notarytool store-credentials`（Apple ID / Team ID / App 专用密码） |
+
+非 adhoc 构建会自动启用 **Hardened Runtime**（`--options runtime --timestamp`）、附加 `Resources/Siphon.entitlements`，并对嵌套的 `aria2c` / `SiphonNM` / Homebrew dylib 逐个签名后附加 `Resources/SiphonHelper.entitlements`。签名结束后脚本强制 `codesign --verify --deep --strict`，失败即退出（旧版只打印警告）。`notarize.sh` 会校验签名身份与 runtime 标志，再走 `notarytool submit --wait` → `stapler staple` → `spctl -a -vvv`。
+
+**为什么沙盒默认关闭**：Siphon 目前会写入用户自选的任意下载目录、启动外部进程（`curl` / `scp` / `rsync` / `unzip` / `/bin/sh` 后处理）、绑定 17801/17802 回环端口、读写登录钥匙串、执行 JavaScriptCore（PAC / 插件）。这些能力在 App Sandbox 下需要逐项申请 entitlement 并用 security-scoped bookmark 重写文件访问，直接开启会让现有功能静默失效。随附的 entitlements 是可审计的**迁移起点**（含 `network.server`、`files.user-selected.read-write`、`cs.allow-jit`、`cs.disable-library-validation` 等），启用前必须按 §4 的验证套件与实网冒烟清单逐项复测。
+
+即便完成公证，也请注意 §9 与审计结论中的边界：adhoc 构建下自动更新的 HTTPS feed 哈希是唯一信任根；Developer ID 构建会额外校验更新包的签名身份与当前应用一致（见 `UpdateChecker.verifyStagedBundle`）。
+
+---
+
+## 12. 许可证与第三方
 
 本仓库 Swift 源码采用 **MIT**（见 [LICENSE](LICENSE)）。aria2 为 **GPLv2**，**不随本仓库分发**：Siphon 以独立进程 + JSON-RPC 调用 `aria2c`，不链接 `libaria2`、不合并二进制，因此应用自身不必 GPL 化。
 

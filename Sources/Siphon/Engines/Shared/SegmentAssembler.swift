@@ -1,5 +1,8 @@
 import Foundation
 import CryptoKit
+import OSLog
+
+private let sidecarLog = Logger(subsystem: "com.xinkeju.siphon.macos", category: "resume-sidecar")
 
 /// Identifies the playlist/manifest a segment run belongs to. It lets a run be
 /// resumed across an app relaunch: the assembler additionally hashes the segment
@@ -401,7 +404,11 @@ public final class SegmentAssembler {
                                    fingerprint: fingerprint,
                                    updatedAt: now.timeIntervalSince1970)
         guard let data = try? JSONEncoder().encode(record) else { return }
-        try? data.write(to: url, options: .atomic)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            sidecarLog.error("resume sidecar write failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func discardSidecar(_ s: Active) {

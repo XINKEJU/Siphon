@@ -5,8 +5,10 @@ import SiphonBridge
 ///
 /// Chrome starts this process and speaks the framed stdio protocol. We translate
 /// `{"type":"add", …}` / `{"type":"ping"}` into the app's loopback HTTP API
-/// (`http://127.0.0.1:17801`), bootstrapping the bearer token from `/ping` and
-/// retrying once on 401. Exits when stdin reaches EOF.
+/// (`http://127.0.0.1:17801`). The bearer token is **not** fetched from the
+/// network: the app publishes it to a 0600 file (`LocalAuthBootstrap`) which
+/// this gateway reads directly, then retries once on 401 (token rotation).
+/// Exits when stdin reaches EOF.
 
 let baseURL = "http://127.0.0.1:17801"
 var cachedToken: String?
@@ -37,11 +39,13 @@ func request(_ method: String, _ path: String, body: [String: Any]? = nil,
 }
 
 func fetchToken() -> String? {
-    let (status, data) = request("GET", "/ping")
-    guard status == 200,
-          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let token = json["token"] as? String, !token.isEmpty else { return nil }
-    return token
+    // Test seam for the restart E2E harness (the app is launched with the same
+    // value); a browser-launched gateway never sees this variable.
+    if let override = ProcessInfo.processInfo.environment["SIPHON_LOCAL_API_TOKEN"],
+       !override.isEmpty { return override }
+    // Out-of-band: /ping is unauthenticated and no longer discloses the token.
+    // Re-reading on 401 also picks up a token rotated in Settings.
+    return LocalAuthBootstrap.read()
 }
 
 func currentToken() -> String? {
@@ -58,10 +62,14 @@ func handle(_ message: [String: Any]) {
     let type = (message["type"] as? String) ?? ""
     switch type {
     case "ping":
-        let token = currentToken()
-        respond(token == nil
-                ? ["ok": false, "error": "Siphon 未运行或本地接口未开启"]
-                : ["ok": true, "app": "Siphon"])
+        let (status, _) = request("GET", "/ping")
+        if status != 200 {
+            respond(["ok": false, "error": "Siphon 未运行或本地控制接口未开启"])
+        } else if currentToken() == nil {
+            respond(["ok": false, "error": "未找到本地令牌文件，请在 Siphon 设置 → 集成 中开启本地控制接口并重新生成令牌"])
+        } else {
+            respond(["ok": true, "app": "Siphon"])
+        }
 
     case "add":
         guard let url = message["url"] as? String, !url.isEmpty else {

@@ -3,7 +3,8 @@ import Network
 
 // Token hardening of the loopback control surfaces:
 //   - LocalAuthToken verify semantics (Bearer prefix, bare token, rejection)
-//   - NativeMessagingServer: /ping open (token bootstrap), everything else 401
+//   - NativeMessagingServer: /ping is liveness-only (no token, no side effects)
+//   - LocalAuthBootstrap: 0600 file, owner-only directory, symlink rejection
 //   - MCPServer: every call 401 without the token
 //   - no CORS header is ever emitted
 // Pure message-level tests through the `configure` / `process` seams — no ports.
@@ -63,8 +64,21 @@ srv.configure(onURL: { url, _, _, _ in added = url },
 let ping = srv.process(restRequest("GET", "/ping"))
 check("GET /ping stays token-free", status(ping).contains("200 OK"))
 let pingBody = String(data: ping, encoding: .utf8) ?? ""
-check("ping response carries the bootstrap token",
-      pingBody.contains("\"token\":\"test-token\""), pingBody)
+check("ping discloses no token", !pingBody.contains("token"), pingBody)
+check("ping still returns the app banner", pingBody.contains("\"app\":\"Siphon\""))
+
+// /ping used to auto-install a Native Messaging host from the Origin header.
+// Any local process could forge that header and gain a persistent channel.
+let originProbe = "GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+    + "Origin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n"
+let beforeID = UserDefaults.standard.string(forKey: "Siphon.extensionID")
+_ = srv.process(Data(originProbe.utf8))
+check("forged Origin does not bind an extension ID",
+      UserDefaults.standard.string(forKey: "Siphon.extensionID") == beforeID)
+
+// A raw socket with no Host header must not skip the rebinding check.
+let noHost = srv.process(Data("GET /ping HTTP/1.1\r\n\r\n".utf8))
+check("missing Host header is rejected", status(noHost).contains("403 Forbidden"))
 
 check("/add without token → 401",
       status(srv.process(restRequest("POST", "/add", body: #"{"url":"https://x/f"}"#)))
@@ -103,6 +117,54 @@ extension Data {
 
 check("no CORS header on any response",
       !pingBody.contains("Access-Control-Allow-Origin"))
+
+// MARK: - Content-Length framing (regression)
+
+let framedBody = #"{"url":"https://x/f"}"#
+let headWithTrailingHeader = "POST /add HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+    + "Content-Length: \(framedBody.utf8.count)\r\n"
+    + "Authorization: Bearer test-token\r\n\r\n"
+check("request is incomplete when Content-Length is not the last header",
+      !srv.hasCompleteRequest(Data(headWithTrailingHeader.utf8)))
+check("request completes once the full body arrives",
+      srv.hasCompleteRequest(Data((headWithTrailingHeader + framedBody).utf8)))
+let lowerCaseHead = headWithTrailingHeader.replacingOccurrences(
+    of: "Content-Length:", with: "content-length:")
+check("Content-Length header name is case-insensitive",
+      !srv.hasCompleteRequest(Data(lowerCaseHead.utf8))
+      && srv.hasCompleteRequest(Data((lowerCaseHead + framedBody).utf8)))
+
+// MARK: - LocalAuthBootstrap (out-of-band token file)
+
+let tmpRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+    .appendingPathComponent("siphon-auth-\(UUID().uuidString)", isDirectory: true)
+defer { try? FileManager.default.removeItem(at: tmpRoot) }
+
+check("bootstrap file is created",
+      LocalAuthBootstrap.publish("bootstrap-token", in: tmpRoot) != nil)
+let tokenFile = LocalAuthBootstrap.fileURL(in: tmpRoot)
+let fm = FileManager.default
+let fileAttrs = try? fm.attributesOfItem(atPath: tokenFile.path)
+let dirAttrs = try? fm.attributesOfItem(atPath: tmpRoot.path)
+check("bootstrap file is 0600",
+      (fileAttrs?[.posixPermissions] as? NSNumber)?.uint16Value == 0o600)
+check("bootstrap directory is 0700",
+      (dirAttrs?[.posixPermissions] as? NSNumber)?.uint16Value == 0o700)
+check("bootstrap read returns the token",
+      LocalAuthBootstrap.read(from: tmpRoot) == "bootstrap-token")
+try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: tokenFile.path)
+check("group/world-readable token file is refused",
+      LocalAuthBootstrap.read(from: tmpRoot) == nil)
+// A symlink planted at the token path must not be followed.
+try? fm.removeItem(at: tokenFile)
+let target = tmpRoot.appendingPathComponent("elsewhere")
+try? Data("attacker-token".utf8).write(to: target)
+try? fm.createSymbolicLink(at: tokenFile, withDestinationURL: target)
+check("symlinked token file is refused",
+      LocalAuthBootstrap.read(from: tmpRoot) == nil)
+LocalAuthBootstrap.remove(in: tmpRoot)
+check("remove deletes the token file",
+      LocalAuthBootstrap.read(from: tmpRoot) == nil)
 
 // MARK: - MDXP route (device tokens + JSON-RPC passthrough)
 

@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let aria2Log = Logger(subsystem: "com.xinkeju.siphon.macos", category: "aria2")
 
 /// Drives aria2 for HTTP/HTTPS/FTP/SFTP/BitTorrent/Metalink/magnet and for every
 /// URI front-end that `URINormalizer` rewrites onto those protocols (thunder,
@@ -332,7 +335,10 @@ public final class Aria2Engine: DownloadEngine {
             try await rpc.changeOption(gid,
                 ["select-file": indexes.sorted().map(String.init).joined(separator: ",")])
             return true
-        } catch { return false }
+        } catch {
+            aria2Log.error("select-file RPC failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
     }
 
     // MARK: - BitTorrent enhancements (Motrix / Gopeed model)
@@ -361,7 +367,11 @@ public final class Aria2Engine: DownloadEngine {
             statuses = try await rpc.tellActive()
                 + rpc.tellWaiting()
                 + rpc.tellStopped()
-        } catch { return false }
+        } catch {
+            // Routine while the optional aria2 daemon is stopped; debug, not error.
+            aria2Log.debug("aria2 poll failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
 
         // `submit`/`remove` mutate `gidToTask` on the main actor; this loop runs on a
         // background Task. Snapshot the value-type map so this tick reads a consistent

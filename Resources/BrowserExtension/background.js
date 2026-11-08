@@ -9,8 +9,10 @@
 //   - Media sniffing for embedded video/audio streams
 //
 // Two transport paths to the app:
-//   1. Native Messaging via the SiphonNM gateway (preferred)
-//   2. Loopback HTTP fallback (http://127.0.0.1:17801/add + /ping token)
+//   1. Native Messaging via the SiphonNM gateway (preferred — the token is
+//      read by the gateway from a 0600 local file, no user setup needed)
+//   2. Loopback HTTP fallback (http://127.0.0.1:17801/add), which needs the
+//      token pasted once into the popup's 设置 tab. `/ping` is liveness only.
 
 const ENDPOINT = "http://127.0.0.1:17801/add";
 const PING = "http://127.0.0.1:17801/ping";
@@ -176,21 +178,14 @@ function sendNative(payload) {
 // MARK: - HTTP fallback token
 
 let apiToken = null;
+// The app no longer discloses the token over HTTP: `/ping` is unauthenticated,
+// so anything readable from it would be readable by any local process. The
+// gateway path obtains the token out of band; for this HTTP-only fallback the
+// user copies it once from Siphon → 设置 → 集成 into the popup.
 async function getToken() {
   if (apiToken) return apiToken;
   const stored = await chrome.storage.local.get("apiToken");
   apiToken = stored.apiToken || null;
-  if (apiToken) return apiToken;
-  try {
-    const r = await fetch(PING);
-    if (r.ok) {
-      const j = await r.json();
-      if (j.token) {
-        apiToken = j.token;
-        await chrome.storage.local.set({ apiToken });
-      }
-    }
-  } catch (_) {}
   return apiToken;
 }
 
@@ -206,17 +201,13 @@ async function sendHTTP(payload) {
       body: JSON.stringify(payload),
     });
     if (r.status === 401) {
-      apiToken = null;
-      const retryToken = await getToken();
-      const retry = await fetch(ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(retryToken ? { Authorization: `Bearer ${retryToken}` } : {}),
-        },
-        body: JSON.stringify(payload),
-      });
-      return { ok: retry.ok, via: "http", status: retry.status };
+      // There is no silent re-bootstrap any more: the token only changes when
+      // the user rotates it in the app, so tell them to paste the new one.
+      return {
+        ok: false, via: "http", status: 401,
+        error: token ? "令牌无效或已轮换，请在 Siphon 设置 → 集成 复制后重新粘贴"
+                     : "缺少令牌，请在扩展「设置」中粘贴 Siphon 的本地接口令牌",
+      };
     }
     return { ok: r.ok, via: "http", status: r.status };
   } catch (e) {
@@ -522,15 +513,21 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg?.type === "ping") {
     fetch(PING).then(async r => {
-      if (r.ok) {
-        const j = await r.json();
-        if (j.token) {
-          apiToken = j.token;
-          await chrome.storage.local.set({ apiToken });
-        }
-      }
-      reply({ ok: r.ok });
-    }).catch(() => reply({ ok: false }));
+      const token = await getToken();
+      reply({ ok: r.ok, tokenConfigured: !!token });
+    }).catch(() => reply({ ok: false, tokenConfigured: false }));
+    return true;
+  }
+  if (msg?.type === "getToken") {
+    getToken().then(t => reply({ ok: true, token: t || "" }));
+    return true;
+  }
+  if (msg?.type === "setToken") {
+    const value = typeof msg.token === "string" ? msg.token.trim() : "";
+    chrome.storage.local.set({ apiToken: value }).then(() => {
+      apiToken = value || null;
+      reply({ ok: true });
+    }).catch(e => reply({ ok: false, error: String(e) }));
     return true;
   }
   if (msg?.type === "sniffed") {

@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+import OSLog
+
+private let statsLog = Logger(subsystem: "com.xinkeju.siphon.macos", category: "stats")
 
 /// 持久化的传输统计（借鉴 Motrix 仪表盘）：按天累计下载字节数、完成/失败任务数。
 /// 保存在 Application Support/Siphon/stats.json，最多保留 90 天。
@@ -92,7 +95,11 @@ public final class TransferStats {
     private func save() {
         lastSave = Date()
         guard let data = try? JSONEncoder().encode(days) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        do {
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            statsLog.error("transfer stats persistence failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func load() {

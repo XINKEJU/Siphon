@@ -104,13 +104,28 @@ public final class ED2KEngine: DownloadEngine {
                     self?.delegate?.engineDidUpdate(taskID: task.id, progress: progress)
                 }
             }
-            // Verify the resulting file against the link hash — the core eD2K guarantee.
-            if FileManager.default.fileExists(atPath: task.destination.path),
-               let ok = try? ED2KHash.verify(fileAt: task.destination, matchesHex: link.hashHex),
-               !ok {
+            // Verify against the link hash — the core eD2K guarantee. The old
+            // `try? ... , let ok = ..., !ok` chain turned a *thrown* verification
+            // error into `nil` and fell through to `.completed`: a corrupt or
+            // unreadable file was reported as a successful download.
+            guard FileManager.default.fileExists(atPath: task.destination.path) else {
+                await delegate?.engineDidChangeState(taskID: task.id, state: .error,
+                    error: ED2KError.hashMismatch(expected: link.hashHex, actual: "文件缺失"))
+                return
+            }
+            let matches: Bool
+            do {
+                matches = try ED2KHash.verify(fileAt: task.destination,
+                                              matchesHex: link.hashHex)
+            } catch {
+                await delegate?.engineDidChangeState(taskID: task.id, state: .error,
+                                                     error: error)
+                return
+            }
+            guard matches else {
                 let actual = (try? ED2KHash.hex(ED2KHash.hash(fileAt: task.destination))) ?? "?"
                 await delegate?.engineDidChangeState(taskID: task.id, state: .error,
-                                                     error: ED2KError.hashMismatch(expected: link.hashHex, actual: actual))
+                    error: ED2KError.hashMismatch(expected: link.hashHex, actual: actual))
                 return
             }
             await delegate?.engineDidChangeState(taskID: task.id, state: .completed, error: nil)

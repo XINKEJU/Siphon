@@ -121,7 +121,10 @@ struct TaskDetailView: View {
                             .lineLimit(2)
                             .truncationMode(.middle)
                     }
-                    if let e = task.errorDescription {
+                    if store.checksumUnverified.contains(task.id) {
+                        Text("校验和未验证：目标为目录、多文件产物或文件缺失，没有单一文件可校验。")
+                            .font(.caption).foregroundStyle(.orange)
+                    } else if let e = task.errorDescription {
                         Text(e).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                     }
                 }

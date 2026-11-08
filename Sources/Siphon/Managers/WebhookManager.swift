@@ -46,6 +46,22 @@ public final class WebhookManager: @unchecked Sendable {
         return _endpoints
     }
 
+    /// Last delivery/policy failure, surfaced in Settings instead of being
+    /// swallowed by `try?`.
+    private var _lastError: String?
+    public var lastError: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _lastError
+    }
+
+    func record(_ message: String) {
+        lock.lock(); _lastError = message; lock.unlock()
+    }
+
+    func clearFailure() {
+        lock.lock(); _lastError = nil; lock.unlock()
+    }
+
     private init() {
         let d = UserDefaults.standard
         if let data = d.data(forKey: Self.defaultsKey) {
@@ -138,7 +154,9 @@ public final class WebhookManager: @unchecked Sendable {
                 "event": "task.\(state)",
                 "id": id.uuidString,
                 "name": name,
-                "url": url,
+                // Task URLs can embed Basic credentials or an S3 presigned
+                // signature. Never ship the raw value to a third-party endpoint.
+                "url": WebhookPolicy.redact(url),
                 "state": state,
                 "downloadedBytes": downloadedBytes,
                 "totalBytes": totalBytes,
@@ -149,8 +167,23 @@ public final class WebhookManager: @unchecked Sendable {
         }
     }
 
+    /// Dedicated session: `URLSession.shared` follows redirects without any
+    /// policy hook, so a public HTTPS endpoint could bounce a credential-bearing
+    /// payload into a private network.
+    private static let session: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 5
+        return URLSession(configuration: cfg, delegate: RedirectGuard.shared,
+                          delegateQueue: nil)
+    }()
+
     private static func post(_ payload: Data, to ep: Endpoint) async {
-        guard let url = URL(string: ep.url), url.scheme != nil else { return }
+        let allowPrivate = UserDefaults.standard.bool(forKey: WebhookPolicy.allowPrivateKey)
+        guard let url = WebhookPolicy.isAllowed(ep.url, allowPrivate: allowPrivate) else {
+            Self.shared.record(
+                "Webhook 地址被安全策略拒绝（仅 http/https；默认禁止私网/回环）：\(ep.url)")
+            return
+        }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
                              timeoutInterval: 5)
         req.httpMethod = "POST"
@@ -160,7 +193,17 @@ public final class WebhookManager: @unchecked Sendable {
             req.setValue("sha256=\(Self.hmacSHA256(payload, key: ep.secret))",
                          forHTTPHeaderField: "X-Siphon-Signature")
         }
-        _ = try? await URLSession.shared.data(for: req)
+        do {
+            let (_, response) = try await Self.session.data(for: req)
+            if let http = response as? HTTPURLResponse,
+               !(200...299).contains(http.statusCode) {
+                Self.shared.record("Webhook 返回 HTTP \(http.statusCode)：\(url.host ?? "")")
+            } else {
+                Self.shared.clearFailure()
+            }
+        } catch {
+            Self.shared.record("Webhook 投递失败：\(error.localizedDescription)")
+        }
     }
 
     /// HMAC-SHA256 hex digest (CommonCrypto), the standard webhook signing scheme.
@@ -175,5 +218,25 @@ public final class WebhookManager: @unchecked Sendable {
             }
         }
         return out.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Re-validate every redirect hop. Returning `nil` stops the redirect and lets
+/// the response come back as a 3xx, which `post` reports as a delivery failure.
+private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = RedirectGuard()
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        let allowPrivate = UserDefaults.standard.bool(forKey: WebhookPolicy.allowPrivateKey)
+        guard let url = request.url,
+              WebhookPolicy.isAllowed(url, allowPrivate: allowPrivate) else {
+            WebhookManager.shared.record("Webhook 重定向到不允许的地址，已阻断")
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }

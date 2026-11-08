@@ -16,14 +16,18 @@ import Network
 /// Every request except `GET /ping` must carry the per-install token
 /// (`LocalAuthToken`, shown/copyable in Settings → 集成). Responses carry no CORS
 /// header, so a web page can neither read them nor attach the Authorization
-/// header (its "simple request" preflight would fail) — the extension reads and
-/// bootstraps its token from `/ping`, which extension contexts with
-/// host_permissions can access but web pages cannot.
+/// header (its "simple request" preflight would fail).
+///
+/// **The token is never sent over this socket.** `/ping` is an unauthenticated
+/// liveness probe; returning the token there (or installing a Native Messaging
+/// host from its `Origin` header) let any local process take over the control
+/// surface. The app publishes the token to a 0600 file via
+/// `LocalAuthBootstrap`; the SiphonNM gateway reads it out of band.
 ///
 /// POST /add   {"url": "...", "name"?: "...", "queue"?: "...",
 ///              "headers"?: {"Cookie": "...", "Referer": "..."},
 ///              "checksum"?: "sha256:…"}                    -> {"ok":true}
-/// GET  /ping  -> {"ok":true,"app":"Siphon","token":"…"}   (token bootstrap)
+/// GET  /ping  -> {"ok":true,"app":"Siphon"}              (liveness only)
 /// GET  /tasks -> {"ok":true,"tasks":[…]}                   (store-backed)
 /// POST /pause /resume /remove {"id": "uuid"}               (store-backed)
 ///
@@ -227,11 +231,26 @@ public final class NativeMessagingServer {
         guard let headerEnd = data.range(of: Data(terminator)) else { return false }
         // Header block is everything up to the terminator (ASCII, so UTF-8 safe).
         let header = String(data: data[..<headerEnd.lowerBound], encoding: .utf8) ?? ""
-        guard header.hasPrefix("POST"),
-              let cl = header.range(of: "Content-Length: "),
-              let len = Int(header[cl.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines))
-        else {
-            // Non-POST (e.g. GET) or missing Content-Length: header completeness suffices.
+        guard header.hasPrefix("POST") else {
+            // Non-POST (e.g. GET) has no body to wait for.
+            return true
+        }
+        // Parse Content-Length line by line. Slicing from the value to the end
+        // of the header block picks up every following header, so `Int()` used
+        // to fail whenever Content-Length was not the last line — silently
+        // declaring the request complete before the body arrived.
+        var declared: Int?
+        for line in header.components(separatedBy: "\r\n").dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let field = String(line[..<colon]).trimmingCharacters(in: .whitespaces).lowercased()
+            guard field == "content-length" else { continue }
+            let value = String(line[line.index(after: colon)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            declared = Int(value)
+            break
+        }
+        guard let len = declared, len >= 0 else {
+            // Missing/malformed Content-Length: header completeness suffices.
             return true
         }
         // Absurd Content-Length must not grow `buffer` unbounded until OOM:
@@ -257,15 +276,10 @@ public final class NativeMessagingServer {
         let path = parts.count > 1 ? String(parts[1]) : ""
 
         if method == "GET" && path == "/ping" {
-            // Auto-bind: extract extension ID from Origin header on first contact.
-            if let origin = header(named: "Origin", in: lines) {
-                Self.autoBindExtensionID(origin)
-            }
-            // The token rides along so the extension can bootstrap itself; only
-            // extension contexts (host_permissions) and loopback scripts can read
-            // the response — web pages get no CORS grant.
-            let body = #"{"ok":true,"app":"Siphon","token":""# + LocalAuthToken.current() + #""}"#
-            return http("200 OK", body)
+            // Liveness only. No token, no side effects: `/ping` is reachable
+            // without authentication, so anything it emitted or wrote would be
+            // attacker-controlled. Install the NM host explicitly from Settings.
+            return http("200 OK", #"{"ok":true,"app":"Siphon"}"#)
         }
         // Everything else is authenticated. A web page's simple request cannot
         // carry Authorization (that would require a preflight), so this is what
@@ -339,7 +353,9 @@ public final class NativeMessagingServer {
         } else {
             hostName = String(host.split(separator: ":").first ?? "")
         }
-        if hostName.isEmpty { return true }
+        // A request with no Host header is not a browser/HTTP client we trust;
+        // accepting it let a raw socket skip the rebinding check entirely.
+        if hostName.isEmpty { return false }
         return ["127.0.0.1", "localhost", "[::1", "::1"].contains(hostName)
     }
 
@@ -367,28 +383,4 @@ public final class NativeMessagingServer {
         return payload.data(using: .utf8) ?? Data()
     }
 
-    /// Auto-bind: extract extension ID from Origin header and save it.
-    /// Supports chrome-extension://, moz-extension://, safari-web-extension://
-    private static func autoBindExtensionID(_ origin: String) {
-        let patterns = ["chrome-extension://", "moz-extension://", "safari-web-extension://"]
-        for prefix in patterns {
-            guard origin.hasPrefix(prefix) else { continue }
-            let rest = origin.dropFirst(prefix.count)
-            // Chrome/Edge: 32-char lowercase a-p ID
-            // Firefox: UUID format {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
-            // Safari: UUID format without braces
-            let id = rest.split(separator: "/").first.map(String.init) ?? ""
-            guard !id.isEmpty else { continue }
-            // Only save if not already saved or different from current
-            let current = NativeMessagingHostInstaller.extensionID
-            if id != current {
-                UserDefaults.standard.set(id, forKey: NativeMessagingHostInstaller.extensionIDKey)
-                // Auto-install native messaging host for this extension ID
-                if NativeMessagingHostInstaller.isValidExtensionID(id) {
-                    _ = try? NativeMessagingHostInstaller.install(extensionID: id)
-                }
-            }
-            break
-        }
-    }
 }

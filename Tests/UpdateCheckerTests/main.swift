@@ -40,6 +40,37 @@ check("parseFeed missing version", UpdateChecker.parseFeed(Data(#"{"url":"https:
 check("parseFeed garbage", UpdateChecker.parseFeed(Data("not json".utf8)) == nil)
 check("parseFeed array", UpdateChecker.parseFeed(Data("[1,2]".utf8)) == nil)
 
+// Update source policy (regression: http:// and file:// were accepted, and the
+// optional hash was trusted from that same feed — a supply-chain RCE path).
+check("https update source accepted",
+      UpdateChecker.trustedURL("https://example.com/latest.json") != nil)
+check("http update source rejected",
+      UpdateChecker.trustedURL("http://example.com/latest.json") == nil)
+check("file update source rejected",
+      UpdateChecker.trustedURL("file:///tmp/latest.json") == nil)
+check("loopback update source rejected",
+      UpdateChecker.trustedURL("https://127.0.0.1/latest.json") == nil)
+check("private IPv4 update source rejected",
+      UpdateChecker.trustedURL("https://192.168.1.5/latest.json") == nil)
+check("link-local update source rejected",
+      UpdateChecker.trustedURL("https://169.254.169.254/latest.json") == nil)
+check("localhost update source rejected",
+      UpdateChecker.trustedURL("https://localhost/latest.json") == nil)
+check("embedded credentials rejected",
+      UpdateChecker.trustedURL("https://user:pass@example.com/latest.json") == nil)
+check("nonstandard port rejected",
+      UpdateChecker.trustedURL("https://example.com:8443/latest.json") == nil)
+check("empty update source rejected", UpdateChecker.trustedURL("") == nil)
+
+let digest = String(repeating: "a", count: 64)
+check("valid SHA-256 accepted", UpdateChecker.isValidSHA256(digest))
+check("uppercase SHA-256 accepted", UpdateChecker.isValidSHA256(digest.uppercased()))
+check("placeholder digest rejected", !UpdateChecker.isValidSHA256("ABCD"))
+check("missing digest rejected", !UpdateChecker.isValidSHA256(nil))
+check("short digest rejected", !UpdateChecker.isValidSHA256(String(repeating: "a", count: 63)))
+check("non-hex digest rejected",
+      !UpdateChecker.isValidSHA256(String(repeating: "z", count: 64)))
+
 // sha256Hex of a small file ("abc" → known digest)
 let tmp = FileManager.default.temporaryDirectory
     .appendingPathComponent("siphon-update-test-\(UUID().uuidString).txt")

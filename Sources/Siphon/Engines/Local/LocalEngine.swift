@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Handles `file://` imports and `data:` URIs.
 ///
@@ -12,6 +13,9 @@ public final class LocalEngine: DownloadEngine {
 
     private var cancelled: Set<UUID> = []
     private var tasks: [UUID: DownloadTask] = [:]
+
+    private static let logger = Logger(subsystem: "com.xinkeju.siphon.macos",
+                                       category: "local-engine")
 
     public init() {}
     public func canHandle(_ p: DownloadProtocol) -> Bool { supportedProtocols.contains(p) }
@@ -37,18 +41,25 @@ public final class LocalEngine: DownloadEngine {
 
     private func run(_ task: DownloadTask) async {
         do {
-            if task.protocol == .data {
-                try await writeData(task)
-            } else {
-                try await copyFile(task)
-            }
+            // Both writers return an independently known byte count, so the
+            // completion check compares the destination against the source
+            // instead of trusting whatever the destination happens to report.
+            let expected: Int64 = task.protocol == .data
+                ? try await writeData(task)
+                : try await copyFile(task)
             guard !cancelled.contains(task.id) else {
                 await delegate?.engineDidChangeState(taskID: task.id, state: .paused, error: nil)
                 return
             }
-            let attrs = try? FileManager.default.attributesOfItem(atPath: task.destination.path)
-            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-            var p = DownloadProgress(); p.totalBytes = size; p.downloadedBytes = size
+            let evidence = CompletionSizePolicy.evidence(
+                at: task.destination, expected: expected, allowsEmpty: expected == 0)
+            if let reason = CompletionSizePolicy.failure(evidence) {
+                Self.logger.error("completion size check failed for \(task.name, privacy: .private): \(reason, privacy: .public)")
+                throw ExternalRunnerError.transferFailed(reason)
+            }
+            var p = DownloadProgress()
+            p.totalBytes = evidence.actualBytes
+            p.downloadedBytes = evidence.actualBytes
             await delegate?.engineDidUpdate(taskID: task.id, progress: p)
             await delegate?.engineDidChangeState(taskID: task.id, state: .completed, error: nil)
         } catch {
@@ -56,14 +67,15 @@ public final class LocalEngine: DownloadEngine {
         }
     }
 
-    private func writeData(_ task: DownloadTask) async throws {
+    private func writeData(_ task: DownloadTask) async throws -> Int64 {
         let payload = try DataURICodec.decode(task.source.absoluteString)
         try? FileManager.default.createDirectory(
             at: task.destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try payload.write(to: task.destination)
+        return Int64(payload.count)
     }
 
-    private func copyFile(_ task: DownloadTask) async throws {
+    private func copyFile(_ task: DownloadTask) async throws -> Int64 {
         let src = task.source
         guard src.isFileURL else { throw ExternalRunnerError.invalidURL(src.absoluteString) }
         let fm = FileManager.default
@@ -93,6 +105,7 @@ public final class LocalEngine: DownloadEngine {
             p.totalBytes = total; p.downloadedBytes = written
             await delegate?.engineDidUpdate(taskID: task.id, progress: p)
         }
+        return total
     }
 }
 

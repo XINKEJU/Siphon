@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let portMapperLog = Logger(subsystem: "com.xinkeju.siphon.macos", category: "upnp")
 
 /// NAT traversal: automatic port mapping for inbound peer connections (BitTorrent,
 /// eMule, but also any listen server). Mirrors the UPnP / NAT-PMP support found in
@@ -99,7 +102,10 @@ public final class PortMapper: @unchecked Sendable {
         proc.arguments = ["-n", "get", "default"]
         let pipe = Pipe()
         proc.standardOutput = pipe
-        do { try proc.run(); proc.waitUntilExit() } catch { return nil }
+        do { try proc.run(); proc.waitUntilExit() } catch {
+            portMapperLog.error("route -n get default failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
         guard let text = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
                                 encoding: .utf8) else { return nil }
         for line in text.components(separatedBy: "\n") {

@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let hostHealthLog = Logger(subsystem: "com.xinkeju.siphon.macos", category: "host-health")
 
 /// 主机级健康度（借鉴 FluxDown `cdn/health.rs` 的节点先验模型）。
 ///
@@ -124,7 +127,11 @@ final class HostHealthStore: @unchecked Sendable {
         lock.unlock()
         guard let snapshot,
               let data = try? JSONEncoder().encode(snapshot) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        do {
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            hostHealthLog.error("host health persistence failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func load() {
