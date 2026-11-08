@@ -71,7 +71,7 @@ struct TaskListView: View {
                 get: { !store.pendingDeleteIDs.isEmpty },
                 set: { if !$0 { store.pendingDeleteIDs = [] } }
             )) {
-                Button("删除文件并移除", role: .destructive) {
+                Button("移到废纸篓并移除") {
                     store.deleteTasks(store.pendingDeleteIDs)
                 }
                 Button("仅移出列表") {
@@ -94,9 +94,9 @@ struct TaskListView: View {
 
     private var deleteMessage: String {
         if deleteTargets.count == 1, let task = deleteTargets.first {
-            return "将从列表移除「\(task.name)」，并永久删除磁盘上的文件（含未完成的分片）。此操作不可撤销。"
+            return "将从列表移除「\(task.name)」，并把磁盘上的文件（含未完成的分片）移到废纸篓，可在废纸篓中恢复。"
         }
-        return "将从列表移除这 \(deleteTargets.count) 个任务，并永久删除磁盘上的文件（含未完成的分片）。此操作不可撤销。"
+        return "将从列表移除这 \(deleteTargets.count) 个任务，并把磁盘上的文件（含未完成的分片）移到废纸篓，可在废纸篓中恢复。"
     }
 
     @ViewBuilder
@@ -310,6 +310,9 @@ struct TaskListView: View {
         if task.state == .paused || task.state == .error {
             Button("继续") { store.resume(task.id) }
         }
+        if FileManager.default.fileExists(atPath: task.destination.path) {
+            Button("快速查看") { QuickLookController.shared.present(urls: [task.destination]) }
+        }
         if task.state == .completed {
             Button("用默认应用打开") { store.openWithDefaultApp(task) }
             Button("在访达中显示") { reveal(task) }
@@ -402,6 +405,14 @@ struct TaskRowView: View {
             controlButtons
         }
         .padding(.vertical, 6)
+        // 拖到访达/邮件/剪辑软件：macOS 下载器的基本期待，也是最快的“用起来”
+        // 路径 —— 不必先打开文件夹再找文件。
+        .onDrag {
+            guard FileManager.default.fileExists(atPath: task.destination.path) else {
+                return NSItemProvider()
+            }
+            return NSItemProvider(contentsOf: task.destination) ?? NSItemProvider()
+        }
     }
 
     /// Icon-only controls are small circular glass lenses. `.clear` keeps the

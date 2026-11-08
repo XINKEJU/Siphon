@@ -40,6 +40,9 @@ struct SiphonApp: App {
                 .onAppear {
                     appDelegate.store = store
                     SystemPresence.shared.configure(store: store)
+                    // 冷启动时通过「服务」菜单进来的链接，等 store 就绪后再建任务。
+                    appDelegate.flushPendingServiceText()
+                    store.handleNetworkChange(NetworkMonitor.shared.status)
                 }
         }
         .windowResizability(.contentSize)
@@ -101,6 +104,22 @@ struct SiphonCommands: Commands {
 
             Divider()
 
+            // 文件层动作走系统能力：Quick Look 面板、默认应用、访达定位。
+            // 下载器的终点是「文件」，不是「一条列表记录」。
+            Button("快速查看") { QuickLookController.shared.toggle(urls: selectedFileURLs) }
+                .keyboardShortcut("y", modifiers: .command)
+                .disabled(selectedFileURLs.isEmpty)
+
+            Button("打开文件") { openSelectedFiles() }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(selectedFileURLs.isEmpty)
+
+            Button("在访达中显示") { revealSelectedFiles() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(selectedFileURLs.isEmpty)
+
+            Divider()
+
             Button("恢复全部") {
                 for t in store.tasks where t.state == .paused || t.state == .error {
                     store.resume(t.id)
@@ -121,5 +140,21 @@ struct SiphonCommands: Commands {
             Divider()
             Button("重新启动 aria2") { Task { await store.restartAria2() } }
         }
+    }
+
+    private var selectedFileURLs: [URL] {
+        store.selectedTasks
+            .map(\.destination)
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func openSelectedFiles() {
+        for url in selectedFileURLs { NSWorkspace.shared.open(url) }
+    }
+
+    private func revealSelectedFiles() {
+        let urls = selectedFileURLs
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 }

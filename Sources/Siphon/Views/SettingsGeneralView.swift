@@ -110,6 +110,49 @@ struct GeneralSettingsView: View {
 
                 Button("预览弹窗") { DownloadPopupController.shared.show(store: store) }
             }
+            Section("系统集成") {
+                Toggle("Dock 图标显示下载进度", isOn: Binding(
+                    get: { PresenceDefaults.bool(PresenceDefaults.dockProgressKey, default: true) },
+                    set: { on in
+                        UserDefaults.standard.set(on, forKey: PresenceDefaults.dockProgressKey)
+                        SystemPresence.shared.refresh(tasks: store.tasks)
+                    }))
+                Text("在 Dock 图标底部画真实进度条；关闭后改为在图标角上显示百分比。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Picker("菜单栏显示", selection: Binding(
+                    get: {
+                        MenuBarStyle(rawValue: UserDefaults.standard.string(
+                            forKey: PresenceDefaults.menuBarStyleKey) ?? "") ?? .speed
+                    },
+                    set: { style in
+                        UserDefaults.standard.set(style.rawValue,
+                                                  forKey: PresenceDefaults.menuBarStyleKey)
+                        SystemPresence.shared.refresh(tasks: store.tasks)
+                    })) {
+                    ForEach(MenuBarStyle.allCases) { Text($0.label).tag($0) }
+                }
+                Text("有任务时图标变为实心；点按可查看实时速度、全部暂停/恢复与新建下载。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("在文件「简介」中记录下载来源", isOn: Binding(
+                    get: { PresenceDefaults.bool(PresenceDefaults.recordWhereFromsKey, default: true) },
+                    set: { UserDefaults.standard.set($0, forKey: PresenceDefaults.recordWhereFromsKey) }))
+                Text("完成后写入 com.apple.metadata:kMDItemWhereFroms，访达「简介 › 更多信息 › 来自何处」可查看原始地址。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Toggle("断网时自动暂停", isOn: Binding(
+                    get: { PresenceDefaults.bool(PresenceDefaults.pauseWhenOfflineKey, default: true) },
+                    set: { UserDefaults.standard.set($0, forKey: PresenceDefaults.pauseWhenOfflineKey) }))
+                Toggle("计费网络时暂停（手机热点等）", isOn: Binding(
+                    get: { PresenceDefaults.bool(PresenceDefaults.pauseWhenMeteredKey, default: false) },
+                    set: { UserDefaults.standard.set($0, forKey: PresenceDefaults.pauseWhenMeteredKey) }))
+                Text("网络恢复后只继续「被网络暂停」的任务；你手动暂停的任务不会被自动开始。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                Text("空格快速查看选中的文件；任意 App 选中链接后，可从「服务」菜单选「用 Siphon 下载」。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
             Section("传输统计") {
                 LabeledContent("今日", value: "\(Formatting.bytes(stats.todayBytes)) · \(stats.todayCompleted) 个完成")
                 LabeledContent("近 7 天", value: Formatting.bytes(stats.last7DaysBytes))

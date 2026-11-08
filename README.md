@@ -112,6 +112,7 @@ HLS / DASH 共用 `SegmentAssembler`：有界并发、严格有序落盘、按�
 | 下载弹窗（NDM 式） | 检测到新任务时右下角浮出紧凑面板：实时速度曲线 + 峰值/均值、全部活动任务的总进度/剩余时间、当前任务的分段进度与最近任务切换；默认浮在当前应用之上**不抢焦点**，也可在设置里改为切前台；全部完成后约 4 秒自动收起；⇧⌘D 或菜单栏随时唤起 | NetTransport / NDM 浮窗 |
 | 列表批量操作 | ⌘ 点选 / ⇧ 区间 / ⌘A 全选后，选中 2 项以上会浮出批量操作条：暂停、继续、拷贝多条链接、在访达中显示、删除；右键菜单作用于**整组选择**；删除前统一确认（删文件 / 仅移出列表）；侧边详情列切换为多选汇总（总大小、已下载、状态分布）；「任务」菜单另有 ⌥⌘P / ⌥⌘R / ⇧⌘C 快捷键 | Motrix / NDM / aria2 GUI |
 | PAC 代理判定 | 读系统 PAC/代理设置，用 JavaScriptCore 执行 `FindProxyForURL`，按主机选代理（回环直连） | FluxDown `pac_js` |
+| macOS 系统集成 | Dock 真实进度条与右键菜单、菜单栏速度/百分比、通知动作、空格 Quick Look、拖出文件、废纸篓删除、Finder「来自何处」、服务菜单、断网自动暂停（详见 §7.5） | 原生 AppKit + Motrix/gopeed 的桌面经验 |
 
 ---
 
@@ -321,6 +322,35 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 **单窗口**：入口用 `Window` 而非 `WindowGroup`，避免每个 `magnet:` / `ed2k:` 链接新建窗口叠影，并消除默认「新建窗口」与 ⌘N 的冲突。
 
 > 实测环境 macOS 27.2：用真实窗口截图验证空状态、双任务状态、失焦状态，确认分组胶囊、蓝色主操作、搜索字段、无底部悬浮条遮挡、列表无幽灵行。图标仍是标准兼容 `.icns`（系统自动套圆角）；Apple 的分层玻璃图标需 Icon Composer 生成 `.icon`，本机无该工具，故未包含。
+
+---
+
+## 7.5 macOS 深度适配
+
+下载器的「原生感」不在窗口画得多像，而在系统该有的地方它都在。当前已接上的系统能力：
+
+| 能力 | 实现位置 | 行为 |
+|---|---|---|
+| Dock 进度条 | `Managers/DockPresence.swift` + `MacIntegrationModel.DockProgressModel` | 按字节加权重画图标底部进度条；只剩暂停任务时用中性色；总大小未知（chunked / HLS live）画“不确定态”而不是假装 0%。关闭后回退为角标百分比 |
+| Dock 右键菜单 | `AppDelegate.applicationDockMenu` | 新建下载 / 显示弹窗 / 全部暂停 / 恢复全部 / 打开下载目录，且按当前任务状态决定可用性 |
+| 菜单栏实时状态 | `Managers/SystemPresence.swift` | 图标随活动状态变实心；标题可显示下载速度（默认）、百分比或仅图标；点开菜单第一行是「N 个进行中 · 1.4 MB/s」 |
+| 通知动作 | 同上（`UNNotificationCategory`） | 完成：[在访达中显示][打开文件]；失败：[在访达中显示][重试]。点横幅直接定位文件，文件不在了才回主窗口 |
+| Quick Look | `Managers/QuickLookController.swift` + 本地键盘监视 | 列表里按空格预览选中文件（⌘Y 亦可），支持多选翻页、视频播放；与访达同一套共享面板 |
+| 拖出文件 | `TaskListView` 行级 `onDrag` | 已落盘的任务可直接拖到访达 / 邮件 / 剪辑软件，不必先开文件夹 |
+| 废纸篓语义 | `DownloadStore.removeAndDelete` | 删除任务时把成品与 `.part` 移入废纸篓（可恢复）；引擎控制文件才直接删 |
+| 下载来源 | `DownloadOriginMetadata` | 完成后写入 `com.apple.metadata:kMDItemWhereFroms`，访达「简介 › 更多信息 › 来自何处」可查原始地址；隔离属性（`com.apple.quarantine`）此前已有 |
+| 服务菜单 | `NSServices` + `AppDelegate.downloadFromService` | 任意 App 选中链接 → 右键「服务」→「用 Siphon 下载」；中文冒号/句号/括号包裹的链接也能正确切出 |
+| 网络感知 | `Managers/NetworkMonitor.swift` + `NetworkPolicy` | `NWPathMonitor` 断网时主动暂停（避免几十条连接同时超时留下半截分片），恢复后**只继续被网络暂停的任务**；可选计费网络暂停；状态栏显示「网络已断开 / 计费网络」 |
+
+设置 → 通用 → 系统集成 集中了这些开关，全部即时生效。回归脚本用 `MacIntegrationTests` 覆盖纯逻辑（字节加权、菜单栏文案、网络策略、链接切分、xattr 编码），并用 grep 断言防止这些“静默失效”的能力被误删。
+
+### 借鉴但未做（明确取舍）
+
+- **aria2 磁盘/文件系统自适应调优**（Motrix 按 APFS/SSD/网络盘推 `file-allocation`、`disk-cache`）：Siphon 的默认引擎是 URLSession 原生分段，aria2 只作 BT 外挂，收益有限。
+- **proxy 按域名规则引擎**：已有 PAC + 站点规则（`ProxyRouter` / `SiteRuleStore`），Surge 式规则表不是下载器的优先级。
+- **App Intents / Shortcuts**：需要 Xcode 的 intent metadata 提取，SPM 直构建链路不可靠；`siphon://` URL scheme + 服务菜单已覆盖自动化入口。
+- **BT 做种/分享率 UI**：aria2 已接 `seed-ratio`，但没有做 Motrix 那种按任务覆盖的完整面板。
+- **Spotlight（CoreSpotlight）索引已完成文件**：下载目录本来就在访达索引内，重复索引收益低于成本。
 
 ---
 

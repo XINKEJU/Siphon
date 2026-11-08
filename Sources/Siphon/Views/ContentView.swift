@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var filter: TaskFilter = .all
     @State private var searchText = ""
     @State private var showingDetail = false
+    @State private var network = NetworkMonitor.shared
 
     var body: some View {
         HStack(spacing: 0) {
@@ -41,7 +42,14 @@ struct ContentView: View {
                     .padding()
             }
         }
-        .task { await store.start() }
+        .task {
+            await store.start()
+            // 启动瞬间可能已经处于断网 / 计费网络，先按当前状态对一次策略。
+            store.handleNetworkChange(NetworkMonitor.shared.status)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .siphonOpenAddSheet)) { _ in
+            showingAdd = true
+        }
         .onChange(of: showingInspector) { _, visible in
             // A sheet left over from the sheet-only layout must not stack on
             // top of the new detail column.
@@ -149,6 +157,19 @@ struct ContentView: View {
                         .foregroundStyle(.orange)
                         .font(.system(size: 10))
                 }
+            }
+
+            // 网络异常不该只体现在任务失败里：状态栏提前说明「为什么都停了」。
+            if let note = network.status.displayText {
+                Label {
+                    Text(note)
+                        .font(.system(size: 11, weight: .semibold))
+                } icon: {
+                    Image(systemName: network.status.symbolName)
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 10))
+                }
+                .help(store.networkPauseReason?.displayText ?? "当前网络状态")
             }
 
             if store.selectedTaskIDs.count > 1 {

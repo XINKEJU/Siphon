@@ -40,18 +40,18 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"; kill "${SERVER_PID:-}" "${SERVER2_PID:-}" "${SERVER3_PID:-}" \
       "${SERVER4_PID:-}" "${ED2K_PID:-}" 2>/dev/null || true' EXIT
 
-echo "== [1/33] swift build =="
+echo "== [1/34] swift build =="
 swift build
 
-echo "== [2/33] MD4 / eD2K / link vectors =="
+echo "== [2/34] MD4 / eD2K / link vectors =="
 swiftc -o "$TMP/vectors" Tests/VectorTests/main.swift "${MODELS[@]}" "${ED2K[@]}"
 "$TMP/vectors"
 
-echo "== [3/33] HLS / DASH parsers =="
+echo "== [3/34] HLS / DASH parsers =="
 swiftc -o "$TMP/parsers" Tests/ParserTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/parsers"
 
-echo "== [4/33] concurrent ordered segment assembly =="
+echo "== [4/34] concurrent ordered segment assembly =="
 ( cd Tests/fixtures && exec python3 -m http.server 18765 --bind 127.0.0.1 ) \
     > "$TMP/server.log" 2>&1 &
 SERVER_PID=$!
@@ -65,7 +65,7 @@ done
 swiftc -parse-as-library -o "$TMP/segments" Tests/SegmentTests/main.swift "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/segments"
 
-echo "== [5/33] segmented resume sidecar (fingerprint + skip) =="
+echo "== [5/34] segmented resume sidecar (fingerprint + skip) =="
 # Reuses the :18765 fixture server started above.
 swiftc -parse-as-library -o "$TMP/resume-sidecar" Tests/ResumeTests/main.swift \
     "${MODELS[@]}" "${SHARED[@]}"
@@ -75,7 +75,7 @@ KEYCHAIN=(Sources/Siphon/Managers/Keychain.swift
           Sources/Siphon/Managers/LocalAuthToken.swift
           Sources/SiphonBridge/LocalAuthBootstrap.swift)
 
-echo "== [6/33] real aria2 JSON-RPC download (skipped if aria2c absent) =="
+echo "== [6/34] real aria2 JSON-RPC download (skipped if aria2c absent) =="
 if command -v aria2c >/dev/null 2>&1; then
     ( cd Tests/fixtures-aria2 && exec python3 -m http.server 18766 --bind 127.0.0.1 ) \
         > "$TMP/server2.log" 2>&1 &
@@ -107,7 +107,7 @@ else
     echo "SKIP  aria2c not installed (brew install aria2 to enable)"
 fi
 
-echo "== [7/33] protocol matrix: detection, vendor links, playlists, SigV4, normalization, engine E2E =="
+echo "== [7/34] protocol matrix: detection, vendor links, playlists, SigV4, normalization, engine E2E =="
 # Fixture server on :18765 is still running from step 4 and serves seg0.ts.
 PROTOCOL_SOURCES=(
     Sources/Siphon/Engines/Engine.swift
@@ -139,7 +139,7 @@ PROTOCOL_SOURCES=(
 swiftc -o "$TMP/protocols" Tests/ProtocolTests/main.swift "${PROTOCOL_SOURCES[@]}"
 "$TMP/protocols"
 
-echo "== [8/33] ED2K engine (resume destination regression) =="
+echo "== [8/34] ED2K engine (resume destination regression) =="
 swiftc -o "$TMP/ed2kengine" Tests/ED2KTests/main.swift \
     Sources/Siphon/Models/*.swift \
     Sources/Siphon/Engines/Engine.swift \
@@ -149,7 +149,7 @@ swiftc -o "$TMP/ed2kengine" Tests/ED2KTests/main.swift \
     Sources/Siphon/Engines/ED2K/*.swift
 "$TMP/ed2kengine"
 
-echo "== [9/33] NativeMessagingServer (split-request regression) =="
+echo "== [9/34] NativeMessagingServer (split-request regression) =="
 swiftc -framework Network -o "$TMP/nativemsg" \
     Tests/NativeMessagingTests/main.swift \
     Sources/Siphon/BrowserExtension/NativeMessagingServer.swift \
@@ -157,7 +157,7 @@ swiftc -framework Network -o "$TMP/nativemsg" \
     "${KEYCHAIN[@]}"
 "$TMP/nativemsg"
 
-echo "== [10/33] native HTTP download engine (no external tools) =="
+echo "== [10/34] native HTTP download engine (no external tools) =="
 mkdir -p Tests/fixtures-http
 # Deterministic ~5 MiB fixture so the test can verify exact byte equality.
 python3 - <<'PY'
@@ -222,7 +222,7 @@ swiftc -framework SystemConfiguration -framework JavaScriptCore -o "$TMP/nativeh
 "$TMP/nativehttp"
 kill "$SERVER3_PID" 2>/dev/null || true
 
-echo "== [11/33] native eD2K transport (real wire protocol E2E) =="
+echo "== [11/34] native eD2K transport (real wire protocol E2E) =="
 # Deterministic multi-block fixture (>2 x 180 KiB + short tail); both the Swift
 # test and the independent Python peer read the same file.
 FIXTURE=Tests/fixtures-ed2k/fixture.bin
@@ -254,7 +254,7 @@ swiftc -o "$TMP/ed2knative" Tests/ED2KNativeTests/main.swift \
 "$TMP/ed2knative"
 kill "$ED2K_PID" 2>/dev/null || true
 
-echo "== [12/33] LocalEngine + CurlEngine transport smoke =="
+echo "== [12/34] LocalEngine + CurlEngine transport smoke =="
 ( cd Tests/fixtures-http && exec python3 -m http.server 18773 --bind 127.0.0.1 ) \
     > "$TMP/server4.log" 2>&1 &
 SERVER4_PID=$!
@@ -277,7 +277,7 @@ swiftc -o "$TMP/smoke" Tests/TransferSmokeTests/main.swift "${SMOKE[@]}"
 "$TMP/smoke"
 kill "$SERVER4_PID" 2>/dev/null || true
 
-echo "== [13/33] Info.plist scheme registration matches URISchemes.registered =="
+echo "== [13/34] Info.plist scheme registration matches URISchemes.registered =="
 python3 - <<'PY'
 import plistlib, re, sys
 p = plistlib.load(open('Resources/Info.plist', 'rb'))
@@ -295,30 +295,30 @@ if missing_in_plist or missing_in_swift:
 print(f'OK  {len(swift_schemes)} schemes registered in both Info.plist and URISchemes.registered')
 PY
 
-echo "== [14/33] native HTTP resume suite (.part publish, ETag pinning, checksum) =="
+echo "== [14/34] native HTTP resume suite (.part publish, ETag pinning, checksum) =="
 swiftc -framework SystemConfiguration -framework JavaScriptCore -o "$TMP/resume" Tests/NativeHTTPResumeTests/main.swift \
     "${MODELS[@]}" Sources/Siphon/Engines/Engine.swift \
     Sources/Siphon/Managers/SpeedLimitController.swift \
     "${HTTP_EXTRA[@]}"
 "$TMP/resume"
 
-echo "== [15/33] yt-dlp resolver (stub binary, offline) =="
+echo "== [15/34] yt-dlp resolver (stub binary, offline) =="
 swiftc -o "$TMP/ytdlp" Tests/YtDlpTests/main.swift \
     Sources/Siphon/Protocols/YtDlpResolver.swift \
     Sources/Siphon/Engines/Shared/ExternalRunner.swift "${MODELS[@]}"
 "$TMP/ytdlp"
 
-echo "== [16/33] JavaScriptCore plugin host (sandbox + CRLF guard) =="
+echo "== [16/34] JavaScriptCore plugin host (sandbox + CRLF guard) =="
 swiftc -framework JavaScriptCore -o "$TMP/plugins" \
     Tests/PluginHostTests/main.swift Sources/Siphon/Plugins/PluginHost.swift
 "$TMP/plugins"
 
-echo "== [17/33] RSS/Atom feed parsing + guid diffing (loopback) =="
+echo "== [17/34] RSS/Atom feed parsing + guid diffing (loopback) =="
 swiftc -framework Network -o "$TMP/feeds" \
     Tests/RSSFeedTests/main.swift Sources/Siphon/RSS/FeedManager.swift
 "$TMP/feeds"
 
-echo "== [18/33] FTP directory listing (MLSD/LIST/NLST parser) =="
+echo "== [18/34] FTP directory listing (MLSD/LIST/NLST parser) =="
 swiftc -o "$TMP/ftplist" Tests/FTPListerTests/main.swift \
     Sources/Siphon/Models/*.swift \
     Sources/Siphon/Protocols/FTPDirectoryLister.swift \
@@ -328,24 +328,24 @@ swiftc -o "$TMP/ftplist" Tests/FTPListerTests/main.swift \
     Sources/Siphon/Engines/Shared/ExternalRunner.swift
 "$TMP/ftplist"
 
-echo "== [19/33] turtle three-tier limiter (off/on/auto window fold) =="
+echo "== [19/34] turtle three-tier limiter (off/on/auto window fold) =="
 swiftc -framework AppKit -o "$TMP/turtle" Tests/TurtleTests/main.swift \
     Sources/Siphon/Managers/TaskPolicy.swift
 "$TMP/turtle"
 
-echo "== [20/33] per-task token-bucket throttler =="
+echo "== [20/34] per-task token-bucket throttler =="
 swiftc -framework SystemConfiguration -framework JavaScriptCore -parse-as-library -o "$TMP/throttle" Tests/ThrottlerTests/main.swift \
     "${MODELS[@]}" Sources/Siphon/Engines/Engine.swift \
     Sources/Siphon/Managers/SpeedLimitController.swift \
     "${HTTP_EXTRA[@]}"
 "$TMP/throttle"
 
-echo "== [21/33] PAC resolver (parse + JavaScriptCore evaluation) =="
+echo "== [21/34] PAC resolver (parse + JavaScriptCore evaluation) =="
 swiftc -framework JavaScriptCore -o "$TMP/pac" \
     Tests/PACResolverTests/main.swift Sources/Siphon/Protocols/PACResolver.swift
 "$TMP/pac"
 
-echo "== [22/33] MCP JSON-RPC + webhook payload =="
+echo "== [22/34] MCP JSON-RPC + webhook payload =="
 swiftc -framework Network -o "$TMP/mcp" \
     Tests/MCPTests/main.swift \
     Sources/Siphon/BrowserExtension/MCPServer.swift \
@@ -354,7 +354,7 @@ swiftc -framework Network -o "$TMP/mcp" \
     "${KEYCHAIN[@]}"
 "$TMP/mcp"
 
-echo "== [23/33] loopback API token (REST + MCP auth, no CORS) =="
+echo "== [23/34] loopback API token (REST + MCP auth, no CORS) =="
 swiftc -framework Network -o "$TMP/localauth" \
     Tests/LocalAuthTests/main.swift \
     Sources/Siphon/BrowserExtension/NativeMessagingServer.swift \
@@ -363,7 +363,7 @@ swiftc -framework Network -o "$TMP/localauth" \
     "${KEYCHAIN[@]}"
 "$TMP/localauth"
 
-echo "== [24/33] credential scoping (site/origin filter, redirect guard, segment assembler) =="
+echo "== [24/34] credential scoping (site/origin filter, redirect guard, segment assembler) =="
 # The fixtures bind fixed ports (18891/18892). A run that was interrupted leaves
 # an echo_server orphaned, and the next run then fails with "fixture servers
 # unreachable" for no code reason — reap them first.
@@ -372,33 +372,33 @@ swiftc -parse-as-library -o "$TMP/credscope" Tests/CredentialScopeTests/main.swi
     "${MODELS[@]}" "${SHARED[@]}"
 "$TMP/credscope"
 
-echo "== [25/33] Metalink v3/v4 + WebDAV PROPFIND parsers (offline) =="
+echo "== [25/34] Metalink v3/v4 + WebDAV PROPFIND parsers (offline) =="
 swiftc -o "$TMP/metalink" Tests/MetalinkTests/main.swift Sources/Siphon/Protocols/MetalinkParser.swift
 "$TMP/metalink"
 swiftc -o "$TMP/webdav" Tests/WebDAVTests/main.swift Sources/Siphon/Protocols/WebDAVLister.swift
 "$TMP/webdav"
 
-echo "== [26/33] self-update feed parsing + version compare + SHA-256 (offline) =="
+echo "== [26/34] self-update feed parsing + version compare + SHA-256 (offline) =="
 swiftc -framework AppKit -o "$TMP/updater" Tests/UpdateCheckerTests/main.swift \
     Sources/Siphon/Managers/UpdateChecker.swift
 "$TMP/updater"
 
-echo "== [27/33] netrc parsing + host lookup (offline) =="
+echo "== [27/34] netrc parsing + host lookup (offline) =="
 swiftc -o "$TMP/netrc" Tests/NetRCTests/main.swift Sources/Siphon/Protocols/NetRC.swift
 "$TMP/netrc"
 
-echo "== [28/33] streaming preview server (Range + live watermark) =="
+echo "== [28/34] streaming preview server (Range + live watermark) =="
 swiftc -framework Network -framework Security -o "$TMP/preview" \
     Tests/PreviewServerTests/main.swift \
     Sources/Siphon/Managers/PreviewServer.swift
 "$TMP/preview"
 
-echo "== [29/33] native messaging framing (4-byte LE length + caps) =="
+echo "== [29/34] native messaging framing (4-byte LE length + caps) =="
 swiftc -o "$TMP/nmframing" Tests/NMFramingTests/main.swift \
     Sources/SiphonBridge/NativeMessagingFraming.swift
 "$TMP/nmframing"
 
-echo "== [30/33] MDXP JSON-RPC bridge (dispatch + error codes) =="
+echo "== [30/34] MDXP JSON-RPC bridge (dispatch + error codes) =="
 swiftc -o "$TMP/mdxp" Tests/MDXPBridgeTests/main.swift \
     Sources/Siphon/Managers/MDXPBridge.swift
 "$TMP/mdxp"
@@ -410,7 +410,7 @@ if [[ "${SIPHON_GUI_RESTART_E2E:-0}" == "1" ]]; then
     "$ROOT/scripts/verify-restart.sh"
 fi
 
-echo "== [31/33] archive safety (Zip Slip, symlinks, entry caps, name sanitizer) =="
+echo "== [31/34] archive safety (Zip Slip, symlinks, entry caps, name sanitizer) =="
 python3 - "$TMP" <<'PY'
 import sys, os, zipfile
 root = sys.argv[1]
@@ -431,13 +431,18 @@ swiftc -o "$TMP/archivesafety" Tests/ArchiveSafetyTests/main.swift \
     Sources/Siphon/Protocols/ContentDisposition.swift
 "$TMP/archivesafety" "$TMP/traversal.zip" "$TMP/symlink.zip" "$TMP/clean.zip"
 
-echo "== [32/33] checksum coverage + completion size policy (no silent completion) =="
+echo "== [32/34] checksum coverage + completion size policy (no silent completion) =="
 swiftc -o "$TMP/checksumpolicy" Tests/ChecksumPolicyTests/main.swift \
     Sources/Siphon/Managers/ChecksumPolicy.swift \
     Sources/Siphon/Engines/Shared/CompletionSizePolicy.swift
 "$TMP/checksumpolicy"
 
-echo "== [33/33] release assets + source-list consistency =="
+echo "== [33/34] macOS integration model (Dock / menu bar / network / services / origin) =="
+swiftc -o "$TMP/macintegration" Tests/MacIntegrationTests/main.swift \
+    Sources/Siphon/Managers/MacIntegrationModel.swift
+"$TMP/macintegration"
+
+echo "== [34/34] release assets + source-list consistency =="
 plutil -lint Resources/Siphon.entitlements Resources/SiphonHelper.entitlements >/dev/null
 bash -n scripts/build-app.sh scripts/notarize.sh scripts/make-dmg.sh scripts/verify.sh
 [[ -x scripts/notarize.sh ]] || { echo "notarize.sh is not executable" >&2; exit 1; }
@@ -518,6 +523,20 @@ if command -v node >/dev/null 2>&1; then
     node --check Resources/BrowserExtension/background.js
     node --check Resources/BrowserExtension/popup.js
 fi
+# macOS 深度适配：Dock 真实进度 + Dock 菜单、Quick Look、废纸篓语义、
+# Finder「来自何处」、Services 菜单、网络感知。这些能力都是“静默失效”型，
+# 删掉不会让编译失败，所以必须由回归脚本盯着。
+grep -q "NSApp.dockTile.contentView" Sources/Siphon/Managers/DockPresence.swift
+grep -q "DockPresence.shared.update" Sources/Siphon/Managers/SystemPresence.swift
+grep -q "applicationDockMenu" Sources/Siphon/AppDelegate.swift
+grep -q "QLPreviewPanel" Sources/Siphon/Managers/QuickLookController.swift
+grep -q "trashItem" Sources/Siphon/Managers/DownloadStore.swift
+grep -q "com.apple.metadata:kMDItemWhereFroms" Sources/Siphon/Managers/MacIntegrationModel.swift
+grep -q "NWPathMonitor" Sources/Siphon/Managers/NetworkMonitor.swift
+grep -q "handleNetworkChange" Sources/Siphon/Managers/DownloadStore.swift
+grep -q "servicesProvider" Sources/Siphon/AppDelegate.swift
+! grep -q "永久删除磁盘上的文件" Sources/Siphon/Views/TaskListView.swift
+python3 -c 'import plistlib; p=plistlib.load(open("Resources/Info.plist","rb")); s=p["NSServices"][0]; assert s["NSMessage"]=="downloadFromService" and s["NSPortName"]=="Siphon"'
 # The suite hand-lists swiftc inputs. Report coverage and fail on stale paths:
 # a newly added source that is referenced must be added to the right list, or a
 # step breaks; a path that was deleted must be removed from the list.

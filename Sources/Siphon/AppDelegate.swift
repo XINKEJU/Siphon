@@ -5,6 +5,7 @@ import SwiftUI
 /// Handles real application-level lifecycle events. View `onDisappear` is not a
 /// reliable place to stop the download daemon — it also fires during navigation
 /// changes and when auxiliary windows gain focus.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var store: DownloadStore?
     /// 进程级单实例锁：两个实例同时写 tasks.json 会互相覆盖。
@@ -38,6 +39,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Menu-bar-only mode keeps residency even without a Dock icon.
             UserDefaults.standard.set(true, forKey: "Siphon.backgroundRun")
             NSApp.setActivationPolicy(.accessory)
+        }
+        // 任意 App 里选中链接 → 服务菜单 →「用 Siphon 下载」。
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+        // 空格快速查看：由本地事件监视器接管，比在 SwiftUI 里抢 List 的
+        // first responder 可靠（List 的键盘焦点会被搜索框和多选抢走）。
+        installSpaceKeyMonitor()
+        // 断网/计费网络时主动暂停，恢复后只继续「被网络暂停」的那批任务。
+        NetworkMonitor.shared.onChange = { [weak self] status in
+            self?.store?.handleNetworkChange(status)
+        }
+        NetworkMonitor.shared.start()
+    }
+
+    /// Dock 图标右键菜单：macOS 用户不会为了暂停全部而先把窗口翻出来。
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "新建下载…", action: #selector(newDownloadFromDock),
+                     keyEquivalent: "").target = self
+        menu.addItem(withTitle: "显示下载弹窗", action: #selector(showPopupFromDock),
+                     keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        let pause = menu.addItem(withTitle: "全部暂停", action: #selector(pauseAllFromDock),
+                                 keyEquivalent: "")
+        pause.target = self
+        pause.isEnabled = store?.tasks.contains { $0.state == .active } ?? false
+        let resume = menu.addItem(withTitle: "恢复全部", action: #selector(resumeAllFromDock),
+                                  keyEquivalent: "")
+        resume.target = self
+        resume.isEnabled = store?.tasks.contains {
+            $0.state == .paused || $0.state == .error
+        } ?? false
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "在访达中打开下载目录", action: #selector(openFolderFromDock),
+                     keyEquivalent: "").target = self
+        return menu
+    }
+
+    @objc private func newDownloadFromDock() {
+        NotificationCenter.default.post(name: .siphonOpenAddSheet, object: nil)
+        showMainWindow()
+    }
+
+    @objc private func showPopupFromDock() {
+        guard let store else { return }
+        DownloadPopupController.shared.show(store: store)
+    }
+
+    @objc private func pauseAllFromDock() {
+        for t in store?.tasks ?? [] where t.state == .active || t.state == .pending {
+            store?.pause(t.id)
+        }
+    }
+
+    @objc private func resumeAllFromDock() {
+        for t in store?.tasks ?? [] where t.state == .paused || t.state == .error {
+            store?.resume(t.id)
+        }
+    }
+
+    @objc private func openFolderFromDock() {
+        guard let store else { return }
+        NSWorkspace.shared.open(store.downloadDirectory)
+    }
+
+    // MARK: - Services（服务菜单）
+
+    /// 应用未就绪时被服务调用（冷启动）先缓存，等 store 接上再消费。
+    var pendingServiceText: String?
+
+    func flushPendingServiceText() {
+        guard let text = pendingServiceText, let store else { return }
+        pendingServiceText = nil
+        store.addDroppedText(text)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// NSServices 入口。签名由 AppKit 约定：pasteboard + userData + 错误输出。
+    @objc func downloadFromService(_ pasteboard: NSPasteboard,
+                                   userData: String,
+                                   error: AutoreleasingUnsafeMutablePointer<NSString>) {
+        let text = pasteboard.string(forType: .string) ?? ""
+        guard let links = ServiceLinkExtractor.normalizedText(in: text) else {
+            error.pointee = "没有找到可下载的链接" as NSString
+            return
+        }
+        if store == nil {
+            pendingServiceText = links
+        } else {
+            store?.addDroppedText(links)
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
@@ -105,7 +197,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main?.makeKeyAndOrderFront(nil)
     }
 
+    private var keyMonitor: Any?
+
+    /// 空格 = Quick Look，与访达一致。只在主窗口是 key window、没有文本输入、
+    /// 且选中的文件确实存在时才拦截，其余情况原样放行。
+    private func installSpaceKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 49,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                  let self, let store = self.store else { return event }
+            if NSApp.keyWindow?.firstResponder is NSTextView { return event }
+            guard NSApp.keyWindow?.identifier?.rawValue.contains("main-window") == true else {
+                return event
+            }
+            let urls = store.selectedTasks
+                .map(\.destination)
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard !urls.isEmpty else { return event }
+            QuickLookController.shared.toggle(urls: urls)
+            return nil
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         store?.stop()
         TransferStats.shared.flush()
         if instanceLockFD >= 0 {

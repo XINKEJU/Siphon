@@ -263,6 +263,11 @@ public final class DownloadStore: EngineDelegate {
     }
     /// Tasks auto-paused by the schedule window; resumed when it reopens.
     private var autoPausedByWindow: Set<UUID> = []
+    /// 被网络事件（断网 / 计费网络）自动暂停的任务。只恢复这一组：
+    /// 用户自己按暂停的任务不该被“网络恢复”偷偷继续。
+    private var autoPausedByNetwork: Set<UUID> = []
+    /// 当前生效的网络暂停原因，状态栏据此显示提示。
+    public private(set) var networkPauseReason: NetworkPauseReason?
     private var schedulerTimer: AnyCancellable?
     private let keepAwake = KeepAwakeToken()
 
@@ -352,6 +357,35 @@ public final class DownloadStore: EngineDelegate {
 
     public func resetCompletionLatch() {
         UserDefaults.standard.removeObject(forKey: PrefKey.actionFired)
+    }
+
+    // MARK: - 网络变化（断网 / 计费网络）
+
+    /// 断网瞬间让几十条连接各自超时，比主动暂停糟糕得多：进度会留下大量
+    /// 半截分片、失败计数还会污染重试策略。这里统一「先停后起」。
+    public func handleNetworkChange(_ status: NetworkStatus) {
+        let settings = NetworkPolicy.Settings.current
+        if let reason = NetworkPolicy.pauseReason(for: status, settings: settings) {
+            guard networkPauseReason != reason else { return }
+            networkPauseReason = reason
+            var paused = 0
+            for t in tasks where t.state == .active || t.state == .pending {
+                autoPausedByNetwork.insert(t.id)
+                pause(t.id)
+                paused += 1
+            }
+            if paused > 0 {
+                SystemPresence.shared.showNotice(title: "下载已暂停", body: reason.displayText)
+            }
+        } else {
+            guard networkPauseReason != nil || !autoPausedByNetwork.isEmpty else { return }
+            networkPauseReason = nil
+            let ids = autoPausedByNetwork
+            autoPausedByNetwork.removeAll()
+            for id in ids where tasks.first(where: { $0.id == id })?.state == .paused {
+                resume(id)
+            }
+        }
     }
 
     /// Integration switches are user preferences, so they must survive relaunch.
@@ -906,14 +940,33 @@ public final class DownloadStore: EngineDelegate {
         guard let t = tasks.first(where: { $0.id == id }) else { return }
         let destination = t.destination
         let part = destination.appendingPathExtension("part")
+        let controlFiles = [
+            destination.appendingPathExtension("aria2"),
+            URL(fileURLWithPath: destination.path + ".siphon-resume.json")
+        ]
         remove(id)
-        let fm = FileManager.default
-        try? fm.removeItem(at: destination)
-        try? fm.removeItem(at: part)
-        try? fm.removeItem(at: destination.appendingPathExtension("aria2"))
-        try? fm.removeItem(at: URL(fileURLWithPath: destination.path + ".siphon-resume.json"))
+        // macOS 的删除约定是「进废纸篓」：用户误删一个 20 GB 的镜像时，
+        // 直接 unlink 没有第二次机会，废纸篓有。
+        for url in [destination, part] {
+            Self.moveToTrash(url)
+        }
+        // 引擎的断点控制文件不是用户数据，直接删掉。
+        for url in controlFiles {
+            try? FileManager.default.removeItem(at: url)
+        }
         Sidecar.clear(for: destination)
         Sidecar.clear(for: part)
+    }
+
+    /// 能进废纸篓就进；跨卷/无权限等情况下才退回直接删除（否则删除按钮会静默失效）。
+    private static func moveToTrash(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            var resulting: NSURL?
+            try FileManager.default.trashItem(at: url, resultingItemURL: &resulting)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     public func removeCompleted() {
@@ -1263,6 +1316,13 @@ public final class DownloadStore: EngineDelegate {
             // Flag the finished file as an internet download so Gatekeeper applies its
             // first-launch checks (FluxDown mark_of_the_web).
             markDownloadQuarantine(tasks[i].destination)
+            // Finder 的「简介 → 更多信息 → 来自何处」由这个 xattr 提供。
+            // 下载器不写它，用户事后就再也说不清文件是从哪个地址来的。
+            if PresenceDefaults.bool(PresenceDefaults.recordWhereFromsKey, default: true) {
+                DownloadOriginMetadata.write(source: tasks[i].source.absoluteString,
+                                             referrer: tasks[i].origin,
+                                             to: tasks[i].destination)
+            }
             // The `.part` file was atomically renamed; an open preview must follow.
             PreviewRegistry.shared.retarget(taskID: tasks[i].id,
                                             fileURL: tasks[i].destination,

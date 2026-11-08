@@ -26,6 +26,29 @@
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Siphon 会在你选择「全部完成后睡眠 / 关机」时通过系统事件执行该操作。</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Siphon 使用本地网络进行 UPnP 端口映射、局域网配对与 P2P 连接。</string>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>用 Siphon 下载</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>downloadFromService</string>
+            <key>NSPortName</key>
+            <string>Siphon</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>public.plain-text</string>
+                <string>NSStringPboardType</string>
+            </array>
+        </dict>
+    </array>
     <key>NSSupportsAutomaticTermination</key>
     <false/>
     <key>NSSupportsSuddenTermination</key>
