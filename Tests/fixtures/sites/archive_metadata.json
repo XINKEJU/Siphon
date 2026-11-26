@@ -1,0 +1,6 @@
+{"created":1700000000,"files":[
+  {"name":"book.pdf","size":"1234567","md5":"aaa111","sha1":"bbb222","format":"Text PDF","source":"original"},
+  {"name":"book_text.zip","size":"9000","sha1":"ccc333","format":"ZIP","source":"derivative"},
+  {"name":"book_thumb.jpg","format":"JPEG Thumb","source":"derivative"},
+  {"name":"book_meta.xml","format":"Metadata","source":"derivative"}
+]}

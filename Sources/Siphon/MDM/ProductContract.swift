@@ -11,6 +11,7 @@ public struct MDMCommand: Codable, Sendable {
     public var url: String?
     public var dir: String?
     public var name: String?
+    public var description: String?
     public var checksum: String?
     public var later: Bool?
     public var silent: Bool?
@@ -39,6 +40,7 @@ public struct MDMCommand: Codable, Sendable {
     public init(url: String? = nil,
                 dir: String? = nil,
                 name: String? = nil,
+                description: String? = nil,
                 checksum: String? = nil,
                 later: Bool? = nil,
                 silent: Bool? = nil,
@@ -64,6 +66,7 @@ public struct MDMCommand: Codable, Sendable {
         self.url = url
         self.dir = dir
         self.name = name
+        self.description = description
         self.checksum = checksum
         self.later = later
         self.silent = silent
@@ -89,7 +92,7 @@ public struct MDMCommand: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case url, dir, name, checksum, later, silent, startQueue, referer, pageUrl
+        case url, dir, name, description, checksum, later, silent, startQueue, referer, pageUrl
         case userAgent, finalUrl, size, mime, post, privateWindow, browserHandoff
         case proxy, query, action, ids, category, queue, remote, torrentFile
         // cookies deliberately absent
@@ -132,11 +135,12 @@ public struct MDMDownloadInfo: Codable, Sendable, Identifiable {
         self.size = task.progress.totalBytes
         self.downloaded = task.progress.downloadedBytes
         self.speed = task.progress.speedBytesPerSec
-        self.category = MDMCategory.categorize(fileName: task.name).rawValue
+        self.category = task.category
+            ?? MDMCategory.categorize(fileName: task.name).rawValue
         self.queue = task.queueName
         self.added = task.createdAt
         self.finished = task.state == .completed ? Date() : nil
-        self.lastTry = nil
+        self.lastTry = task.lastAttemptAt
         self.error = task.errorDescription
     }
 }

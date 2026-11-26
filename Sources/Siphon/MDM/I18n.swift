@@ -93,7 +93,7 @@ private let English: [String: String] = [
     "column.status": "Status",
     "column.timeLeft": "Time left",
     "column.rate": "Transfer rate",
-    "column.lastTry": "Last Try Date",
+    "column.lastTry": "Last Try",
     "column.description": "Description",
     "column.added": "Added",
     "column.source": "Source",

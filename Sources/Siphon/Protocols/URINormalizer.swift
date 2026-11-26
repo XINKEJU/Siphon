@@ -21,15 +21,20 @@ public struct NormalizedRequest: Sendable {
     public var pieceLength: Int64
     /// Alternative sources for the same file (Metalink mirror list).
     public var mirrors: [URL]
+    /// Size in bytes when known up front (e.g. reported by a site adapter or
+    /// a playlist); 0/nil lets the engine discover it from the response.
+    public var expectedSize: Int64?
 
     public init(url: URL, proto: DownloadProtocol, origin: String,
                 suggestedName: String? = nil, options: [String: String] = [:],
                 checksum: String? = nil, mirrors: [URL] = [],
-                pieceHashes: [String] = [], pieceLength: Int64 = 0) {
+                pieceHashes: [String] = [], pieceLength: Int64 = 0,
+                expectedSize: Int64? = nil) {
         self.url = url; self.proto = proto; self.origin = origin
         self.suggestedName = suggestedName; self.options = options
         self.checksum = checksum; self.mirrors = mirrors
         self.pieceHashes = pieceHashes; self.pieceLength = pieceLength
+        self.expectedSize = expectedSize
     }
 }
 
@@ -238,6 +243,20 @@ public enum URINormalizer {
              .scp, .rsync, .file, .data, .curl:
             if !URISchemes.all.contains(scheme) && scheme != "file" && scheme != "data" {
                 throw NormalizerError.unsupportedScheme(scheme)
+            }
+            // Site adapters turn a public host page (Google Drive, MediaFire, …)
+            // into the actual file URL + headers + metadata. Only HTTP(S) is
+            // adapted; a matched host throws a real error on failure instead of
+            // enqueuing a doomed task. Unmatched hosts fall through unchanged.
+            if scheme == "http" || scheme == "https",
+               let resolved = try await SiteAdapterRegistry.resolve(url, options: options) {
+                return resolved.map { r in
+                    var opts = options
+                    for (k, v) in r.headers { opts[k] = v }
+                    return NormalizedRequest(url: r.url, proto: proto, origin: input,
+                                             suggestedName: r.suggestedName, options: opts,
+                                             checksum: r.checksum, expectedSize: r.size)
+                }
             }
             return [NormalizedRequest(url: url, proto: proto, origin: input, options: options)]
         }

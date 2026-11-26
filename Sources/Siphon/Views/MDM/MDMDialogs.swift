@@ -10,7 +10,7 @@ struct MDMAddURLDialog: View {
     @State private var url = ""
     @State private var name = ""
     @State private var description = ""
-    @State private var category: MDMCategory = .general
+    @State private var categoryKey: String? = nil
     @State private var saveTo = ""
     @State private var later = false
     @State private var queue = "Default"
@@ -24,9 +24,12 @@ struct MDMAddURLDialog: View {
             field(MDMI18n.t("dialog.saveTo"), text: $saveTo, placeholder: store.downloadDirectory.path)
 
             HStack {
-                Picker(MDMI18n.t("dialog.category"), selection: $category) {
-                    ForEach([MDMCategory.general, .compressed, .documents, .music, .programs, .video, .torrents], id: \.self) {
-                        Text($0.displayName).tag($0)
+                Picker(MDMI18n.t("dialog.category"), selection: $categoryKey) {
+                    Text(MDMCategory.general.displayName).tag(nil as String?)
+                    ForEach(CategoryStore.shared.categories.filter {
+                        $0.key != MDMCategory.general.rawValue
+                    }) { cat in
+                        Text(cat.name).tag(Optional(cat.key))
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -65,15 +68,14 @@ struct MDMAddURLDialog: View {
     }
 
     private func submit(later: Bool) {
-        var options: [String: String] = [:]
-        if !description.isEmpty { options["description"] = description }
-        if !saveTo.isEmpty { options["mdm.saveTo"] = saveTo }
-        options["mdm.category"] = category.rawValue
         Task {
             _ = await store.addMDMCommand(MDMCommand(url: url,
+                                                     dir: saveTo,
                                                      name: name.isEmpty ? nil : name,
+                                                     description: description.isEmpty ? nil : description,
                                                      later: later,
                                                      action: "add",
+                                                     category: categoryKey,
                                                      queue: queue))
             await MainActor.run { isPresented = false }
         }

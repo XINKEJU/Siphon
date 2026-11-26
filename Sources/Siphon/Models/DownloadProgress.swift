@@ -7,6 +7,10 @@ public struct DownloadProgress: Sendable {
     public var totalBytes: Int64 = 0
     public var speedBytesPerSec: Int64 = 0
     public var connectedPeers: Int = 0
+    /// Real upload counters when the engine provides them (aria2 tellStatus).
+    /// Optional so non-seeding engines do not invent zero-valued BT statistics.
+    public var uploadedBytes: Int64?
+    public var uploadSpeedBytesPerSec: Int64?
 
     public init() {}
 

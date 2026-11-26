@@ -138,6 +138,8 @@ PROTOCOL_SOURCES=(
     Sources/Siphon/Protocols/ProtocolSettings.swift
     "${KEYCHAIN[@]}"
     Sources/Siphon/Protocols/URINormalizer.swift
+    Sources/Siphon/SiteAdapters/SiteAdapterRegistry.swift
+    Sources/Siphon/SiteAdapters/SiteAdapters.swift
     Sources/Siphon/Protocols/MetalinkParser.swift
     Sources/Siphon/Protocols/WebDAVLister.swift
     Sources/Siphon/Protocols/FTPDirectoryLister.swift
@@ -507,9 +509,9 @@ grep -q "PopupSurface()" Sources/Siphon/Views/DownloadPopupView.swift
 grep -q "public var selectedTaskIDs" Sources/Siphon/Managers/DownloadStore.swift
 grep -q "func deleteTasks" Sources/Siphon/Managers/DownloadStore.swift
 grep -q "func pauseTasks" Sources/Siphon/Managers/DownloadStore.swift
-grep -q "Table(visible, selection: selectionBinding)" Sources/Siphon/Views/TaskListView.swift
+grep -q "TaskTableRepresentable(" Sources/Siphon/Views/TaskListView.swift
 grep -q "private var batchBar" Sources/Siphon/Views/TaskListView.swift
-grep -q "private func batchContextMenu(for task:" Sources/Siphon/Views/TaskListView.swift
+grep -q "private func batchContextMenu(store:" Sources/Siphon/Views/TaskTableView.swift
 grep -q "BatchSelectionPanel" Sources/Siphon/Views/ContentView.swift
 # Main window must fill the window: HSplitView lays out at its subviews' ideal
 # height (~135pt) on this toolchain and centres a thin strip, so the three-pane
@@ -574,7 +576,8 @@ grep -q "enum MDMStatus" Sources/Siphon/MDM/ProductStatus.swift
 grep -q "case queued" Sources/Siphon/MDM/ProductStatus.swift
 grep -q "enum MDMCategory" Sources/Siphon/MDM/ProductStatus.swift
 grep -q "143" Sources/Siphon/Views/MDM/CategoryTreeView.swift
-grep -q "TableColumn(MDMI18n.t(\"column.fileName\")" Sources/Siphon/Views/TaskListView.swift
+grep -q 'case fileName, queue, size, status, timeLeft, transferRate, lastTry' Sources/Siphon/Views/TaskTableView.swift
+grep -q "case description, added, source, peers, shareRatio, uploadSpeed, saveTo" Sources/Siphon/Views/TaskTableView.swift
 grep -q "case proxySocks" Sources/Siphon/Views/MDM/MDMOptionsView.swift
 grep -q "case status, limiter, completion" Sources/Siphon/Views/MDM/MDMProgressPanel.swift
 grep -q "func mdmRecentAnswer" Sources/Siphon/MDM/StoreMDMBridge.swift
@@ -609,6 +612,12 @@ print(f"INFO  {len(sources) - len(uncovered)}/{len(sources)} Swift sources compi
 print(f"INFO  {len(uncovered)} sources covered by `swift build` only (no swiftc unit step)")
 PY
 echo "PASS  release assets + source lists"
+
+echo "== site-adapter parser tests (offline fixtures, no network) =="
+swiftc -o "$TMP/sites" Tests/SiteAdapterTests/main.swift \
+    Sources/Siphon/SiteAdapters/SiteAdapterRegistry.swift \
+    Sources/Siphon/SiteAdapters/SiteAdapters.swift
+"$TMP/sites"
 
 echo
 echo "ALL CHECKS PASSED"

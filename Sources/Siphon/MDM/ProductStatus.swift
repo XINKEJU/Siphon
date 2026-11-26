@@ -118,13 +118,30 @@ public enum MDMCategory: String, CaseIterable, Sendable, Identifiable {
         return .general
     }
 
+    /// On-disk subfolder for the auto-categorize preference. Reuses the names
+    /// `AutoCategorizer` already writes, so explicit and derived categories
+    /// land in the same directories. Roots and General have no folder.
+    public var folderName: String? {
+        switch self {
+        case .compressed: return "压缩包"
+        case .documents: return "文档"
+        case .music: return "音乐"
+        case .programs: return "软件"
+        case .video: return "视频"
+        case .torrents: return "种子"
+        default: return nil
+        }
+    }
+
     public func contains(_ task: DownloadTask) -> Bool {
         switch self {
         case .all: return true
         case .unfinished: return task.state == .pending || task.state == .active || task.state == .paused || task.state == .error
         case .finished: return task.state == .completed
         case .queues: return !task.queueName.isEmpty
-        default: return Self.categorize(fileName: task.name) == self
+        default:
+            if let explicit = task.category { return explicit == rawValue }
+            return Self.categorize(fileName: task.name) == self
         }
     }
 }

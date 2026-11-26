@@ -3,14 +3,16 @@ import AppKit
 
 /// MDM/IDM window layout: menu bar (in `SiphonCommands`), a 143pt category
 /// tree, the 14-column download list, a status strip, and an optional preview
-/// column. The previous four-filter-tab layout is preserved as the `filter`
-/// state so the store's existing filter contract stays valid.
+/// column. The four legacy filter tabs are represented by the category tree;
+/// the `filter` state stays plumbed for the store's existing contract.
 struct ContentView: View {
     @Environment(DownloadStore.self) private var store
     @Binding var showingAdd: Bool
     @Binding var showingInspector: Bool
     @State private var filter: TaskFilter = .all
-    @State private var category: MDMCategory = .all
+    // Optional so a custom category (not representable by MDMCategory) can be
+    // the active tree selection with no built-in node highlighted.
+    @State private var category: MDMCategory? = .all
     @State private var selectedQueue: String?
     @State private var searchText = ""
     @State private var showingDetail = false

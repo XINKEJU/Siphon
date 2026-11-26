@@ -27,6 +27,10 @@ public final class DownloadStore: EngineDelegate {
     /// 等待二次确认的批量删除目标（菜单和列表都能触发同一个确认框）。
     public var pendingDeleteIDs: Set<UUID> = []
     public var filter: TaskFilter = .all
+    /// Selected custom-category key (MDM custom categories are not representable
+    /// by the `MDMCategory` enum). When set, the list filters to tasks whose
+    /// resolved category key matches; selecting a built-in/root node clears it.
+    public var selectedCategoryKey: String? = nil
     public var aria2Status: String = "未启动"
     /// Prefer this over string-matching `aria2Status`: the human-readable status
     /// text changes, but the readiness flag stays a reliable source of truth.
@@ -89,13 +93,34 @@ public final class DownloadStore: EngineDelegate {
     private var indexByID: [UUID: Int] = [:]
     private let defaultsKey = "Siphon.tasks"
     /// Auto-categorize on when enabled: route the file into a type subfolder.
+    /// Reads `CategoryStore`, so editing the extension mapping or a category's
+    /// folder changes where new downloads land immediately.
     private func categorizedDirectory(for fileName: String) -> URL {
         var dir = downloadDirectory
         if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize),
-           let sub = AutoCategorizer.subdirectory(for: fileName) {
+           let sub = CategoryStore.shared.category(for: fileName)?.folderName, !sub.isEmpty {
             dir = dir.appendingPathComponent(sub, isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+        return dir
+    }
+
+    /// Save-to / category supplied by an explicit add command. The category
+    /// only selects the auto-categorize subfolder; it never escapes the base.
+    /// Resolution goes through `CategoryStore`, so built-in and custom keys
+    /// share one lookup and the folder stays editable from Options.
+    private func destinationDirectory(for fileName: String, base: URL?,
+                                      category: String?) -> URL {
+        let root = (base ?? downloadDirectory).standardizedFileURL
+        var dir = root
+        if UserDefaults.standard.bool(forKey: PrefKey.autoCategorize) {
+            let sub = CategoryStore.shared.folderName(forKey: category)
+                ?? CategoryStore.shared.category(for: fileName)?.folderName
+            if let sub, !sub.isEmpty {
+                dir = root.appendingPathComponent(sub, isDirectory: true)
+            }
+        }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
     private enum PrefKey {
@@ -509,6 +534,9 @@ public final class DownloadStore: EngineDelegate {
                               checksum: String? = nil,
                               mirrors: [String] = [],
                               priority: Int = 0,
+                              category: String? = nil,
+                              note: String? = nil,
+                              directory: URL? = nil,
                               ytdlpQuality: YtDlpResolver.Quality = .auto) async {
         let mirrorURLs = mirrors.compactMap { URL(string: $0) }
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -534,8 +562,9 @@ public final class DownloadStore: EngineDelegate {
                 ?? URL(string: trimmed)?.lastPathComponent
             ?? "download"
             let fileName = SiteRuleStore.shared.adjustedFileName(baseName, for: resolved.url)
-            guard let destination = uniqueDestination(for: fileName,
-                                                      in: categorizedDirectory(for: fileName)) else {
+            guard let destination = uniqueDestination(
+                for: fileName,
+                in: destinationDirectory(for: fileName, base: directory, category: category)) else {
                 lastError = "文件已存在，已按冲突策略跳过：\(fileName)"
                 return
             }
@@ -550,7 +579,9 @@ public final class DownloadStore: EngineDelegate {
                              options: opts, origin: "plugin",
                              checksum: resolved.checksum ?? checksum,
                              mirrors: resolved.mirrors.isEmpty ? mirrorURLs : resolved.mirrors,
-                             priority: priority))
+                             priority: priority,
+                             category: category,
+                             note: note))
             lastError = nil
             return
         }
@@ -565,7 +596,8 @@ public final class DownloadStore: EngineDelegate {
                     trimmed, quality: ytdlpQuality)
                 enqueueMedias(medias, queueName: queueName, options: options,
                               checksum: checksum, customName: name,
-                              priority: priority, quality: ytdlpQuality)
+                              priority: priority, category: category,
+                              note: note, directory: directory, quality: ytdlpQuality)
                 lastError = nil
                 return
             } catch {
@@ -599,12 +631,13 @@ public final class DownloadStore: EngineDelegate {
                     reqOptions["Cookie"] = cookie
                 }
                 let fileName = SiteRuleStore.shared.adjustedFileName(baseName, for: req.url)
-                guard let destination = uniqueDestination(for: fileName,
-                                                          in: categorizedDirectory(for: fileName)) else {
+                guard let destination = uniqueDestination(
+                    for: fileName,
+                    in: destinationDirectory(for: fileName, base: directory, category: category)) else {
                     skipped = fileName
                     continue
                 }
-                let task = DownloadTask(name: destination.lastPathComponent, source: req.url,
+                var task = DownloadTask(name: destination.lastPathComponent, source: req.url,
                                         destination: destination,
                                         queueName: queueName, options: reqOptions,
                                         origin: req.origin,
@@ -615,7 +648,13 @@ public final class DownloadStore: EngineDelegate {
                                         pieceHashes: req.pieceHashes,
                                         pieceLength: req.pieceLength,
                                         priority: priority,
+                                        category: category,
+                                        note: note,
                                         protoOverride: req.proto)
+                // Site adapters / playlists may report the size up front.
+                if let size = req.expectedSize, size > 0, task.progress.totalBytes == 0 {
+                    task.progress.totalBytes = size
+                }
                 add(task)
             }
             lastError = skipped.map { "文件已存在，已按冲突策略跳过：\($0)" }
@@ -629,6 +668,8 @@ public final class DownloadStore: EngineDelegate {
     private func enqueueMedias(_ medias: [YtDlpResolver.Media], queueName: String,
                                options: [String: String], checksum: String?,
                                customName: String?, priority: Int = 0,
+                               category: String? = nil, note: String? = nil,
+                               directory: URL? = nil,
                                quality: YtDlpResolver.Quality = .auto) {
         for (index, media) in medias.enumerated() {
             let sanitizedTitle = media.title
@@ -654,8 +695,9 @@ public final class DownloadStore: EngineDelegate {
                 opts["Cookie"] = cookie
             }
             fileName = SiteRuleStore.shared.adjustedFileName(fileName, for: src)
-            guard let destination = uniqueDestination(for: fileName,
-                                                      in: categorizedDirectory(for: fileName)) else { continue }
+            guard let destination = uniqueDestination(
+                for: fileName,
+                in: destinationDirectory(for: fileName, base: directory, category: category)) else { continue }
             let task = DownloadTask(name: destination.lastPathComponent,
                                     source: src,
                                     destination: destination,
@@ -664,6 +706,8 @@ public final class DownloadStore: EngineDelegate {
                                     priority: priority,
                                     ytdlp: true,
                                     ytdlpFormat: media.selector ?? quality.selector,
+                                    category: category,
+                                    note: note,
                                     protoOverride: .https)
             add(task)
         }
@@ -1138,6 +1182,7 @@ public final class DownloadStore: EngineDelegate {
                 tasks[i].errorDescription = "没有可处理 \(task.protocol.displayName) 的引擎"
                 continue
             }
+            tasks[i].lastAttemptAt = Date()
             do {
                 if submitted.contains(id) {
                     await eng.resume(id)
@@ -1330,6 +1375,10 @@ public final class DownloadStore: EngineDelegate {
                                             downloadedBytes: tasks[i].progress.downloadedBytes)
             // Auto-extract archives and run any post-processing command (HyperDM model).
             ArchiveManager.shared.handleCompletion(of: tasks[i].destination)
+            // Audible completion cue — independent of notification permission.
+            if UserDefaults.standard.bool(forKey: "Siphon.soundsEnabled") {
+                NSSound(named: NSSound.Name("Glass"))?.play()
+            }
         }
         // Persist `.error` too: otherwise the last saved record still says
         // "active", and the auto-resume-on-launch feature would retry a task
@@ -1868,6 +1917,8 @@ private struct TaskRecord: Codable {
     var id: UUID, name: String, source: URL, destination: URL
     var proto: String, state: String, queueName: String
     var downloaded: Int64, total: Int64, error: String?
+    var lastAttemptAt: Date?
+    var uploaded: Int64?
     var origin: String?
     var options: [String: String]?
     var checksum: String?
@@ -1881,6 +1932,8 @@ private struct TaskRecord: Codable {
     var ytdlp: Bool?
     var ytdlpFormat: String?
     var hlsBandwidth: Int?
+    var category: String?
+    var note: String?
     /// True when the task was active/pending at save time, i.e. it was interrupted
     /// by an app quit rather than paused by the user.
     var wasActive: Bool?
@@ -1889,6 +1942,8 @@ private struct TaskRecord: Codable {
         id = t.id; name = t.name; source = t.source; destination = t.destination
         proto = t.protocol.rawValue; state = t.state.rawValue; queueName = t.queueName
         downloaded = t.progress.downloadedBytes; total = t.progress.totalBytes
+        lastAttemptAt = t.lastAttemptAt
+        uploaded = t.progress.uploadedBytes
         error = t.errorDescription; origin = t.origin
         options = t.options.isEmpty ? nil : t.options
         checksum = t.checksum
@@ -1902,6 +1957,8 @@ private struct TaskRecord: Codable {
         ytdlp = t.ytdlp ? true : nil
         ytdlpFormat = t.ytdlpFormat
         hlsBandwidth = t.hlsBandwidth
+        category = t.category
+        note = t.note
         // Only an in-flight task counts as interrupted; an explicit pause or a
         // terminal task must not be auto-restarted on the next launch.
         let inFlight = t.state == .active || t.state == .pending
@@ -1928,7 +1985,9 @@ private struct TaskRecord: Codable {
                              connections: connections ?? 8,
                              ytdlp: ytdlp ?? false,
                              ytdlpFormat: ytdlpFormat,
-                             hlsBandwidth: hlsBandwidth)
+                             hlsBandwidth: hlsBandwidth,
+                             category: category,
+                             note: note)
         t.protocol = DownloadProtocol(rawValue: proto) ?? .https
         // Engine-side GIDs / segment state do not survive an app restart, so
         // restore non-terminal tasks as paused and let the user resume explicitly.
@@ -1936,6 +1995,8 @@ private struct TaskRecord: Codable {
         t.state = restored.isTerminal ? restored : .paused
         t.progress.downloadedBytes = downloaded
         t.progress.totalBytes = total
+        t.progress.uploadedBytes = uploaded
+        t.lastAttemptAt = lastAttemptAt
         t.errorDescription = error
         t.origin = origin
         return t

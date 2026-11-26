@@ -42,7 +42,7 @@
 |---|---|
 | `Queued / Downloading / Stopped / Complete / Error` 五态 | `Sources/Siphon/MDM/ProductStatus.swift` 的 `MDMStatus`，映射原有 `DownloadState`，旧 `tasks.json` 不需迁移 |
 | All Downloads / Unfinished / Finished / Queues 分类树 + 内置文件类型 | `MDMCategoryTreeView`，宽度固定 143pt |
-| 14 槽列表（File Name / Q / Size / Status / Time left / Transfer rate / …） | `TaskListView` 的 14 列 `Table`，无数据槽显示 `—` |
+| 14 槽列表（File Name / Q / Size / Status / Time left / Transfer rate / …） | `TaskListView` 当前 10 列 `Table`（SwiftUI `TableColumnBuilder` 上限），Peers / 分享率 / 保存路径折叠进 Details 列；真 14 列在阶段 1.1 用 AppKit 表格实装 |
 | Tasks / File / Downloads / View / Help 菜单 | `SiphonApp.swift` 的 `SiphonCommands`，每个工具栏动作都有菜单入口 |
 | 独立进度窗口：Status / Limiter / Completion 三 tab、分段位图、连接表 | `Views/MDM/MDMProgressPanel.swift` |
 | Options 12 页两行标签 | `Views/MDM/MDMOptionsView.swift`，内容复用真实设置面板 |
@@ -158,7 +158,7 @@ open build/Siphon.app
 ./scripts/make-dmg.sh
 ```
 
-`build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-0.2.0.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
+`build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-<版本>.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
 
 `verify.sh` 共 34 步：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（本机缺 aria2c 时打印 SKIP；CI 设 `SIPHON_REQUIRE_ARIA2=1` 时直接失败）、**协议矩阵 124 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端、**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路，以及新增的 **PAC 解析器**（JavaScriptCore 执行 + 指令解析）与 **MCP JSON-RPC + Webhook 签名/载荷**测试。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
 
@@ -231,8 +231,8 @@ Sources/Siphon/
     I18n.swift                     中英目录、键回退、提取器可读的 TSV 结构
   Views/
     Glass.swift                   浮层控件的玻璃自适应组件（26+ 玻璃 / 14–15 材质回退）
-    ContentView.swift              MDM 四区布局（分类树 / 14 列列表 / 状态栏 / 预览列）
-    TaskListView.swift             14 槽任务表 + 多选、批量、拖放、右键
+    ContentView.swift              MDM 四区布局（分类树 / 10 列列表 / 状态栏 / 预览列）
+    TaskListView.swift             10 槽任务表 + 多选、批量、拖放、右键
     MDM/                           MDM 分类树 / 进度窗口 / Options 12 页 / 核心对话框
     ...                          检查器 / 设置 / 表单
 Resources/
@@ -327,7 +327,7 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 
 - **传输控制**：`[恢复全部][全部暂停]` 放在同一个 `ToolbarItemGroup(.primaryAction)`，形成一组；两者用 `bordered` + `tint` 着色区分（恢复 = 绿色、暂停 = 橙色），一眼可辨
 - **主操作**：`[+ 新建下载]` 是唯一 `.borderedProminent` + `tint` 的蓝色胶囊
-- ~~更多操作~~：原 `ellipsis` 菜单（清理 / 打开目录 / 重启 aria2 / 显示侧边栏）已移除 —— 四项功能在设置页、侧边栏、顶栏目录按钮与菜单栏中均有入口，独立按钮无人使用
+- **更多**：`ellipsis.circle` 菜单集中批量添加 / 稍后下载 / 计划任务 / 查找 / 属性 / 校验和 / 选项；不常用的操作不占主工具栏位置
 - **搜索**：系统 `.searchable`，不再是自绘字段；组间用 `ToolbarSpacer(.fixed, placement: .primaryAction)` 分隔（macOS 26+ API，必须与被分隔项同 placement 才生效）
 - `SiphonCommands` 让每个工具栏动作在菜单栏都有对应项（⌘N、「显示」菜单、「任务」菜单），因为工具栏可被隐藏或自定义
 
@@ -335,7 +335,7 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 
 ### 7.4 详情呈现与侧边栏开关
 
-当前主窗口是简化布局：顶部筛选标签、紧凑任务列表、底部状态栏。**不再**使用三栏 `NavigationSplitView`，也不再依赖系统 `.inspector(isPresented:)`。
+当前主窗口是 MDM 式三栏布局：左侧分类树、中间任务列表与底部状态栏、右侧可选详情列。**不再**使用 `NavigationSplitView`，也不再依赖系统 `.inspector(isPresented:)`；原顶部四筛选标签已由分类树取代。
 
 「菜单栏 → 显示 → 显示侧边栏」（⌘⌥I）由 `SiphonApp` 中的 `@AppStorage("Siphon.showInspector")` 驱动，控制面板显隐并跨启动保留，同一绑定下发给 `ContentView` 与 `SiphonCommands`：
 
@@ -383,24 +383,24 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 
 ## 8. 本地控制接口
 
-设置 → 集成 → 开启后监听 `127.0.0.1:17801`。除 `GET /ping` 外所有请求需带每安装随机令牌（设置页可复制/轮换，存于登录钥匙串）：
+设置 → 集成 → 开启后监听 `127.0.0.1:17801`。除 `GET /ping` 外所有请求需带每安装随机令牌（设置页可复制/轮换，存于 `~/Library/Application Support/Siphon/local-api-token`，目录 `0700` / 文件 `0600`；不用登录钥匙串，避免 ad-hoc 签名每次重建都触发钥匙串授权弹窗）：
 
 ```bash
-TOKEN=$(curl -s http://127.0.0.1:17801/ping | sed -E 's/.*"token":"([^"]+)".*/\1/')
+TOKEN=$(cat "$HOME/Library/Application Support/Siphon/local-api-token")
 
 curl -X POST http://127.0.0.1:17801/add \
      -H 'Content-Type: application/json' \
      -H "Authorization: Bearer $TOKEN" \
      -d '{"url":"https://example.com/file.zip"}'
 
-curl http://127.0.0.1:17801/ping   # 免鉴权；响应含令牌，供扩展引导
+curl http://127.0.0.1:17801/ping   # 免鉴权；只返回 {"ok":true,"app":"Siphon"}
 ```
 
 鉴权原因：仅绑定回环挡不住浏览器里的网页——任意网页都能向 `127.0.0.1` 发跨站 POST（简单请求无需预检），旧版响应还带 `Access-Control-Allow-Origin: *`，网页可直接读回任务列表（任务 URL 可能内嵌凭据）。现在响应不带 CORS 头、接口要求 Bearer 令牌，两条路都封死。MCP 服务（`17802`）同样要求 Bearer 令牌；aria2 RPC（`6800`）以 `--rpc-secret` 保护，每条 RPC 前置 `token:` 参数。
 
 aria2 会话持久化：启动即带 `--save-session`（每 30 秒落盘），退出时 SIGTERM 优雅停止并同步写盘；重启后以 `--input-file` + `--deferred-input` 重载，Siphon 按源 URL / 磁力 BTIH 把 aria2 内的既有下载重新认领到任务上，配对的旧任务恢复为暂停态，未配对的留在 aria2 里静默暂停。
 
-`Resources/BrowserExtension/` 提供可直接「加载已解压的扩展程序」的 Manifest V3 示例。扩展凭 host_permissions 读取 `/ping` 自动获取并存储令牌（网页读不到该响应），设置页轮换令牌后自动跟随。仅绑定回环地址，不监听公网。「自动捕获复制的下载链接」与「启用本地控制接口」两个开关的状态会持久化，重启后自动恢复。
+`Resources/BrowserExtension/` 提供可直接「加载已解压的扩展程序」的 Manifest V3 示例。扩展优先走 Native Messaging 网关，令牌由网关从上述 `0600` 文件带外读取；HTTP 回退需在 popup 的「设置」页手动粘贴一次令牌。`/ping` 只做存活探测，任何情况下都不下发令牌。仅绑定回环地址，不监听公网。「自动捕获复制的下载链接」与「启用本地控制接口」两个开关的状态会持久化，重启后自动恢复。
 
 ### 8.1 各协议公开自测链接
 
@@ -423,7 +423,7 @@ aria2 会话持久化：启动即带 `--save-session`（每 30 秒落盘），�
 5. ⚠️ WebDAV 目录浏览与上传（PROPFIND 递归）；当前支持单文件下载
 6. ✅ 持久化已改为 `tasks.json` 原子写 + `.bak` 回滚 + 崩溃恢复；⚠️ 段级续传记录仍是 sidecar JSON，可评估迁到 SQLite/WAL
 7. ✅ 签名基础设施（entitlements、Hardened Runtime 可选签名、`notarize.sh`、更新包签名身份校验）已就位；⚠️ **实际 Developer ID 签名与公证仍需账号凭据**，见 §11
-8. ⬜ BT 文件选择（Tracker 管理、RSS 订阅、下载完成脚本均已实现 ✅）
+8. ✅ BT 文件选择（Tracker 管理、RSS 订阅、下载完成脚本亦已实现）
 9. ⬜ 进程级插件沙箱：当前 JavaScriptCore 与 App 同进程、无执行超时，见设置页说明
 10. ⚠️ 关键路径的 XCTest / UI 测试与覆盖率门槛：当前是手写 `swiftc` 回归套件（34 步）+ GitHub Actions CI；套件已自带源码清单一致性检查，但尚无行覆盖率门槛
 11. ✅ 本轮 P0/P1 加固已落地：本地令牌带外分发、更新链来源与签名校验、文件名/归档/后处理加固、MainActor 隔离、签名与公证基础设施、校验和全引擎覆盖、Webhook SSRF 防护、UI 侧栏死开关与文档一致性

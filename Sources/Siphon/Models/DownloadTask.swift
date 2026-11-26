@@ -12,6 +12,8 @@ public struct DownloadTask: Identifiable, Sendable {
     public var progress: DownloadProgress
     public var queueName: String
     public var createdAt: Date
+    /// The most recent actual engine start/resume attempt; nil until first attempted.
+    public var lastAttemptAt: Date?
     public var errorDescription: String?
     /// Engine-specific options: custom headers, user-agent, referer, etc.
     public var options: [String: String]
@@ -44,6 +46,10 @@ public struct DownloadTask: Identifiable, Sendable {
     public var ytdlpFormat: String?
     /// HLS 任务选择的画质（按 BANDWIDTH 匹配）；`nil` 表示最高画质。
     public var hlsBandwidth: Int?
+    /// 用户显式选择的分类（`MDMCategory` raw value）。`nil` 表示按文件名推导。
+    public var category: String?
+    /// 用户备注（MDM Description 列）。不作为 HTTP 头发送。
+    public var note: String?
 
     public init(
         id: UUID = UUID(),
@@ -63,6 +69,8 @@ public struct DownloadTask: Identifiable, Sendable {
         ytdlp: Bool = false,
         ytdlpFormat: String? = nil,
         hlsBandwidth: Int? = nil,
+        category: String? = nil,
+        note: String? = nil,
         protoOverride: DownloadProtocol? = nil
     ) {
         let proto = DownloadProtocol.detect(from: source)
@@ -75,6 +83,7 @@ public struct DownloadTask: Identifiable, Sendable {
         self.progress = DownloadProgress()
         self.queueName = queueName
         self.createdAt = Date()
+        self.lastAttemptAt = nil
         self.errorDescription = nil
         self.options = options
         self.origin = origin
@@ -88,6 +97,8 @@ public struct DownloadTask: Identifiable, Sendable {
         self.ytdlp = ytdlp
         self.ytdlpFormat = ytdlpFormat
         self.hlsBandwidth = hlsBandwidth
+        self.category = category
+        self.note = note
     }
 
     /// Human-readable fallback name. Custom schemes carry their filename in

@@ -9,49 +9,72 @@ import AppKit
 public final class MDMProgressPanelController: NSObject, NSWindowDelegate {
     public static let shared = MDMProgressPanelController()
 
-    private var window: NSWindow?
-    private weak var store: DownloadStore?
-    private var taskID: UUID?
+    private var windows: [UUID: NSWindow] = [:]
 
     private override init() { super.init() }
 
     public func show(taskID: UUID, store: DownloadStore) {
-        self.store = store
-        self.taskID = taskID
-        let panel: NSWindow
-        if let existing = window {
-            panel = existing
-        } else {
-            panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
+        if let panel = windows[taskID] {
+            panel.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let theme = MDMThemeStore.shared
+        let scale = CGFloat(theme.scale)
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520 * scale, height: 460 * scale),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
+        if let taskName = store.tasks.first(where: { $0.id == taskID })?.name, !taskName.isEmpty {
+            panel.title = "\(taskName) — Download progress"
+        } else {
             panel.title = "Download progress"
-            panel.center()
-            panel.isReleasedWhenClosed = false
-            panel.minSize = NSSize(width: 420, height: 360)
-            panel.delegate = self
-            window = panel
         }
-        let root = MDMProgressView(taskID: taskID, onClose: { [weak self] in self?.hide() })
-            .environment(store)
+        panel.center()
+        panel.isReleasedWhenClosed = false
+        panel.minSize = NSSize(width: 420 * scale, height: 360 * scale)
+        panel.delegate = self
+
+        let root = MDMProgressView(taskID: taskID, onClose: { [weak self] in
+            self?.hide(taskID: taskID)
+        })
+        .environment(store)
+        .environmentObject(theme)
         let host = NSHostingView(rootView: root)
         host.frame = panel.contentLayoutRect
         panel.contentView = host
+        windows[taskID] = panel
+
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    public func hide(taskID: UUID) {
+        guard let panel = windows.removeValue(forKey: taskID) else { return }
+        panel.close()
+        panel.delegate = nil
+    }
+
     public func hide() {
-        window?.orderOut(nil)
+        let panels = Array(windows.values)
+        windows.removeAll()
+        for panel in panels {
+            panel.close()
+            panel.delegate = nil
+        }
     }
 
     public func windowWillClose(_ notification: Notification) {
-        window = nil
+        guard let panel = notification.object as? NSWindow,
+              let taskID = windows.first(where: { $0.value === panel })?.key else { return }
+        windows.removeValue(forKey: taskID)
+        panel.delegate = nil
     }
 }
 
 struct MDMProgressView: View {
     @Environment(DownloadStore.self) private var store
+    @EnvironmentObject private var theme: MDMThemeStore
     let taskID: UUID
     let onClose: () -> Void
     @State private var tab: Tab = .status
@@ -70,8 +93,27 @@ struct MDMProgressView: View {
     }
 
     private var task: DownloadTask? { store.tasks.first { $0.id == taskID } }
+    private var colorScheme: ColorScheme? {
+        switch theme.appearance {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
 
     var body: some View {
+        GeometryReader { geometry in
+            let scale = CGFloat(theme.scale)
+            panelContent
+                .frame(width: geometry.size.width / scale, height: geometry.size.height / scale)
+                .scaleEffect(scale, anchor: .topLeading)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+        }
+        .background(theme.color(.surface))
+        .preferredColorScheme(colorScheme)
+    }
+
+    private var panelContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
                 ForEach(Tab.allCases) { item in

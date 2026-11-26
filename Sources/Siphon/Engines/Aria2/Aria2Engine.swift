@@ -397,6 +397,8 @@ public final class Aria2Engine: DownloadEngine {
         p.speedBytesPerSec = Int64(s["downloadSpeed"] as? String ?? "0") ?? 0
         p.connectedPeers = (s["connections"] as? String).flatMap(Int.init)
             ?? (s["numSeeders"] as? String).flatMap(Int.init) ?? 0
+        p.uploadedBytes = (s["uploadLength"] as? String).flatMap(Int64.init)
+        p.uploadSpeedBytesPerSec = (s["uploadSpeed"] as? String).flatMap(Int64.init)
         return p
     }
 

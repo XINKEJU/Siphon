@@ -45,12 +45,24 @@ extension DownloadStore {
         }
         if let post = command.post { options["PostData"] = post }
 
+        let directory = command.dir.flatMap { raw -> URL? in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath,
+                       isDirectory: true)
+        }
+        let category = command.category?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = command.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+
         let before = Set(tasks.map(\.id))
         await addNormalized(urlString: raw,
                             name: command.name,
                             queueName: command.queue ?? "Default",
                             options: options,
-                            checksum: command.checksum)
+                            checksum: command.checksum,
+                            category: category?.isEmpty == false ? category : nil,
+                            note: note?.isEmpty == false ? note : nil,
+                            directory: directory)
 
         let created = tasks.first { !before.contains($0.id) }
         if command.later == true, let created {

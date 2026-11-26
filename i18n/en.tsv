@@ -16,15 +16,18 @@ category.unfinished	Unfinished
 category.video	Video
 column.added	Added
 column.description	Description
-column.details	Details (Peers / Ratio / Upload / Save To)
 column.fileName	File Name
+column.lastTry	Last Try
+column.peers	Peers
 column.queue	Q
 column.rate	Transfer rate
 column.saveTo	Save To
+column.shareRatio	Share ratio
 column.size	Size
 column.source	Source
 column.status	Status
 column.timeLeft	Time left
+column.uploadSpeed	Upload speed
 dialog.addURL	Download File Info
 dialog.category	Category:
 dialog.description	Description:

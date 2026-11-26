@@ -1,0 +1,5 @@
+{"status":"ok","data":{"contents":{
+  "fileA":{"name":"report.pdf","link":"https://srv-store1.gofile.io/download/abc/report.pdf","size":204800,"md5":"abcdef0123456789","type":"file"},
+  "fileB":{"name":"data.csv","link":"https://srv-store1.gofile.io/download/abc/data.csv","size":1024,"type":"file"},
+  "folderX":{"name":"sub","type":"folder"}
+}}}

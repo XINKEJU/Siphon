@@ -216,10 +216,9 @@ public final class ProxyRouter: @unchecked Sendable {
             pacURLString = pacURL.absoluteString
             let needsFetch = loadedPacURLString != pacURL.absoluteString
                 || Date().timeIntervalSince(lastPACFetch) > Self.pacRefreshInterval
-            lock.unlock()
-            if needsFetch { Task { await refreshRemotePAC(pacURL) } }
             let haveScript = pacResolver != nil
             lock.unlock()
+            if needsFetch { Task { await refreshRemotePAC(pacURL) } }
             return haveScript
         default:
             // file:// and custom schemes: local read, safe inline.
