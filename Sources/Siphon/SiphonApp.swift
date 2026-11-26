@@ -1,38 +1,22 @@
 import SwiftUI
 import AppKit
 
-/// Siphon — a native macOS download manager.
+/// Siphon — native macOS download manager, MDM-aligned product layer.
 ///
-/// Architecture (borrowing the best of each project reviewed):
-/// - The core for HTTP/HTTPS/FTP and every vendor-link front-end (thunder, WebDAV, S3, IPFS…)
-///   is a dependency-free native engine (URLSession + byte-range segmentation).
-/// - aria2 (C++) is an OPTIONAL separate process, used only for protocols with no pure-Swift
-///   implementation: BitTorrent / Magnet / Metalink / SFTP (avoids GPL linking obligations).
-/// - Native Swift engines also cover HLS, DASH (with native AVFoundation fMP4 flattening) and eD2K id.
-/// - A DownloadManager routes each task to the correct engine and aggregates progress for the UI.
-/// - QueueManager (named queues, sequential/concurrent, schedule windows) — inspired by AB DM / HyperDM.
-/// - SpeedLimitController (global token bucket) — inspired by Motrix / HyperDM.
-/// - ClipboardMonitor + browser native-messaging — inspired by HyperDM / Gopeed / AB DM.
+/// - The engine layer (native HTTP/HLS/DASH/eD2K + optional aria2) is unchanged.
+/// - The product layer follows MDM's contract: one command vocabulary, five
+///   user-visible states, MDM's category tree, 14-column list, progress window
+///   with Status/Limiter/Completion tabs, and a 12-page Options window.
+/// - Every toolbar action is also present in the menu bar (macOS HIG).
 @main
 struct SiphonApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = DownloadStore()
 
-    // Window-level UI state lives here so the menu-bar Commands and the
-    // toolbar operate on exactly the same values (HIG: every toolbar command
-    // must also be available from the menu bar).
     @State private var showingAdd = false
-    /// Persisted so the detail column reopens in the same state on next launch.
-    /// This used to be passed as `.constant(false)`, which made the "显示侧边栏"
-    /// toggle in the More menu a no-op.
     @AppStorage("Siphon.showInspector") private var showingInspector = false
 
     var body: some Scene {
-        // Single-window scene: opening a magnet:/ed2k: URL (or re-activating
-        // the app) must not spawn extra translucent windows. It also removes
-        // the default "New Window" menu item that clashes with ⌘N "new download".
-        // HIG: don't title a window with the app name — the current library
-        // selection supplies the real title via .navigationTitle.
         Window("下载", id: "main-window") {
             ContentView(showingAdd: $showingAdd, showingInspector: $showingInspector)
                 .environment(store)
@@ -40,7 +24,6 @@ struct SiphonApp: App {
                 .onAppear {
                     appDelegate.store = store
                     SystemPresence.shared.configure(store: store)
-                    // 冷启动时通过「服务」菜单进来的链接，等 store 就绪后再建任务。
                     appDelegate.flushPendingServiceText()
                     store.handleNetworkChange(NetworkMonitor.shared.status)
                 }
@@ -48,7 +31,8 @@ struct SiphonApp: App {
         .windowResizability(.contentSize)
         .commands {
             SiphonCommands(showingAdd: $showingAdd,
-                           showingInspector: $showingInspector, store: store)
+                           showingInspector: $showingInspector,
+                           store: store)
         }
 
         Settings {
@@ -58,87 +42,185 @@ struct SiphonApp: App {
     }
 }
 
-/// Menu-bar equivalents of every toolbar action. The system may hide or let
-/// people customise the toolbar, so no command may live only in the toolbar.
+extension Notification.Name {
+    static let mdmOpenAddURL = Notification.Name("mdm.openAddURL")
+    static let mdmOpenLinkGrabber = Notification.Name("mdm.openLinkGrabber")
+    static let mdmOpenOptions = Notification.Name("mdm.openOptions")
+    static let mdmOpenFind = Notification.Name("mdm.openFind")
+    static let mdmOpenScheduler = Notification.Name("mdm.openScheduler")
+    static let mdmOpenProperties = Notification.Name("mdm.openProperties")
+    static let mdmOpenVerify = Notification.Name("mdm.openVerify")
+}
+
+/// MDM's menu bar: Tasks / File / Downloads / View / Help. The order and
+/// mnemonics mirror the IDM-derived layout; the commands act on the same
+/// store methods as the toolbar and context menus.
 struct SiphonCommands: Commands {
     @Binding var showingAdd: Bool
     @Binding var showingInspector: Bool
     var store: DownloadStore
+    @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some Commands {
-        CommandGroup(replacing: .newItem) {
-            Button("新建下载…") { showingAdd = true }
-                .keyboardShortcut("n", modifiers: .command)
-        }
-        CommandMenu("显示") {
-            Toggle("显示侧边栏", isOn: $showingInspector)
-                .keyboardShortcut("i", modifiers: [.command, .option])
+        CommandGroup(replacing: .newItem) {}
+
+        CommandMenu(MDMI18n.t("menu.tasks")) {
+            Button(MDMI18n.t("menu.addURL")) {
+                NotificationCenter.default.post(name: .mdmOpenAddURL, object: nil)
+            }
+            .keyboardShortcut("n", modifiers: .command)
+
+            Button(MDMI18n.t("menu.downloadLater")) {
+                NotificationCenter.default.post(name: .mdmOpenAddURL, object: nil)
+            }
+            Button(MDMI18n.t("menu.linkGrabber")) {
+                NotificationCenter.default.post(name: .mdmOpenLinkGrabber, object: nil)
+            }
+            Button(MDMI18n.t("menu.batch")) { showingAdd = true }
+
             Divider()
-            Button("显示下载弹窗") { DownloadPopupController.shared.toggle(store: store) }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
+
+            Button(MDMI18n.t("menu.scheduler")) {
+                NotificationCenter.default.post(name: .mdmOpenScheduler, object: nil)
+            }
+            Button(MDMI18n.t("menu.find")) {
+                NotificationCenter.default.post(name: .mdmOpenFind, object: nil)
+            }
+            Button(MDMI18n.t("menu.properties")) {
+                NotificationCenter.default.post(name: .mdmOpenProperties, object: nil)
+            }
+            .disabled(store.selectedTaskID == nil)
+            Button(MDMI18n.t("menu.verifyChecksum")) {
+                NotificationCenter.default.post(name: .mdmOpenVerify, object: nil)
+            }
+            Divider()
+            Button(MDMI18n.t("menu.options")) {
+                NotificationCenter.default.post(name: .mdmOpenOptions, object: nil)
+            }
+            .keyboardShortcut(",", modifiers: .command)
         }
-        CommandMenu("任务") {
-            // 多选操作：与列表批量条、右键菜单共用同一套 store 方法，
-            // 免得三处各写一遍循环、行为慢慢漂移。
-            Button("暂停所选") { store.pauseTasks(store.selectedTaskIDs) }
+
+        CommandMenu(MDMI18n.t("menu.file")) {
+            Button("打开下载文件夹") {
+                NSWorkspace.shared.open(store.downloadDirectory)
+            }
+            Button("打开所选文件") { openSelectedFiles() }
+                .disabled(selectedFileURLs.isEmpty)
+            Button("在访达中显示") { revealSelectedFiles() }
+                .disabled(selectedFileURLs.isEmpty)
+            Button("快速查看") { QuickLookController.shared.toggle(urls: selectedFileURLs) }
+                .keyboardShortcut("y", modifiers: .command)
+                .disabled(selectedFileURLs.isEmpty)
+            Divider()
+            Button("清理已完成") { store.removeCompleted() }
+            Button("重新启动 aria2") { Task { await store.restartAria2() } }
+        }
+
+        CommandMenu(MDMI18n.t("menu.downloads")) {
+            Button(MDMI18n.t("menu.pauseSelected")) { store.pauseTasks(store.selectedTaskIDs) }
                 .keyboardShortcut("p", modifiers: [.command, .option])
                 .disabled(!store.selectedTasks.contains {
                     $0.state == .active || $0.state == .pending
                 })
-
-            Button("继续所选") { store.resumeTasks(store.selectedTaskIDs) }
+            Button(MDMI18n.t("menu.resumeSelected")) { store.resumeTasks(store.selectedTaskIDs) }
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 .disabled(!store.selectedTasks.contains {
                     $0.state == .paused || $0.state == .error
                 })
-
-            Button("拷贝所选链接") { _ = store.copyLinks(store.selectedTaskIDs) }
+            Button(MDMI18n.t("menu.copySelectedLinks")) { _ = store.copyLinks(store.selectedTaskIDs) }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(store.selectedTaskIDs.isEmpty)
-
-            Button("删除所选…") { store.pendingDeleteIDs = store.selectedTaskIDs }
-                .disabled(store.selectedTaskIDs.isEmpty)
-
-            Button("取消选择") { store.clearSelection() }
+            Button(MDMI18n.t("menu.deleteSelected")) {
+                store.pendingDeleteIDs = store.selectedTaskIDs
+            }
+            .disabled(store.selectedTaskIDs.isEmpty)
+            Button(MDMI18n.t("menu.clearSelection")) { store.clearSelection() }
                 .disabled(store.selectedTaskIDs.isEmpty)
 
             Divider()
 
-            // 文件层动作走系统能力：Quick Look 面板、默认应用、访达定位。
-            // 下载器的终点是「文件」，不是「一条列表记录」。
-            Button("快速查看") { QuickLookController.shared.toggle(urls: selectedFileURLs) }
-                .keyboardShortcut("y", modifiers: .command)
-                .disabled(selectedFileURLs.isEmpty)
-
-            Button("打开文件") { openSelectedFiles() }
-                .keyboardShortcut("o", modifiers: .command)
-                .disabled(selectedFileURLs.isEmpty)
-
-            Button("在访达中显示") { revealSelectedFiles() }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(selectedFileURLs.isEmpty)
+            Menu("Speed Limiter") {
+                Button("不限速") { store.setSpeedLimit(store.selectedTaskIDs, bytesPerSec: nil) }
+                Button("512 KB/s") { store.setSpeedLimit(store.selectedTaskIDs, bytesPerSec: 524288) }
+                Button("1 MB/s") { store.setSpeedLimit(store.selectedTaskIDs, bytesPerSec: 1048576) }
+                Button("5 MB/s") { store.setSpeedLimit(store.selectedTaskIDs, bytesPerSec: 5242880) }
+            }
+            Menu("优先级") {
+                Button("高") { store.setPriority(store.selectedTaskIDs, 1) }
+                Button("普通") { store.setPriority(store.selectedTaskIDs, 0) }
+                Button("低") { store.setPriority(store.selectedTaskIDs, -1) }
+            }
 
             Divider()
 
-            Button("恢复全部") {
-                for t in store.tasks where t.state == .paused || t.state == .error {
-                    store.resume(t.id)
+            Button(MDMI18n.t("menu.resumeAll")) { store.resumeAll() }
+            Button(MDMI18n.t("menu.pauseAll")) { store.pauseAll() }
+        }
+
+        CommandMenu(MDMI18n.t("menu.view")) {
+            Toggle(MDMI18n.t("menu.showInspector"), isOn: $showingInspector)
+                .keyboardShortcut("i", modifiers: [.command, .option])
+            Button(MDMI18n.t("menu.showPopup")) {
+                DownloadPopupController.shared.toggle(store: store)
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            Button("进度窗口") {
+                guard let id = store.selectedTaskID else { return }
+                MDMProgressPanelController.shared.show(taskID: id, store: store)
+            }
+            .disabled(store.selectedTaskID == nil)
+
+            Divider()
+
+            Menu("主题") {
+                ForEach(MDMTheme.allCases) { item in
+                    Button {
+                        theme.theme = item
+                    } label: {
+                        if theme.theme == item {
+                            Label(item.displayName, systemImage: "checkmark")
+                        } else { Text(item.displayName) }
+                    }
                 }
             }
-            .disabled(!store.tasks.contains { $0.state == .paused || $0.state == .error })
-
-            Button("全部暂停") {
-                for t in store.tasks where t.state == .active { store.pause(t.id) }
+            Menu("外观") {
+                ForEach(MDMAppearance.allCases, id: \.rawValue) { item in
+                    Button {
+                        theme.appearance = item
+                    } label: {
+                        let title = item == .system ? "跟随系统"
+                                    : item == .light ? "浅色" : "深色"
+                        if theme.appearance == item { Label(title, systemImage: "checkmark") }
+                        else { Text(title) }
+                    }
+                }
             }
-            .disabled(!store.tasks.contains { $0.state == .active })
-
-            Divider()
-            Button("清理已完成") { store.removeCompleted() }
-            Button("在访达中打开下载目录") {
-                NSWorkspace.shared.open(store.downloadDirectory)
+            Menu("界面大小") {
+                ForEach([1.0, 1.25, 1.5, 2.0], id: \.self) { scale in
+                    Button {
+                        theme.scale = scale
+                    } label: {
+                        if theme.scale == scale {
+                            Label("\(Int(scale * 100))%", systemImage: "checkmark")
+                        } else { Text("\(Int(scale * 100))%") }
+                    }
+                }
             }
-            Divider()
-            Button("重新启动 aria2") { Task { await store.restartAria2() } }
+            Menu("语言") {
+                ForEach(MDMI18n.availableLanguages, id: \.code) { language in
+                    Button {
+                        MDMI18n.shared.language = language.code
+                    } label: {
+                        if MDMI18n.shared.language == language.code {
+                            Label(language.name, systemImage: "checkmark")
+                        } else { Text(language.name) }
+                    }
+                }
+            }
+        }
+
+        CommandGroup(replacing: .help) {
+            Button("关于 Siphon") { NSApp.orderFrontStandardAboutPanel(nil) }
         }
     }
 

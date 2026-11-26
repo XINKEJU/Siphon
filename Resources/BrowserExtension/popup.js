@@ -29,11 +29,114 @@ const statEls = {
   media: document.getElementById("stat-media"),
   errors: document.getElementById("stat-errors"),
 };
+const recentListEl = document.getElementById("recentList");
+const recentSearchEl = document.getElementById("recentSearch");
+const refreshRecentBtn = document.getElementById("refreshRecent");
+const recentFiltersEl = document.getElementById("recentFilters");
+const siteInfoEl = document.getElementById("siteInfo");
+const toggleSiteCaptureBtn = document.getElementById("toggleSiteCapture");
 
 let currentTabId = -1;
 let currentItems = [];
 let excludeHosts = [];
 let excludeExts = [];
+let recentItems = [];
+let recentFilter = "all";
+let siteHost = "";
+
+// MARK: - Downloads tab (MDM popup contract)
+
+async function loadRecent() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "recent" });
+    recentItems = res?.ok ? (res.recent || []) : [];
+  } catch (_) {
+    recentItems = [];
+  }
+  renderRecent();
+}
+
+function renderRecent() {
+  recentListEl.textContent = "";
+  const query = (recentSearchEl.value || "").trim().toLowerCase();
+  const items = recentItems.filter(item => {
+    if (recentFilter === "downloading" && item.status !== "downloading") return false;
+    if (recentFilter === "complete" && item.status !== "complete") return false;
+    if (recentFilter === "error" && item.status !== "error") return false;
+    if (!query) return true;
+    return String(item.fileName || "").toLowerCase().includes(query)
+      || String(item.url || "").toLowerCase().includes(query);
+  });
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "最近没有匹配的下载。";
+    recentListEl.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "item";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = item.fileName || fileName(item.url);
+    const host = document.createElement("span");
+    host.className = "host";
+    const pct = item.size > 0 ? Math.round((item.downloaded / item.size) * 100) : 0;
+    host.textContent = `${item.status || ""} · ${pct}% · ${fmtBytes(item.downloaded || 0)}/${fmtBytes(item.size || 0)}`;
+    meta.appendChild(name);
+    meta.appendChild(host);
+    const copy = document.createElement("button");
+    copy.textContent = "复制链接";
+    copy.addEventListener("click", () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(item.url || "");
+    });
+    row.appendChild(meta);
+    row.appendChild(copy);
+    recentListEl.appendChild(row);
+  }
+}
+
+recentFiltersEl.addEventListener("click", event => {
+  const btn = event.target.closest("button[data-filter]");
+  if (!btn) return;
+  recentFilter = btn.dataset.filter;
+  recentFiltersEl.querySelectorAll("button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  renderRecent();
+});
+recentSearchEl.addEventListener("input", renderRecent);
+refreshRecentBtn.addEventListener("click", loadRecent);
+
+// MARK: - This page tab
+
+async function loadSiteInfo() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    siteHost = tab?.url ? new URL(tab.url).host : "";
+  } catch (_) { siteHost = ""; }
+  siteInfoEl.textContent = siteHost
+    ? `当前站点：${siteHost}` : "当前页面没有可用的站点地址。";
+  const excluded = excludeHosts.includes(siteHost);
+  toggleSiteCaptureBtn.textContent = excluded ? "恢复本站接管" : "本站不再接管";
+  toggleSiteCaptureBtn.disabled = !siteHost;
+}
+
+toggleSiteCaptureBtn.addEventListener("click", async () => {
+  if (!siteHost) return;
+  const enabled = excludeHosts.includes(siteHost);
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "setSiteCapture", host: siteHost, enabled,
+    });
+    if (res?.ok) {
+      excludeHosts = res.excludeHosts || [];
+      loadSiteInfo();
+    }
+  } catch (_) {}
+});
 
 // MARK: - tabs
 
@@ -333,6 +436,7 @@ saveTokenBtn.addEventListener("click", () => {
   });
 });
 
-loadConfig();
-loadStats();
-refreshList();
+(async () => {
+  await loadConfig();
+  await Promise.all([loadStats(), loadRecent(), refreshList(), loadSiteInfo()]);
+})();

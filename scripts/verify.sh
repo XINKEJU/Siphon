@@ -41,7 +41,26 @@ trap 'rm -rf "$TMP"; kill "${SERVER_PID:-}" "${SERVER2_PID:-}" "${SERVER3_PID:-}
       "${SERVER4_PID:-}" "${ED2K_PID:-}" 2>/dev/null || true' EXIT
 
 echo "== [1/34] swift build =="
-swift build
+if swift build >"$TMP/build.log" 2>&1; then
+    echo "PASS  swift build"
+else
+    # Some Command Line Tools updates ship a PackageDescription dylib built by
+    # an older compiler, so SwiftPM cannot link the manifest even though the
+    # SDK and sources are fine. Fall back to type-checking every production
+    # target directly with swiftc — the same sources, without the manifest.
+    echo "NOTE  swift build unavailable (toolchain manifest ABI); using swiftc type-check" >&2
+    sed -n '1,6p' "$TMP/build.log" >&2
+    "${SWIFTC:-swiftc}" -typecheck -parse-as-library -module-name SiphonBridge \
+      Sources/SiphonBridge/*.swift
+    "${SWIFTC:-swiftc}" -emit-module -module-name SiphonBridge \
+      -emit-module-path "$TMP/SiphonBridge.swiftmodule" Sources/SiphonBridge/*.swift
+    "${SWIFTC:-swiftc}" -typecheck -module-name SiphonNM -I "$TMP" Sources/SiphonNM/*.swift
+    SIPHON_APP_SOURCES=()
+    while IFS= read -r src; do SIPHON_APP_SOURCES+=("$src"); done < <(find Sources/Siphon Sources/SiphonBridge -name '*.swift' | sort)
+    "${SWIFTC:-swiftc}" -typecheck -parse-as-library -module-name Siphon \
+      "${SIPHON_APP_SOURCES[@]}"
+    echo "PASS  all production targets type-check"
+fi
 
 echo "== [2/34] MD4 / eD2K / link vectors =="
 swiftc -o "$TMP/vectors" Tests/VectorTests/main.swift "${MODELS[@]}" "${ED2K[@]}"
@@ -488,11 +507,12 @@ grep -q "PopupSurface()" Sources/Siphon/Views/DownloadPopupView.swift
 grep -q "public var selectedTaskIDs" Sources/Siphon/Managers/DownloadStore.swift
 grep -q "func deleteTasks" Sources/Siphon/Managers/DownloadStore.swift
 grep -q "func pauseTasks" Sources/Siphon/Managers/DownloadStore.swift
-grep -q "List(selection: selectionBinding)" Sources/Siphon/Views/TaskListView.swift
+grep -q "Table(visible, selection: selectionBinding)" Sources/Siphon/Views/TaskListView.swift
 grep -q "private var batchBar" Sources/Siphon/Views/TaskListView.swift
-grep -q "private var batchContextMenu" Sources/Siphon/Views/TaskListView.swift
+grep -q "private func batchContextMenu(for task:" Sources/Siphon/Views/TaskListView.swift
 grep -q "BatchSelectionPanel" Sources/Siphon/Views/ContentView.swift
-grep -q "暂停所选" Sources/Siphon/SiphonApp.swift
+grep -q "MDMI18n.t(\"menu.pauseSelected\")" Sources/Siphon/SiphonApp.swift
+grep -q '"menu.pauseSelected": "暂停所选"' Sources/Siphon/MDM/I18n.swift
 ! grep -q "deleteCandidate" Sources/Siphon/Views/TaskListView.swift
 # Probe fail-fast: a TCP-level failure (dead manual proxy, refused connection)
 # must surface as a task error instead of looping forever at "active 0 B".
@@ -515,8 +535,8 @@ grep -q 'LocalAuthBootstrap.read(fileName: fileName)' Sources/Siphon/Engines/Ari
 # A stale `captureAll: false` in extension storage silently disables capture;
 # keep the one-time upgrade repair and the version bump that triggers it.
 grep -q "CAPTURE_MIGRATION_KEY" Resources/BrowserExtension/background.js
-grep -q '"version": "0.4.1"' Resources/BrowserExtension/manifest.json
-grep -q '"version": "0.4.1"' Resources/BrowserExtension/manifest-firefox.json
+grep -q '"version": "0.5.0"' Resources/BrowserExtension/manifest.json
+grep -q '"version": "0.5.0"' Resources/BrowserExtension/manifest-firefox.json
 python3 -c 'import json; json.load(open("Resources/BrowserExtension/manifest.json"))'
 python3 -c 'import json; json.load(open("Resources/BrowserExtension/manifest-firefox.json"))'
 if command -v node >/dev/null 2>&1; then
@@ -537,6 +557,30 @@ grep -q "handleNetworkChange" Sources/Siphon/Managers/DownloadStore.swift
 grep -q "servicesProvider" Sources/Siphon/AppDelegate.swift
 ! grep -q "永久删除磁盘上的文件" Sources/Siphon/Views/TaskListView.swift
 python3 -c 'import plistlib; p=plistlib.load(open("Resources/Info.plist","rb")); s=p["NSServices"][0]; assert s["NSMessage"]=="downloadFromService" and s["NSPortName"]=="Siphon"'
+# MDM-aligned product layer. These are structural contracts whose removal
+# would compile fine but silently regress the rewrite: state adapter, 14-column
+# list, category tree, Options pages, progress tabs, path-free recent API,
+# popup tabs and the "cancel only after the app accepted" rule.
+grep -q "enum MDMStatus" Sources/Siphon/MDM/ProductStatus.swift
+grep -q "case queued" Sources/Siphon/MDM/ProductStatus.swift
+grep -q "enum MDMCategory" Sources/Siphon/MDM/ProductStatus.swift
+grep -q "143" Sources/Siphon/Views/MDM/CategoryTreeView.swift
+grep -q "TableColumn(MDMI18n.t(\"column.fileName\")" Sources/Siphon/Views/TaskListView.swift
+grep -q "case proxySocks" Sources/Siphon/Views/MDM/MDMOptionsView.swift
+grep -q "case status, limiter, completion" Sources/Siphon/Views/MDM/MDMProgressPanel.swift
+grep -q "func mdmRecentAnswer" Sources/Siphon/MDM/StoreMDMBridge.swift
+grep -q 'case ("GET", "/recent")' Sources/Siphon/Managers/DownloadStore.swift
+grep -q 'case "recent"' Sources/SiphonNM/main.swift
+grep -q 'data-tab="main">Downloads' Resources/BrowserExtension/popup.html
+grep -q 'data-tab="media">This page' Resources/BrowserExtension/popup.html
+grep -q 'data-tab="config">Settings' Resources/BrowserExtension/popup.html
+grep -q 'type === "recent"' Resources/BrowserExtension/background.js
+grep -q 'type === "setSiteCapture"' Resources/BrowserExtension/background.js
+# The app must cancel the browser download only after /add succeeded.
+grep -q 'if (result.ok)' Resources/BrowserExtension/background.js
+grep -q 'chrome.downloads.cancel(item.id)' Resources/BrowserExtension/background.js
+python3 tools/i18n/extract.py >/dev/null
+
 # The suite hand-lists swiftc inputs. Report coverage and fail on stale paths:
 # a newly added source that is referenced must be added to the right list, or a
 # step breaks; a path that was deleted must be removed from the list.

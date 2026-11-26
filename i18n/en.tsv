@@ -1,0 +1,88 @@
+# key	english
+
+action.cancel	Cancel
+action.close	Close
+app.name	Siphon
+category.all	All Downloads
+category.compressed	Compressed
+category.documents	Documents
+category.finished	Finished
+category.general	General
+category.music	Music
+category.programs	Programs
+category.queues	Queues
+category.torrents	Torrents
+category.unfinished	Unfinished
+category.video	Video
+column.added	Added
+column.description	Description
+column.details	Details (Peers / Ratio / Upload / Save To)
+column.fileName	File Name
+column.queue	Q
+column.rate	Transfer rate
+column.saveTo	Save To
+column.size	Size
+column.source	Source
+column.status	Status
+column.timeLeft	Time left
+dialog.addURL	Download File Info
+dialog.category	Category:
+dialog.description	Description:
+dialog.downloadLater	Download Later
+dialog.find	Find
+dialog.linkGrabber	Link grabber
+dialog.properties	Properties
+dialog.saveTo	Save to:
+dialog.scheduler	Scheduler
+dialog.startDownload	Start Download
+dialog.verifyChecksum	Verify checksum
+menu.addURL	Add URL…
+menu.batch	Batch…
+menu.clearSelection	Clear selection
+menu.copySelectedLinks	Copy selected links
+menu.deleteSelected	Delete selected…
+menu.downloadLater	Download Later…
+menu.downloads	Downloads
+menu.file	File
+menu.find	Find…
+menu.linkGrabber	Link grabber…
+menu.options	Options…
+menu.pauseAll	Pause all
+menu.pauseSelected	Pause selected
+menu.properties	Properties…
+menu.resumeAll	Start all
+menu.resumeSelected	Resume selected
+menu.scheduler	Scheduler…
+menu.showInspector	Preview pane
+menu.showPopup	Download popup
+menu.tasks	Tasks
+menu.verifyChecksum	Verify checksum…
+menu.view	View
+options.accounts	Accounts
+options.archives	Archives
+options.connection	Connection
+options.downloads	Downloads
+options.fileTypes	File types
+options.general	General
+options.proxy	Proxy
+options.regional	Regional
+options.remote	Remote
+options.saveTo	Save to
+options.sitesLogins	Sites Logins
+options.socks	Socks
+options.sounds	Sounds
+progress.completion	Completion
+progress.connections	Connections
+progress.limiter	Limiter
+progress.resumeCapability	Resume capability
+progress.segments	Segments
+progress.status	Status
+progress.stopAndKeep	Stop and keep
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.complete	Complete
+status.downloading	Downloading
+status.error	Error
+status.queued	Queued
+status.stopped	Stopped
+theme.highContrast	High contrast

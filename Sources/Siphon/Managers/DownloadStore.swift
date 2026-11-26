@@ -1651,8 +1651,9 @@ public final class DownloadStore: EngineDelegate {
         return UUID(uuidString: s)
     }
 
-    // MARK: - REST API (localhost:17801, token-free: loopback only)
+    // MARK: - REST API (localhost:17801, Bearer required)
     /// GET  /tasks                 — task list snapshot
+    /// GET  /recent                — MDM contract: last 60 rows, no local paths
     /// POST /pause /resume /remove {"id":"uuid"}
     /// POST /add                   — handled above via onURL
     public func handleRESTAPI(method: String, path: String, body: Data) -> Data {
@@ -1660,6 +1661,11 @@ public final class DownloadStore: EngineDelegate {
             (try? JSONSerialization.data(withJSONObject: dict)) ?? Data(#"{"ok":false}"#.utf8)
         }
         switch (method, path) {
+        case ("GET", "/recent"):
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = (try? encoder.encode(mdmRecentAnswer())) ?? Data(#"{"ok":false}"#.utf8)
+            return data
         case ("GET", "/tasks"):
             let list = tasks.map { t -> [String: Any] in
                 ["id": t.id.uuidString, "name": t.name, "url": t.source.absoluteString,

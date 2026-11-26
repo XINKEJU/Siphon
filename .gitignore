@@ -33,3 +33,7 @@ dist/*.zip
 dist/chrome/
 dist/firefox/
 dist/safari/
+
+# Python cache
+__pycache__/
+*.pyc

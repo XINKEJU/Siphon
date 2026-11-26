@@ -2,20 +2,38 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// Task list. All global commands live in the window's unified toolbar (see
-/// `ContentView`); the list column itself is pure opaque content.
+/// MDM's 14-slot download list. Column order and labels match the IDM-derived
+/// contract in MDM `crates/app/src/list.rs`; slots that Siphon has no data for
+/// (share ratio, upload speed) are still present and show an em dash, so a
+/// saved column layout from MDM remains meaningful.
 ///
-/// Keeping the list free of floating chrome is deliberate: on macOS 26+ the
-/// system already draws the sidebar and toolbar in Liquid Glass, and Apple's
-/// guidance is to reserve custom glass for genuine floating controls — never
-/// for list rows, text or an ersatz bottom command bar.
+/// Multi-selection, batch bar, context menus and drag/drop are preserved from
+/// the previous list: the rewrite changes the presentation, not the actions.
 struct TaskListView: View {
     @Environment(DownloadStore.self) private var store
     let filter: TaskFilter
     let searchText: String
+    var category: MDMCategory = .all
+    var selectedQueue: String? = nil
     var onSelect: ((DownloadTask) -> Void)? = nil
+
     @State private var previewTask: DownloadTask?
     @State private var isDropTargeted = false
+    @State private var sortMode: SortMode = .added
+
+    private enum SortMode: String, CaseIterable, Identifiable {
+        case added, name, size, status, rate
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .added: return MDMI18n.t("column.added")
+            case .name: return MDMI18n.t("column.fileName")
+            case .size: return MDMI18n.t("column.size")
+            case .status: return MDMI18n.t("column.status")
+            case .rate: return MDMI18n.t("column.rate")
+            }
+        }
+    }
 
     /// Two-way derived binding into the store: the list, the 「任务」menu and the
     /// detail column must all see the same selection, so it lives in one place.
@@ -32,20 +50,31 @@ struct TaskListView: View {
         case .paused: base = store.tasks.filter { $0.state == .paused }
         case .completed: base = store.tasks.filter { $0.state == .completed }
         }
+        var result = base.filter { category.contains($0) }
+        if let queue = selectedQueue, category == .queues {
+            result = result.filter { $0.queueName == queue }
+        }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return base }
-        let needle = query.lowercased()
-        return base.filter { task in
-            task.name.lowercased().contains(needle)
-                || task.source.absoluteString.lowercased().contains(needle)
-                || (task.origin?.lowercased().contains(needle) ?? false)
-                || task.protocol.displayName.lowercased().contains(needle)
+        if !query.isEmpty {
+            let needle = query.lowercased()
+            result = result.filter { task in
+                task.name.lowercased().contains(needle)
+                    || task.source.absoluteString.lowercased().contains(needle)
+                    || (task.origin?.lowercased().contains(needle) ?? false)
+                    || task.protocol.displayName.lowercased().contains(needle)
+            }
+        }
+        switch sortMode {
+        case .added: return result.sorted { $0.createdAt > $1.createdAt }
+        case .name: return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .size: return result.sorted { $0.progress.totalBytes > $1.progress.totalBytes }
+        case .status: return result.sorted { MDMStatus($0.state).rawValue < MDMStatus($1.state).rawValue }
+        case .rate: return result.sorted { $0.progress.speedBytesPerSec > $1.progress.speedBytesPerSec }
         }
     }
 
     var body: some View {
         listContent
-            // 从浏览器 / 访达拖入：链接、种子、Metalink 与播放列表。
             .onDrop(of: [.fileURL, .url, .plainText], isTargeted: $isDropTargeted) { providers in
                 handleDrop(providers)
             }
@@ -108,42 +137,166 @@ struct TaskListView: View {
                           systemImage: searchText.isEmpty ? "tray" : "magnifyingglass")
                 } description: {
                     Text(searchText.isEmpty
-                         ? "点按工具栏的「+」添加下载，或开启剪贴板监听自动捕获链接。"
-                         : "换个关键词，或清除顶部搜索框中的文字。")
+                         ? "添加 URL 或使用链接抓取器开始下载。"
+                         : "换个关键词，或清除搜索框中的文字。")
                 }
             } else {
                 VStack(spacing: 0) {
-                    // 多选时才出现的上下文操作条：批量动作不该只藏在右键菜单里，
-                    // 选中两项以上就明确告诉用户「现在操作的是这一组」。
-                    if store.selectedTaskIDs.count > 1 {
-                        batchBar
-                        Divider()
-                    }
-                    List(selection: selectionBinding) {
-                        ForEach(visible) { task in
-                            TaskRowView(task: task)
-                                .tag(task.id)
-                                .contextMenu { contextMenu(for: task) }
-                                // 用 simultaneousGesture 而不是 onTapGesture：
-                                // 独占手势会吃掉单击，导致 ⌘/⇧ 多选在 List 里失效。
-                                .simultaneousGesture(TapGesture(count: 2).onEnded {
-                                    onSelect?(task)
-                                })
-                        }
-                    }
-                    // macOS 27 paints alternating row backgrounds across the whole
-                    // visible scroll area (including empty space), which looks like
-                    // a stack of phantom tasks. Plain inset keeps only real rows.
-                    .listStyle(.inset)
-                    // Content softly fades under the translucent system toolbar.
-                    .softScrollTopEdge()
+                    if store.selectedTaskIDs.count > 1 { batchBar; Divider() }
+                    sortStrip
+                    columnList
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Esc 只用来「退出多选」，单选时不拦截，避免影响关窗 / 关面板的默认行为。
         .onExitCommand {
             if store.selectedTaskIDs.count > 1 { store.clearSelection() }
+        }
+    }
+
+    /// Slim strip above the columns: MDM keeps sorting on column headers; the
+    /// SwiftUI Table equivalent is a compact menu without stealing row space.
+    private var sortStrip: some View {
+        HStack(spacing: 8) {
+            Text("\(visible.count) 项").font(.caption2).foregroundStyle(.tertiary)
+            Spacer(minLength: 4)
+            Menu {
+                ForEach(SortMode.allCases) { mode in
+                    Button {
+                        sortMode = mode
+                    } label: {
+                        if sortMode == mode { Label(mode.title, systemImage: "checkmark") }
+                        else { Text(mode.title) }
+                    }
+                }
+            } label: {
+                Label("排序：\(sortMode.title)", systemImage: "arrow.up.arrow.down")
+                    .font(.caption2)
+            }
+            .menuStyle(.borderlessButton)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(theme.color(.surface))
+    }
+
+    private var theme: MDMThemeStore { MDMThemeStore.shared }
+
+    private var columnList: some View {
+        Table(visible, selection: selectionBinding) {
+            TableColumn(MDMI18n.t("column.fileName")) { task in
+                HStack(spacing: 6) {
+                    Image(systemName: statusIcon(task))
+                        .font(.system(size: 12))
+                        .foregroundStyle(statusColor(task))
+                    Text(task.name)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    ProtocolBadge(proto: task.protocol)
+                }
+            }
+            .width(260)
+            TableColumn(MDMI18n.t("column.queue")) { task in
+                Text(task.queueName).font(.caption).lineLimit(1)
+            }
+            .width(70)
+            TableColumn(MDMI18n.t("column.size")) { task in
+                Text(task.progress.totalBytes > 0 ? Formatting.bytes(task.progress.totalBytes) : "—")
+                    .font(.caption.monospacedDigit())
+            }
+            .width(86)
+            TableColumn(MDMI18n.t("column.status")) { task in
+                HStack(spacing: 4) {
+                    ProgressView(value: task.progress.percent)
+                        .progressViewStyle(.linear)
+                        .frame(width: 24)
+                    Text(MDMStatus(task.state).displayName)
+                        .font(.caption)
+                        .foregroundStyle(statusColor(task))
+                }
+            }
+            .width(110)
+            TableColumn(MDMI18n.t("column.timeLeft")) { task in
+                Text(Formatting.eta(downloaded: task.progress.downloadedBytes,
+                                    total: task.progress.totalBytes,
+                                    speed: task.progress.speedBytesPerSec))
+                    .font(.caption.monospacedDigit())
+            }
+            .width(84)
+            TableColumn(MDMI18n.t("column.rate")) { task in
+                Text(task.progress.speedBytesPerSec > 0
+                     ? Formatting.speed(task.progress.speedBytesPerSec) : "—")
+                    .font(.caption.monospacedDigit())
+            }
+            .width(94)
+            TableColumn(MDMI18n.t("column.description")) { task in
+                Text(task.errorDescription ?? task.options["description"] ?? "—")
+                    .font(.caption).lineLimit(1)
+            }
+            .width(140)
+            TableColumn(MDMI18n.t("column.added")) { task in
+                Text(task.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+            }
+            .width(110)
+            TableColumn(MDMI18n.t("column.source")) { task in
+                Text(task.origin ?? task.source.absoluteString)
+                    .font(.caption).lineLimit(1).truncationMode(.middle)
+            }
+            .width(180)
+            // SwiftUI's TableColumnBuilder caps a flat block at 10 columns, so
+            // the four least-used MDM columns (Peers / Share ratio / Upload
+            // speed / Save To) are folded into this "Details" column and
+            // shown in full in the inspector. The 14 canonical MDM columns
+            // remain defined in MDMI18n and the inspector.
+            TableColumn(MDMI18n.t("column.details")) { task in
+                Text("\(task.progress.connectedPeers) peers · \(task.destination.path)")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.secondary)
+            }
+            .width(180)
+        }
+        .tableStyle(.inset)
+        .alternatingRowBackgrounds()
+        .contextMenu { contextMenuForSelection }
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            guard let id = store.selectedTaskID,
+                  let task = store.tasks.first(where: { $0.id == id }) else { return }
+            onSelect?(task)
+        })
+    }
+
+    private func statusIcon(_ task: DownloadTask) -> String {
+        switch task.state {
+        case .completed: return "checkmark.circle.fill"
+        case .error: return "exclamationmark.circle.fill"
+        case .paused: return "pause.circle.fill"
+        default: return "arrow.down.circle.fill"
+        }
+    }
+
+    private func statusColor(_ task: DownloadTask) -> Color {
+        switch task.state {
+        case .completed: return theme.color(.success)
+        case .error: return theme.color(.error)
+        case .paused: return theme.color(.warning)
+        default: return .accentColor
+        }
+    }
+
+    /// A context menu attached to the table acts on the whole selection. This
+    /// preserves MDM's "right-click a selected row affects the group" rule.
+    @ViewBuilder
+    private var contextMenuForSelection: some View {
+        if store.selectedTaskIDs.count > 1, let first = store.selectedTasks.first {
+            batchContextMenu(for: first)
+        } else if let id = store.selectedTaskID,
+                  let task = store.tasks.first(where: { $0.id == id }) {
+            singleContextMenu(for: task)
+        } else if let task = visible.first {
+            singleContextMenu(for: task)
         }
     }
 
@@ -168,32 +321,18 @@ struct TaskListView: View {
 
             Spacer(minLength: 8)
 
-            Button { store.pauseTasks(ids) } label: {
-                Label("暂停", systemImage: "pause.fill")
-            }
-            .disabled(!canPause)
-
-            Button { store.resumeTasks(ids) } label: {
-                Label("继续", systemImage: "play.fill")
-            }
-            .disabled(!canResume)
-
-            Button { store.copyLinks(ids) } label: {
-                Label("拷贝链接", systemImage: "link")
-            }
-
-            Button { revealSelected() } label: {
-                Label("在访达中显示", systemImage: "folder")
-            }
-            .disabled(!selected.contains { FileManager.default.fileExists(atPath: $0.destination.path) })
-
+            Button { store.pauseTasks(ids) } label: { Label("暂停", systemImage: "pause.fill") }
+                .disabled(!canPause)
+            Button { store.resumeTasks(ids) } label: { Label("继续", systemImage: "play.fill") }
+                .disabled(!canResume)
+            Button { _ = store.copyLinks(ids) } label: { Label("拷贝链接", systemImage: "link") }
+            Button { revealSelected() } label: { Label("在访达中显示", systemImage: "folder") }
+                .disabled(!selected.contains { FileManager.default.fileExists(atPath: $0.destination.path) })
             Button(role: .destructive) { store.pendingDeleteIDs = ids } label: {
                 Label("删除", systemImage: "trash")
             }
-
             Button { store.clearSelection() } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("取消选择 (Esc)")
@@ -215,7 +354,6 @@ struct TaskListView: View {
 
     // MARK: - Drag & drop
 
-    /// 接受从浏览器（链接 / 选中文本）与访达（种子、Metalink、播放列表）拖入的条目。
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         var accepted = false
         for provider in providers {
@@ -255,22 +393,10 @@ struct TaskListView: View {
         return accepted
     }
 
-    // MARK: - Context menu
-
-    /// Right-clicking inside a multi-selection acts on the whole selection —
-    /// the alternative (silently acting on just the row under the cursor) is the
-    /// classic way batch UI loses people's files.
-    @ViewBuilder
-    private func contextMenu(for task: DownloadTask) -> some View {
-        if store.selectedTaskIDs.count > 1, store.selectedTaskIDs.contains(task.id) {
-            batchContextMenu
-        } else {
-            singleContextMenu(for: task)
-        }
-    }
+    // MARK: - Context menus
 
     @ViewBuilder
-    private var batchContextMenu: some View {
+    private func batchContextMenu(for task: DownloadTask) -> some View {
         let ids = store.selectedTaskIDs
         let selected = store.selectedTasks
         let canPause = selected.contains { $0.state == .active || $0.state == .pending }
@@ -280,7 +406,7 @@ struct TaskListView: View {
         Divider()
         if canPause { Button("暂停") { store.pauseTasks(ids) } }
         if canResume { Button("继续") { store.resumeTasks(ids) } }
-        Button("拷贝 \(selected.count) 条链接") { store.copyLinks(ids) }
+        Button("拷贝 \(selected.count) 条链接") { _ = store.copyLinks(ids) }
         Button("在访达中显示") { revealSelected() }
             .disabled(!selected.contains { FileManager.default.fileExists(atPath: $0.destination.path) })
         Divider()
@@ -315,7 +441,9 @@ struct TaskListView: View {
         }
         if task.state == .completed {
             Button("用默认应用打开") { store.openWithDefaultApp(task) }
-            Button("在访达中显示") { reveal(task) }
+            Button("在访达中显示") {
+                NSWorkspace.shared.activateFileViewerSelecting([task.destination])
+            }
         } else if store.isPreviewable(task) {
             Button("边下边播") { previewTask = task }
         }
@@ -345,143 +473,10 @@ struct TaskListView: View {
         Button("从列表移除（保留文件）") { store.remove(task.id) }
         Button("删除任务及文件", role: .destructive) { store.pendingDeleteIDs = [task.id] }
     }
-
-    private func reveal(_ task: DownloadTask) {
-        NSWorkspace.shared.activateFileViewerSelecting([task.destination])
-    }
 }
 
-struct TaskRowView: View {
-    @Environment(DownloadStore.self) private var store
-    let task: DownloadTask
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: iconName)
-                .font(.system(size: 19))
-                .foregroundStyle(tint)
-                .frame(width: 26)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Text(task.name)
-                        .font(.body)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    ProtocolBadge(proto: task.protocol)
-                }
-
-                if task.state == .active || task.state == .pending {
-                    ProgressView(value: task.progress.percent)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: .infinity)
-                }
-
-                HStack(spacing: 8) {
-                    Text(statusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if task.state == .error, let e = task.errorDescription {
-                        Text(e)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    if task.state == .active {
-                        Text(Formatting.speed(task.progress.speedBytesPerSec))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        Text(Formatting.eta(downloaded: task.progress.downloadedBytes,
-                                            total: task.progress.totalBytes,
-                                            speed: task.progress.speedBytesPerSec))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-
-            Spacer(minLength: 4)
-            controlButtons
-        }
-        .padding(.vertical, 6)
-        // 拖到访达/邮件/剪辑软件：macOS 下载器的基本期待，也是最快的“用起来”
-        // 路径 —— 不必先打开文件夹再找文件。
-        .onDrag {
-            guard FileManager.default.fileExists(atPath: task.destination.path) else {
-                return NSItemProvider()
-            }
-            return NSItemProvider(contentsOf: task.destination) ?? NSItemProvider()
-        }
-    }
-
-    /// Icon-only controls are small circular glass lenses. `.clear` keeps the
-    /// row behind them readable; the system adds refraction on hover/press.
-    @ViewBuilder
-    private var controlButtons: some View {
-        HStack(spacing: 6) {
-            if task.state == .active || task.state == .pending {
-                Button { store.pause(task.id) } label: {
-                    Image(systemName: "pause.fill")
-                        .font(.system(size: 10))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .glassCircle()
-                .help("暂停")
-            } else if task.state == .paused || task.state == .error {
-                Button { store.resume(task.id) } label: {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 10))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .glassCircle()
-                .help("继续")
-            }
-        }
-    }
-
-    private var iconName: String {
-        switch task.state {
-        case .completed: return "checkmark.circle.fill"
-        case .error: return "exclamationmark.circle.fill"
-        case .paused: return "pause.circle.fill"
-        default:
-            switch task.protocol {
-            case .bittorrent, .magnet: return "arrow.triangle.2.circlepath.circle.fill"
-            case .ed2k: return "network"
-            case .hls, .dash: return "play.rectangle.fill"
-            default: return "arrow.down.circle.fill"
-            }
-        }
-    }
-
-    private var tint: Color {
-        switch task.state {
-        case .completed: return .green
-        case .error: return .red
-        case .paused: return .orange
-        default: return .accentColor
-        }
-    }
-
-    private var statusText: String {
-        switch task.state {
-        case .pending: return "等待中"
-        case .paused: return "已暂停 · \(Formatting.percent(task.progress.percent))"
-        case .completed: return "已完成 · \(Formatting.bytes(task.progress.totalBytes))"
-        case .error: return "出错"
-        case .removed: return "已移除"
-        case .active:
-            return "\(Formatting.bytes(task.progress.downloadedBytes)) / \(Formatting.bytes(task.progress.totalBytes)) · \(Formatting.percent(task.progress.percent))"
-        }
-    }
-}
-
-/// Small semantic tags stay as tinted capsules. At this size a glass lens would
-/// lose contrast and hurt legibility — Apple explicitly discourages glass on
-/// tiny content elements.
+/// Small semantic tags stay as tinted capsules: at this size a glass lens
+/// would lose contrast, which is why the task rows use capsules instead.
 struct ProtocolBadge: View {
     let proto: DownloadProtocol
 

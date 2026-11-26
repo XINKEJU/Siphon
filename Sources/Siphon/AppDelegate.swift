@@ -9,7 +9,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var store: DownloadStore?
     /// 进程级单实例锁：两个实例同时写 tasks.json 会互相覆盖。
-    /// 用 flock(2) 而不是 NSDistributedLock：后者把锁表示成一个目录，进程被
+    /// 用 flock(2) 而不是早期的分布式锁：后者把锁表示成一个目录，进程被
     /// SIGKILL 后目录会留下，下一次启动 `try()` 永远失败并被误判成「已在运行」；
     /// 反过来，为了绕开这种坏锁去删目录，又会把正在运行实例的锁删掉。
     /// flock 由内核在进程退出时释放，两个方向都不会留残渣。
@@ -152,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let lockPath = dir.appendingPathComponent("app.lock").path
 
-        // 旧版本用 NSDistributedLock，锁就是个目录；升级后第一次启动会撞见它。
+        // 旧版本用分布式锁，锁就是个目录；升级后第一次启动会撞见它。
         // 那是死锁残留（旧代码从没能往里写过 PID），改名备份而不是删除，避免
         // 万一还有旧实例在跑时把别人的锁拆了。
         var lockIsDir: ObjCBool = false

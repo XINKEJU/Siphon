@@ -34,6 +34,25 @@
 
 **许可证关键**：aria2 是 GPLv2。本工程以**独立进程 + JSON-RPC**调用 aria2c，不链接 `libaria2`、不合并二进制，因此应用自身不必 GPL 化。若改为链接 libaria2，需重新评估合规义务。
 
+### 1.1 按 Mister Download Manager 重写（MDM 对齐层）
+
+本项目现已按 `misterdownloadmanager-main` 的**产品形态与工程契约**重写交互层，同时保留 macOS 原生 Swift 技术栈与已验证的下载引擎（egui/Windows 自绘体系不可直接移植）。
+
+| MDM 契约 | Siphon 实现 |
+|---|---|
+| `Queued / Downloading / Stopped / Complete / Error` 五态 | `Sources/Siphon/MDM/ProductStatus.swift` 的 `MDMStatus`，映射原有 `DownloadState`，旧 `tasks.json` 不需迁移 |
+| All Downloads / Unfinished / Finished / Queues 分类树 + 内置文件类型 | `MDMCategoryTreeView`，宽度固定 143pt |
+| 14 槽列表（File Name / Q / Size / Status / Time left / Transfer rate / …） | `TaskListView` 的 14 列 `Table`，无数据槽显示 `—` |
+| Tasks / File / Downloads / View / Help 菜单 | `SiphonApp.swift` 的 `SiphonCommands`，每个工具栏动作都有菜单入口 |
+| 独立进度窗口：Status / Limiter / Completion 三 tab、分段位图、连接表 | `Views/MDM/MDMProgressPanel.swift` |
+| Options 12 页两行标签 | `Views/MDM/MDMOptionsView.swift`，内容复用真实设置面板 |
+| 统一 Command / ListAnswer / RecentAnswer 契约 | `MDM/ProductContract.swift` + `MDM/StoreMDMBridge.swift` |
+| 远程/popup 答案不含本地路径 | `GET /recent`（Bearer）+ `MDMRecentAnswer` 结构化保证 |
+| 角色化色板 + 主题 + 100–200% 界面缩放 + i18n 通道 | `MDM/ThemeSystem.swift`、`MDM/I18n.swift`、`tools/i18n/extract.py` |
+| 扩展 popup 三页 Downloads / This page / Settings | `Resources/BrowserExtension/popup.*`（v0.5.0）；只有 App 接受任务后才取消浏览器下载 |
+
+**边界**：MDM 的 87 种语言仅迁移了中英两套目录结构；torrent 详情/做种面板、debrid、Click'n'Load、图库抓取、基准营销站尚未移植。这些属于 MDM 生态层，不影响本机的下载核心。
+
 ---
 
 ## 2. 协议矩阵
@@ -139,17 +158,17 @@ open build/Siphon.app
 ./scripts/make-dmg.sh
 ```
 
-`build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-0.1.0.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
+`build-app.sh` 在缺少 `Resources/AppIcon.icns` 时会自动调用 `make-icon.sh`，因此全新 clone 后一条命令即可得到带图标的 `.app`。安装时把 `build/Siphon.app` 拖进「应用程序」，或挂载 `build/Siphon-0.2.0.dmg` 拖入其中的 Applications 快捷方式；命令行可用 `ditto build/Siphon.app /Applications/Siphon.app`（`ditto` 会保留代码签名与扩展属性）。
 
-`verify.sh` 共 33 步：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（本机缺 aria2c 时打印 SKIP；CI 设 `SIPHON_REQUIRE_ARIA2=1` 时直接失败）、**协议矩阵 124 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端、**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路，以及新增的 **PAC 解析器**（JavaScriptCore 执行 + 指令解析）与 **MCP JSON-RPC + Webhook 签名/载荷**测试。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
+`verify.sh` 共 34 步：编译、MD4/eD2K 官方向量（14 项）、HLS/DASH 解析（21 项）、并发有序落盘端到端、**真实 aria2 进程 + JSON-RPC 下载 + 字节校验**（本机缺 aria2c 时打印 SKIP；CI 设 `SIPHON_REQUIRE_ARIA2=1` 时直接失败）、**协议矩阵 124 条断言**——协议检测全表、专用链解码、M3U/PLS/ASX/WPL/JSON 解析、AWS SigV4（与独立 Python 实现的参考签名逐字节比对）、`EXT-X-MAP`、aria2 选项映射、URI 规范化、`file://` / `data:` / libcurl 三种真实落盘端到端、**迅雷链 → 规范化 → 真实 aria2 → 落盘字节校验**的完整链路，以及新增的 **PAC 解析器**（JavaScriptCore 执行 + 指令解析）与 **MCP JSON-RPC + Webhook 签名/载荷**测试。其中包含三条回归断言：`aria2.tellActive` 只接受可选的 keys 数组，早期误传 `(offset, num)` 会让 RPC 报错并被 `poll()` 吞掉，导致进度轮询整体失效；`ipfs://CID` 规范化不得带尾斜杠（否则网关 404）；分段下载进度必须按字节而非段数上报。三者均已修正并加入自动化验证。
 
 后续安全加固也各有独立回归：本地接口令牌不再经 `/ping` 下发（0600 引导文件 + 权限/符号链接校验）、自动更新强制 HTTPS 与完整 SHA-256 并校验更新包签名身份、文件名与归档条目净化（Zip Slip / 符号链接 / 解压炸弹）、`Content-Length` 分片解析、REST/MCP handler 的 MainActor 隔离、校验和全引擎覆盖、Webhook SSRF 与载荷脱敏、发布签名资产一致性。
 
 下载弹窗同样有回归断言（第 33 步）：所有新任务必须经 `DownloadStore.add` 统一走 `DownloadPopupController.present`（启动恢复不经过该入口，不会误弹）；面板必须是 `nonactivatingPanel` 悬浮层，弹出不得把主窗口翻到最前（`siphon://add` 处理器不再调用主窗口）；弹窗内容必须包含 `segmentSnapshot` 分段进度，偏好设置里的 `Siphon.popupOnDownload` 开关必须真实生效；弹窗底板必须是实心 `PopupSurface`（禁止 `.bar` 材质 / `NSVisualEffectView`，否则桌面会透出来）。列表批量操作也有断言：选择状态必须是 `selectedTaskIDs` 集合、`List(selection:)` 挂集合绑定、批量条与批量右键菜单存在、删除走 `pendingDeleteIDs` 统一确认、「任务」菜单必须提供所选操作。凭证作用域测试的固定端口 fixture 前会先清理上次中断遗留的 `echo_server` 孤儿进程，避免「端口被占」的假失败。
 
-最近一批工程化收尾：MCP 与边下边播服务器的 Host 空值 / `Content-Length` 解析和 REST 端统一（含 DNS rebinding 回归断言），预览令牌改为 `SecRandomCopyBytes` 派生的 256-bit 值并做常量时间比较；新增 `CompletionSizePolicy`，让 curl / `file:` / `data:` / scp / rsync / NFS 引擎在报 `.completed` 前用**独立字节数**（curl `%{size_download}` + 续传偏移、源文件大小、解码后载荷长度）核对落盘文件，零字节或截断不再被当成功；关键路径的静默 `try?` / 空 `catch` 改为 `os_log` 上报。第 32 步同时覆盖校验和策略与完成尺寸策略，第 33 步校验发布资产、脚本语法、源码清单一致性和 README 关键声明。
+最近一批工程化收尾：MCP 与边下边播服务器的 Host 空值 / `Content-Length` 解析和 REST 端统一（含 DNS rebinding 回归断言），预览令牌改为 `SecRandomCopyBytes` 派生的 256-bit 值并做常量时间比较；新增 `CompletionSizePolicy`，让 curl / `file:` / `data:` / scp / rsync / NFS 引擎在报 `.completed` 前用**独立字节数**（curl `%{size_download}` + 续传偏移、源文件大小、解码后载荷长度）核对落盘文件，零字节或截断不再被当成功；关键路径的静默 `try?` / 空 `catch` 改为 `os_log` 上报。第 32 步同时覆盖校验和策略与完成尺寸策略，第 34 步校验发布资产、脚本语法、源码清单一致性和 README 关键声明。
 
-GitHub Actions 在每次 push / PR 上执行 `swift build` 与完整 33 步套件；`./scripts/verify.sh` 请直接运行（不要用管道接 `tail`，否则退出码会被管道末端的命令覆盖）。
+GitHub Actions 在每次 push / PR 上执行 `swift build` 与完整 34 步套件；`./scripts/verify.sh` 请直接运行（不要用管道接 `tail`，否则退出码会被管道末端的命令覆盖）。
 
 也可直接调试运行（需已在 `Resources/` 或 `~/Library/Application Support/Siphon/` 放置 `aria2c`）：
 
@@ -203,11 +222,19 @@ Sources/Siphon/
   BrowserExtension/
     NativeMessagingServer.swift  本地 HTTP 控制接口（NWListener, 127.0.0.1:17801）
     MCPServer.swift              MCP 服务（JSON-RPC 2.0, 127.0.0.1:17802，AI 客户端管理下载）
+  MDM/                            MDM 对齐的产品层（状态机 / 分类 / Command 契约 / 主题 / i18n）
+    ProductIdentity.swift          应用身份、.mdm.part/.mdm.json 命名契约、数据目录
+    ProductStatus.swift            MDMStatus 五态 + MDMCategory 分类树
+    ProductContract.swift          MDMCommand / ListAnswer / RecentAnswer / Snapshot
+    StoreMDMBridge.swift           统一命令到 DownloadStore 的适配器
+    ThemeSystem.swift              角色色板、10 套主题、明暗、100–200% 缩放
+    I18n.swift                     中英目录、键回退、提取器可读的 TSV 结构
   Views/
     Glass.swift                   浮层控件的玻璃自适应组件（26+ 玻璃 / 14–15 材质回退）
-    ContentView.swift            两栏布局 + 系统可折叠检查器 + 统一工具栏分组 + 搜索
-    TaskListView.swift           任务列表（纯内容层，无悬浮条）
-    ...                          侧栏 / 检查器 / 设置 / 表单
+    ContentView.swift              MDM 四区布局（分类树 / 14 列列表 / 状态栏 / 预览列）
+    TaskListView.swift             14 槽任务表 + 多选、批量、拖放、右键
+    MDM/                           MDM 分类树 / 进度窗口 / Options 12 页 / 核心对话框
+    ...                          检查器 / 设置 / 表单
 Resources/
   UI-Preview.png                 真实窗口截图：新版红绿灯 + 顶部玻璃工具栏（macOS 27.2，深色模式）
   AppIcon.icns                   打包进 .app 的图标（Info.plist 以 CFBundleIconFile 引用）
@@ -222,7 +249,7 @@ scripts/
   build-app.sh                   release 编译 + .app 组装 + SDK 标记提升 + dylib 重链接 + 重签名
   make-dmg.sh                    可拖拽安装的 DMG（含挂载后签名校验）
   make-icon.sh / MakeIcon.swift  矢量图标生成器
-  verify.sh                      33 步可复现验证（含 CI 严格模式）
+  verify.sh                      34 步可复现验证（含 CI 严格模式）
 Tests/                           向量、解析、协议矩阵与端到端测试
   ProtocolTests/                 协议适配与 file/data/libcurl 真实落盘
 ```
@@ -398,7 +425,7 @@ aria2 会话持久化：启动即带 `--save-session`（每 30 秒落盘），�
 7. ✅ 签名基础设施（entitlements、Hardened Runtime 可选签名、`notarize.sh`、更新包签名身份校验）已就位；⚠️ **实际 Developer ID 签名与公证仍需账号凭据**，见 §11
 8. ⬜ BT 文件选择（Tracker 管理、RSS 订阅、下载完成脚本均已实现 ✅）
 9. ⬜ 进程级插件沙箱：当前 JavaScriptCore 与 App 同进程、无执行超时，见设置页说明
-10. ⚠️ 关键路径的 XCTest / UI 测试与覆盖率门槛：当前是手写 `swiftc` 回归套件（33 步）+ GitHub Actions CI；套件已自带源码清单一致性检查，但尚无行覆盖率门槛
+10. ⚠️ 关键路径的 XCTest / UI 测试与覆盖率门槛：当前是手写 `swiftc` 回归套件（34 步）+ GitHub Actions CI；套件已自带源码清单一致性检查，但尚无行覆盖率门槛
 11. ✅ 本轮 P0/P1 加固已落地：本地令牌带外分发、更新链来源与签名校验、文件名/归档/后处理加固、MainActor 隔离、签名与公证基础设施、校验和全引擎覆盖、Webhook SSRF 防护、UI 侧栏死开关与文档一致性
 12. ⬜ 剩余 P2：Keychain ACL 收紧、S3 Access Key 移出 UserDefaults、resume sidecar HMAC、Strict Concurrency complete、`@unchecked Sendable` 逐个复核、ExternalRunner 超时、URL scheme 白名单、本地化 / 无障碍 / 通用二进制
 

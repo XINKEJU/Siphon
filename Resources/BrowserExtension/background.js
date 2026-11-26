@@ -615,6 +615,40 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     })();
     return true;
   }
+  // MDM popup → last 60 rows. Prefer native messaging; the HTTP fallback
+  // needs a pasted token because /recent is authenticated like every other
+  // control endpoint. The answer has no local paths by construction.
+  if (msg?.type === "recent") {
+    (async () => {
+      const native = await sendNative({ type: "recent" });
+      if (native?.ok) { reply({ ok: true, recent: native.recent || [] }); return; }
+      const token = await getToken();
+      if (!token) { reply({ ok: false, error: "本地接口令牌未配置" }); return; }
+      try {
+        const response = await fetch("http://127.0.0.1:17801/recent", {
+          headers: { Authorization: "Bearer " + token },
+        });
+        const body = await response.json();
+        reply({ ok: response.ok, recent: body.recent || [] });
+      } catch (error) {
+        reply({ ok: false, error: String(error) });
+      }
+    })();
+    return true;
+  }
+  // "Don't capture this site any more" from the This-page tab.
+  if (msg?.type === "setSiteCapture") {
+    (async () => {
+      const config = await getConfig();
+      const host = String(msg.host || "").trim().toLowerCase();
+      if (!host) { reply({ ok: false }); return; }
+      let hosts = (config.excludeHosts || []).filter(h => h !== host);
+      if (msg.enabled === false) hosts.push(host);
+      await chrome.storage.local.set({ excludeHosts: hosts });
+      reply({ ok: true, excludeHosts: hosts });
+    })();
+    return true;
+  }
   if (msg?.type === "getToken") {
     getToken().then(t => reply({ ok: true, token: t || "" }));
     return true;

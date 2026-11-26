@@ -1,40 +1,70 @@
 import SwiftUI
 import AppKit
 
-/// NDM-style simplified main window: filter tabs at top, compact task list,
-/// bottom status bar. Task details open in a sheet, or in an optional right
-/// detail column when "显示侧边栏" is on (never both at once).
+/// MDM/IDM window layout: menu bar (in `SiphonCommands`), a 143pt category
+/// tree, the 14-column download list, a status strip, and an optional preview
+/// column. The previous four-filter-tab layout is preserved as the `filter`
+/// state so the store's existing filter contract stays valid.
 struct ContentView: View {
     @Environment(DownloadStore.self) private var store
     @Binding var showingAdd: Bool
     @Binding var showingInspector: Bool
     @State private var filter: TaskFilter = .all
+    @State private var category: MDMCategory = .all
+    @State private var selectedQueue: String?
     @State private var searchText = ""
     @State private var showingDetail = false
+    @State private var showingAddURL = false
+    @State private var showingLinkGrabber = false
+    @State private var showingFind = false
+    @State private var showingScheduler = false
+    @State private var showingOptions = false
+    @State private var showingProperties = false
+    @State private var showingVerify = false
     @State private var network = NetworkMonitor.shared
+    @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                filterTabs
-                Divider()
-                taskList
-                Divider()
-                statusBar
-            }
-            .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+        Group {
+            HSplitView {
+                MDMCategoryTreeView(selection: $category, selectedQueue: $selectedQueue)
+                    .frame(width: 143)
 
-            if showingInspector {
-                Divider()
-                inspectorPanel
-                    .frame(width: 300)
-                    .frame(maxHeight: .infinity)
-                    .background(.background)
+                VStack(spacing: 0) {
+                    taskList
+                    Divider()
+                    statusBar
+                }
+                .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+
+                if showingInspector {
+                    Divider()
+                    inspectorPanel
+                        .frame(width: 300)
+                        .frame(maxHeight: .infinity)
+                        .background(theme.color(.surface))
+                }
             }
         }
-        .searchable(text: $searchText, prompt: "搜索任务")
+        .background(theme.color(.listBackground))
+        .searchable(text: $searchText, prompt: MDMI18n.t("dialog.find"))
         .toolbar { toolbarContent }
         .sheet(isPresented: $showingAdd) { AddTaskView() }
+        .sheet(isPresented: $showingAddURL) { MDMAddURLDialog(isPresented: $showingAddURL) }
+        .sheet(isPresented: $showingLinkGrabber) { MDMLinkGrabberDialog(isPresented: $showingLinkGrabber) }
+        .sheet(isPresented: $showingFind) {
+            MDMFindDialog(isPresented: $showingFind, query: $searchText) {
+                findNext()
+            }
+        }
+        .sheet(isPresented: $showingScheduler) { MDMSchedulerDialog(isPresented: $showingScheduler) }
+        .sheet(isPresented: $showingOptions) { MDMOptionsView(isPresented: $showingOptions) }
+        .sheet(isPresented: $showingProperties) {
+            if let task = selectedTask {
+                MDMPropertiesDialog(task: task, isPresented: $showingProperties)
+            }
+        }
+        .sheet(isPresented: $showingVerify) { MDMVerifyChecksumDialog(isPresented: $showingVerify) }
         .sheet(isPresented: $showingDetail) {
             if let task = selectedTask {
                 TaskDetailView(task: task)
@@ -44,15 +74,22 @@ struct ContentView: View {
         }
         .task {
             await store.start()
-            // 启动瞬间可能已经处于断网 / 计费网络，先按当前状态对一次策略。
             store.handleNetworkChange(NetworkMonitor.shared.status)
         }
         .onReceive(NotificationCenter.default.publisher(for: .siphonOpenAddSheet)) { _ in
-            showingAdd = true
+            showingAddURL = true
         }
+        // Menu-bar commands post notifications because the dialog state lives
+        // in the window: every toolbar command stays reachable from the menu,
+        // without duplicating @State in two scenes.
+        .onReceive(NotificationCenter.default.publisher(for: .mdmOpenAddURL)) { _ in showingAddURL = true }
+        .onReceive(NotificationCenter.default.publisher(for: .mdmOpenLinkGrabber)) { _ in showingLinkGrabber = true }
+        .onReceive(NotificationCenter.default.publisher(for: .mdmOpenOptions)) { _ in showingOptions = true }
+        .onReceive(NotificationCenter.default.publisher(for: .mdmOpenFind)) { _ in showingFind = true }
+        .onReceive(NotificationCenter.default.publisher(for: .mdmOpenScheduler)) { _ in showingScheduler = true }
+        .onReceive(NotificationCenter.default.publisher(for: .mdmOpenProperties)) { _ in showingProperties = true }
+        .onReceive(NotificationCenter.default.publisher(for: .mdmOpenVerify)) { _ in showingVerify = true }
         .onChange(of: showingInspector) { _, visible in
-            // A sheet left over from the sheet-only layout must not stack on
-            // top of the new detail column.
             if visible { showingDetail = false }
         }
         .alert("无法添加任务", isPresented: Binding(
@@ -66,47 +103,33 @@ struct ContentView: View {
         .frame(minWidth: 700, minHeight: 450)
     }
 
-    // MARK: - Filter tabs
-
-    private var filterTabs: some View {
-        HStack(spacing: 0) {
-            ForEach(TaskFilter.allCases) { item in
-                Button {
-                    filter = item
-                } label: {
-                    Text("\(item.title) (\(item.count(store.tasks)))")
-                        .font(.system(size: 12, weight: filter == item ? .semibold : .regular))
-                        .foregroundStyle(filter == item ? Color.accentColor : .secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background {
-                            if filter == item {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.accentColor.opacity(0.1))
-                            }
-                        }
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.bar)
-    }
-
-    // MARK: - Task list
+    // MARK: - List
 
     private var taskList: some View {
-        TaskListView(filter: filter, searchText: searchText, onSelect: { task in
-            store.selectedTaskID = task.id
-            // With the detail column visible the selection is already shown;
-            // opening a second copy as a sheet would be redundant.
-            if !showingInspector { showingDetail = true }
-        })
+        TaskListView(filter: filter,
+                     searchText: searchText,
+                     category: category,
+                     selectedQueue: selectedQueue,
+                     onSelect: { task in
+                        store.selectedTaskID = task.id
+                        if !showingInspector { showingDetail = true }
+                     })
     }
 
-    // MARK: - Detail column
+    private func findNext() {
+        guard !searchText.isEmpty else { return }
+        let needle = searchText.lowercased()
+        let tasks = store.tasks.sorted { $0.createdAt > $1.createdAt }
+        let start = tasks.firstIndex { $0.id == store.selectedTaskID } ?? -1
+        if let match = tasks.dropFirst(start + 1).first(where: {
+            $0.name.lowercased().contains(needle)
+                || $0.source.absoluteString.lowercased().contains(needle)
+        }) {
+            store.selectedTaskID = match.id
+        }
+    }
+
+    // MARK: - Preview column
 
     @ViewBuilder
     private var inspectorPanel: some View {
@@ -121,7 +144,7 @@ struct ContentView: View {
                     .foregroundStyle(.tertiary)
                 Text("未选择任务")
                     .font(.headline)
-                Text("点击左侧列表中的任务，详情会显示在这里。")
+                Text("点击列表中的任务，详情会显示在这里。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -140,34 +163,29 @@ struct ContentView: View {
             let queued = store.tasks.filter { $0.state == .pending || $0.state == .paused }.count
 
             Label {
-                Text("\(active.count) 个进行中")
+                Text("\(active.count) \(MDMI18n.t("status.downloading"))")
                     .font(.system(size: 11))
             } icon: {
                 Image(systemName: "arrow.down.circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(theme.color(.success))
                     .font(.system(size: 10))
             }
 
             if queued > 0 {
                 Label {
-                    Text("\(queued) 个排队中")
+                    Text("\(queued) \(MDMI18n.t("status.queued"))")
                         .font(.system(size: 11))
                 } icon: {
-                    Image(systemName: "clock")
-                        .foregroundStyle(.orange)
-                        .font(.system(size: 10))
+                    Image(systemName: "clock").foregroundStyle(.orange).font(.system(size: 10))
                 }
             }
 
-            // 网络异常不该只体现在任务失败里：状态栏提前说明「为什么都停了」。
             if let note = network.status.displayText {
                 Label {
-                    Text(note)
-                        .font(.system(size: 11, weight: .semibold))
+                    Text(note).font(.system(size: 11, weight: .semibold))
                 } icon: {
                     Image(systemName: network.status.symbolName)
-                        .foregroundStyle(.orange)
-                        .font(.system(size: 10))
+                        .foregroundStyle(.orange).font(.system(size: 10))
                 }
                 .help(store.networkPauseReason?.displayText ?? "当前网络状态")
             }
@@ -178,13 +196,10 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: .semibold))
                 } icon: {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.accentColor)
-                        .font(.system(size: 10))
+                        .foregroundStyle(Color.accentColor).font(.system(size: 10))
                 }
                 Button("取消") { store.clearSelection() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
             }
 
             if totalSpeed > 0 {
@@ -192,9 +207,7 @@ struct ContentView: View {
                     Text("\(formatBytes(totalSpeed))/s")
                         .font(.system(size: 11, design: .monospaced))
                 } icon: {
-                    Image(systemName: "speedometer")
-                        .foregroundStyle(.blue)
-                        .font(.system(size: 10))
+                    Image(systemName: "speedometer").foregroundStyle(.blue).font(.system(size: 10))
                 }
             }
 
@@ -205,12 +218,9 @@ struct ContentView: View {
             } label: {
                 Label {
                     Text(store.downloadDirectory.lastPathComponent)
-                        .font(.system(size: 11))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
                 } icon: {
-                    Image(systemName: "folder")
-                        .font(.system(size: 10))
+                    Image(systemName: "folder").font(.system(size: 10))
                 }
                 .foregroundStyle(.secondary)
             }
@@ -219,7 +229,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(.bar)
+        .background(theme.color(.surfaceRaised))
     }
 
     // MARK: - Toolbar
@@ -228,25 +238,51 @@ struct ContentView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
-                for t in store.tasks where t.state == .paused || t.state == .error {
-                    store.resume(t.id)
-                }
+                showingAddURL = true
             } label: {
-                Label("恢复全部", systemImage: "play.fill")
+                Label(MDMI18n.t("menu.addURL"), systemImage: "plus")
+            }
+            .help("添加文件直链 (⌘N)")
+
+            Button {
+                showingLinkGrabber = true
+            } label: {
+                Label(MDMI18n.t("menu.linkGrabber"), systemImage: "link.badge.plus")
+            }
+
+            Menu {
+                Button(MDMI18n.t("menu.batch")) { showingAdd = true }
+                Button(MDMI18n.t("menu.downloadLater")) { showingAddURL = true }
+                Button(MDMI18n.t("menu.scheduler")) { showingScheduler = true }
+                Divider()
+                Button(MDMI18n.t("menu.find")) { showingFind = true }
+                Button(MDMI18n.t("menu.properties")) { showingProperties = true }
+                    .disabled(selectedTask == nil)
+                Button(MDMI18n.t("menu.verifyChecksum")) { showingVerify = true }
+                Divider()
+                Button(MDMI18n.t("menu.options")) { showingOptions = true }
+            } label: {
+                Label("更多", systemImage: "ellipsis.circle")
+            }
+        }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                store.resumeAll()
+            } label: {
+                Label(MDMI18n.t("menu.resumeAll"), systemImage: "play.fill")
             }
             .buttonStyle(.bordered)
             .tint(.green)
-            .help("恢复所有已暂停或出错的任务")
             .disabled(!store.tasks.contains { $0.state == .paused || $0.state == .error })
 
             Button {
-                for t in store.tasks where t.state == .active { store.pause(t.id) }
+                store.pauseAll()
             } label: {
-                Label("全部暂停", systemImage: "pause.fill")
+                Label(MDMI18n.t("menu.pauseAll"), systemImage: "pause.fill")
             }
             .buttonStyle(.bordered)
             .tint(.orange)
-            .help("暂停所有进行中的任务")
             .disabled(!store.tasks.contains { $0.state == .active })
         }
 
@@ -256,13 +292,15 @@ struct ContentView: View {
 
         ToolbarItem(placement: .primaryAction) {
             Button {
-                showingAdd = true
+                if let task = selectedTask {
+                    MDMProgressPanelController.shared.show(taskID: task.id, store: store)
+                } else {
+                    showingAddURL = true
+                }
             } label: {
-                Label("新建下载", systemImage: "plus")
+                Label("进度", systemImage: "chart.xyaxis.line")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Color.accentColor)
-            .help("添加链接、专用链、网关地址或批量列表 (⌘N)")
+            .help("打开所选任务的进度窗口")
         }
     }
 
@@ -279,10 +317,10 @@ enum TaskFilter: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .all: return "全部"
-        case .active: return "进行中"
-        case .paused: return "已暂停"
-        case .completed: return "已完成"
+        case .all: return MDMI18n.t("category.all")
+        case .active: return MDMI18n.t("category.unfinished")
+        case .paused: return MDMI18n.t("status.stopped")
+        case .completed: return MDMI18n.t("category.finished")
         }
     }
     func count(_ tasks: [DownloadTask]) -> Int {
@@ -297,34 +335,24 @@ enum TaskFilter: String, CaseIterable, Identifiable {
 
 // MARK: - 多选汇总面板
 
-/// 右侧详情列在多选时的替代内容：一屏看清这组任务的数量、体量与状态分布，
-/// 并把批量动作放在手边 —— 否则「选了十几个却只能回列表右键」很别扭。
+/// Right-hand summary for a multi-selection: same batch actions as the list
+/// bar and the Tasks menu, so all three paths share one store implementation.
 private struct BatchSelectionPanel: View {
     @Environment(DownloadStore.self) private var store
 
     var body: some View {
-        content(selected: store.selectedTasks)
-    }
-
-    private func content(selected: [DownloadTask]) -> some View {
+        let selected = store.selectedTasks
         let ids = store.selectedTaskIDs
         let totalBytes = selected.reduce(Int64(0)) { $0 + $1.progress.totalBytes }
         let doneBytes = selected.reduce(Int64(0)) { $0 + $1.progress.downloadedBytes }
-        let active = selected.filter { $0.state == .active || $0.state == .pending }.count
-        let paused = selected.filter { $0.state == .paused }.count
-        let finished = selected.filter { $0.state == .completed }.count
-        let failed = selected.filter { $0.state == .error }.count
 
-        return ScrollView {
+        ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("已选 \(selected.count) 项")
-                        .font(.title3.weight(.semibold))
+                    Text("已选 \(selected.count) 项").font(.title3.weight(.semibold))
                     Text("批量暂停、继续、拷贝链接或删除这一组任务")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-
                 VStack(alignment: .leading, spacing: 7) {
                     row("总大小", totalBytes > 0 ? Formatting.bytes(totalBytes) : "—")
                     row("已下载", Formatting.bytes(doneBytes))
@@ -334,36 +362,14 @@ private struct BatchSelectionPanel: View {
                         row("完成度", Formatting.percent(Double(doneBytes) / Double(max(1, totalBytes))))
                     }
                 }
-
                 Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("状态").font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        if active > 0 { chip("进行中 \(active)", .accentColor) }
-                        if paused > 0 { chip("已暂停 \(paused)", .orange) }
-                        if finished > 0 { chip("已完成 \(finished)", .green) }
-                        if failed > 0 { chip("出错 \(failed)", .red) }
-                    }
-                }
-
-                Divider()
-
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
-                        Button { store.pauseTasks(ids) } label: {
-                            Label("暂停", systemImage: "pause.fill")
-                        }
-                        .disabled(active == 0)
-                        Button { store.resumeTasks(ids) } label: {
-                            Label("继续", systemImage: "play.fill")
-                        }
-                        .disabled(paused + failed == 0)
+                        Button { store.pauseTasks(ids) } label: { Label("暂停", systemImage: "pause.fill") }
+                        Button { store.resumeTasks(ids) } label: { Label("继续", systemImage: "play.fill") }
                     }
                     HStack(spacing: 8) {
-                        Button { store.copyLinks(ids) } label: {
-                            Label("拷贝链接", systemImage: "link")
-                        }
+                        Button { _ = store.copyLinks(ids) } label: { Label("拷贝链接", systemImage: "link") }
                         Button(role: .destructive) { store.pendingDeleteIDs = ids } label: {
                             Label("删除…", systemImage: "trash")
                         }
@@ -374,9 +380,7 @@ private struct BatchSelectionPanel: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-
                 Divider()
-
                 VStack(alignment: .leading, spacing: 5) {
                     Text("包含任务").font(.caption).foregroundStyle(.secondary)
                     ForEach(selected.prefix(12)) { task in
@@ -385,23 +389,15 @@ private struct BatchSelectionPanel: View {
                                   : task.state == .error ? "exclamationmark.circle.fill"
                                   : task.state == .paused ? "pause.circle.fill" : "arrow.down.circle.fill")
                                 .font(.system(size: 10))
-                                .foregroundStyle(task.state == .completed ? .green
-                                                 : task.state == .error ? .red
-                                                 : task.state == .paused ? .orange : Color.accentColor)
-                            Text(task.name)
-                                .font(.caption)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            Text(task.name).font(.caption).lineLimit(1).truncationMode(.middle)
                             Spacer(minLength: 4)
                             Text(Formatting.percent(task.progress.percent))
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.tertiary)
+                                .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                         }
                     }
                     if selected.count > 12 {
                         Text("…还有 \(selected.count - 12) 项")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
             }
@@ -416,15 +412,6 @@ private struct BatchSelectionPanel: View {
             Spacer()
             Text(value).font(.caption.monospacedDigit())
         }
-    }
-
-    private func chip(_ text: String, _ color: Color) -> some View {
-        Text(text)
-            .font(.caption2.weight(.medium))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.14), in: Capsule())
-            .foregroundStyle(color)
     }
 }
 

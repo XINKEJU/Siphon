@@ -16,11 +16,47 @@ APP="$ROOT/build/Siphon.app"
 CONTENTS="$APP/Contents"
 
 echo "==> Building release binary"
-swift build -c release
-# Derive the output path directly; SwiftPM always stages release binaries in
-# .build/release, so probing --show-bin-path would trigger a redundant build.
 BIN_DIR="$ROOT/.build/release"
 BIN="$BIN_DIR/Siphon"
+BUILD_MODE=swiftpm
+if ! swift build -c release >"$ROOT/build-swift.log" 2>&1; then
+    # Some Command Line Tools point releases ship a PackageDescription dylib
+    # built by an older compiler than the installed swiftc. SwiftPM then cannot
+    # link even a trivial manifest. Compile the same sources directly with
+    # swiftc so a healthy SDK can still produce a shippable bundle.
+    echo "!!  swift build failed (see build-swift.log); using swiftc fallback" >&2
+    sed -n '1,8p' "$ROOT/build-swift.log" >&2
+    BUILD_MODE=swiftc
+    mkdir -p "$BIN_DIR" "$ROOT/.build/local-module"
+    SDK_OVERLAY="${SIPHON_SDK_OVERLAY:-}"
+    SDK_PATH="${SIPHON_SDK_PATH:-}"
+    EXTRA=()
+    if [[ -n "$SDK_OVERLAY" ]]; then EXTRA+=(-vfsoverlay "$SDK_OVERLAY"); fi
+    if [[ -n "$SDK_PATH" ]]; then EXTRA+=(-sdk "$SDK_PATH"); fi
+
+    MODULE_DIR="$ROOT/.build/local-module"
+    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -parse-as-library \
+      -emit-library -emit-module -module-name SiphonBridge \
+      -emit-module-path "$MODULE_DIR/SiphonBridge.swiftmodule" \
+      -o "$MODULE_DIR/libSiphonBridge.dylib" Sources/SiphonBridge/*.swift
+
+    APP_SOURCES=()
+    while IFS= read -r src; do APP_SOURCES+=("$src"); done < <(find Sources/Siphon Sources/SiphonBridge -name '*.swift' | sort)
+    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -parse-as-library \
+      -framework AppKit -framework SwiftUI -framework Network \
+      -framework SystemConfiguration -framework JavaScriptCore \
+      -framework Security -framework AVFoundation \
+      -framework UniformTypeIdentifiers \
+      -o "$BIN" "${APP_SOURCES[@]}"
+
+    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -I "$MODULE_DIR" \
+      -L "$MODULE_DIR" -lSiphonBridge -o "$BIN_DIR/SiphonNM" Sources/SiphonNM/*.swift
+    # NM lives in Resources/, so resolve the bridge dylib relative to it.
+    install_name_tool -change "$MODULE_DIR/libSiphonBridge.dylib" \
+      "@executable_path/../Frameworks/libSiphonBridge.dylib" \
+      "$BIN_DIR/SiphonNM" 2>/dev/null || true
+fi
+echo "==> Binary build mode: $BUILD_MODE"
 
 echo "==> Assembling $APP"
 rm -rf "$APP"
@@ -76,6 +112,13 @@ fi
 
 FRAMEWORKS="$CONTENTS/Frameworks"
 mkdir -p "$FRAMEWORKS"
+if [[ "$BUILD_MODE" == "swiftc" ]]; then
+    cp "$ROOT/.build/local-module/libSiphonBridge.dylib" "$FRAMEWORKS/libSiphonBridge.dylib"
+    chmod u+w "$FRAMEWORKS/libSiphonBridge.dylib"
+    install_name_tool -id "@executable_path/../Frameworks/libSiphonBridge.dylib" \
+      "$FRAMEWORKS/libSiphonBridge.dylib" 2>/dev/null || true
+    echo "==> Bundled swiftc-fallback SiphonBridge dylib"
+fi
 SEEN_DIR="$(mktemp -d)"
 trap 'rm -rf "$SEEN_DIR"' EXIT
 RELINK_COUNT=0

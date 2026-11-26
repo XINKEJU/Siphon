@@ -314,22 +314,25 @@
   </div>
 
   <div class="tab-bar">
-    <button class="active" data-tab="main">下载拦截</button>
-    <button data-tab="media">媒体嗅探</button>
-    <button data-tab="config">设置</button>
+    <button class="active" data-tab="main">Downloads</button>
+    <button data-tab="media">This page</button>
+    <button data-tab="config">Settings</button>
   </div>
 
   <div class="content">
     <div id="tab-main" class="tab-content active">
       <div class="section">
-        <div class="toggle-row">
-          <label for="captureAll">接管浏览器全部下载</label>
-          <label class="switch"><input type="checkbox" id="captureAll"><span class="slider"></span></label>
+        <div class="add-row">
+          <input type="text" id="recentSearch" placeholder="搜索下载">
+          <button class="btn-secondary" id="refreshRecent">刷新</button>
         </div>
-        <div class="toggle-row">
-          <label for="notifyOnCapture">拦截时显示通知</label>
-          <label class="switch"><input type="checkbox" id="notifyOnCapture"><span class="slider"></span></label>
+        <div class="btn-row" id="recentFilters">
+          <button class="btn-secondary active" data-filter="all">All</button>
+          <button class="btn-secondary" data-filter="downloading">Running</button>
+          <button class="btn-secondary" data-filter="complete">Done</button>
+          <button class="btn-secondary" data-filter="error">Failed</button>
         </div>
+        <div id="recentList" class="item-list" style="max-height:260px;overflow-y:auto"></div>
       </div>
       <div class="section">
         <p class="section-title">本次统计</p>
@@ -346,6 +349,9 @@
     <div id="tab-media" class="tab-content">
       <div class="section">
         <p class="section-title">本页媒体</p>
+        <div class="item-list" id="siteInfo" style="margin-bottom:8px"></div>
+        <div class="btn-row"><button class="btn-secondary" id="toggleSiteCapture">本站不再接管</button></div>
+        <p class="section-title" style="margin-top:14px">嗅探到的媒体</p>
         <div id="list" class="item-list"></div>
         <div class="btn-row">
           <button class="btn-primary" id="sendAll">发送全部</button>
@@ -357,6 +363,18 @@
     </div>
 
     <div id="tab-config" class="tab-content">
+      <div class="section">
+        <p class="section-title">接管规则</p>
+        <div class="toggle-row">
+          <label for="captureAll">接管浏览器全部下载</label>
+          <label class="switch"><input type="checkbox" id="captureAll"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <label for="notifyOnCapture">拦截时显示通知</label>
+          <label class="switch"><input type="checkbox" id="notifyOnCapture"><span class="slider"></span></label>
+        </div>
+        <p class="help">只有 Siphon 接受任务后，扩展才会取消浏览器下载；失败时浏览器下载继续并弹出提示。</p>
+      </div>
       <div class="section">
         <p class="section-title">连接诊断</p>
         <code class="diag-id" id="extensionId">读取中…</code>

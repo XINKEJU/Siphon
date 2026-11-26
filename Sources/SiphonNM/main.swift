@@ -71,6 +71,25 @@ func handle(_ message: [String: Any]) {
             respond(["ok": true, "app": "Siphon"])
         }
 
+    case "recent":
+        // MDM's popup asks for the last 60 rows. The app returns a path-free
+        // answer so the browser never learns local directories.
+        var token = currentToken()
+        var (status, data) = request("GET", "/recent", token: token)
+        if status == 401 {
+            cachedToken = nil
+            token = currentToken()
+            (status, data) = request("GET", "/recent", token: token)
+        }
+        if status == 200,
+           let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            var reply: [String: Any] = ["ok": true]
+            reply["recent"] = object["recent"] ?? []
+            respond(reply)
+        } else {
+            respond(["ok": false, "error": "Siphon 返回 HTTP \(status)"])
+        }
+
     case "add":
         guard let url = message["url"] as? String, !url.isEmpty else {
             respond(["ok": false, "error": "missing url"])
