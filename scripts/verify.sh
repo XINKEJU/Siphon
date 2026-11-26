@@ -511,6 +511,15 @@ grep -q "Table(visible, selection: selectionBinding)" Sources/Siphon/Views/TaskL
 grep -q "private var batchBar" Sources/Siphon/Views/TaskListView.swift
 grep -q "private func batchContextMenu(for task:" Sources/Siphon/Views/TaskListView.swift
 grep -q "BatchSelectionPanel" Sources/Siphon/Views/ContentView.swift
+# Main window must fill the window: HSplitView lays out at its subviews' ideal
+# height (~135pt) on this toolchain and centres a thin strip, so the three-pane
+# body uses an HStack inside a GeometryReader frame instead.
+grep -q "GeometryReader { geo in" Sources/Siphon/Views/ContentView.swift
+grep -q "private var mainLayout: some View" Sources/Siphon/Views/ContentView.swift
+grep -q "HStack(spacing: 0)" Sources/Siphon/Views/ContentView.swift
+! grep -q "HSplitView {" Sources/Siphon/Views/ContentView.swift
+grep -q "frame(minWidth: 700, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)" Sources/Siphon/SiphonApp.swift
+grep -q "windowResizability(.contentMinSize)" Sources/Siphon/SiphonApp.swift
 grep -q "MDMI18n.t(\"menu.pauseSelected\")" Sources/Siphon/SiphonApp.swift
 grep -q '"menu.pauseSelected": "暂停所选"' Sources/Siphon/MDM/I18n.swift
 ! grep -q "deleteCandidate" Sources/Siphon/Views/TaskListView.swift

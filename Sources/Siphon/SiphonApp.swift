@@ -20,7 +20,10 @@ struct SiphonApp: App {
         Window("下载", id: "main-window") {
             ContentView(showingAdd: $showingAdd, showingInspector: $showingInspector)
                 .environment(store)
-                .frame(minWidth: 700, minHeight: 450)
+                // A min-only frame makes the root view size to its ideal height
+                // (~135pt) and centre it once the window grows. The max:infinity
+                // proposal lets the three-pane layout fill the whole window.
+                .frame(minWidth: 700, maxWidth: .infinity, minHeight: 450, maxHeight: .infinity)
                 .onAppear {
                     appDelegate.store = store
                     SystemPresence.shared.configure(store: store)
@@ -28,7 +31,10 @@ struct SiphonApp: App {
                     store.handleNetworkChange(NetworkMonitor.shared.status)
                 }
         }
-        .windowResizability(.contentSize)
+        // contentSize pins the window to the collapsed ideal size so it can
+        // never be enlarged. contentMinSize keeps 700x450 as the floor while
+        // allowing the user to resize the window normally.
+        .windowResizability(.contentMinSize)
         .commands {
             SiphonCommands(showingAdd: $showingAdd,
                            showingInspector: $showingInspector,

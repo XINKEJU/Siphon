@@ -25,26 +25,14 @@ struct ContentView: View {
     @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some View {
-        Group {
-            HSplitView {
-                MDMCategoryTreeView(selection: $category, selectedQueue: $selectedQueue)
-                    .frame(width: 143)
-
-                VStack(spacing: 0) {
-                    taskList
-                    Divider()
-                    statusBar
-                }
-                .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
-
-                if showingInspector {
-                    Divider()
-                    inspectorPanel
-                        .frame(width: 300)
-                        .frame(maxHeight: .infinity)
-                        .background(theme.color(.surface))
-                }
-            }
+        // HSplitView lays out at its subviews' ideal height (~135pt) and
+        // ignores a maxHeight:.infinity proposal, collapsing the whole
+        // three-pane layout into a thin centred strip. Pin it to the real
+        // available size reported by GeometryReader so it always fills the
+        // window, at any window size.
+        GeometryReader { geo in
+            mainLayout
+                .frame(width: geo.size.width, height: geo.size.height)
         }
         .background(theme.color(.listBackground))
         .searchable(text: $searchText, prompt: MDMI18n.t("dialog.find"))
@@ -100,7 +88,41 @@ struct ContentView: View {
         } message: {
             Text(store.lastError ?? "")
         }
-        .frame(minWidth: 700, minHeight: 450)
+        // No min-only frame here: in a Window scene a min-only frame makes the
+        // root view size to its ideal height (~135pt) and centre it. The window
+        // scene (SiphonApp) already supplies min 700x450 and max:.infinity.
+    }
+
+    /// The three-pane split itself. Kept as a separate expression so the
+    /// GeometryReader frame above can size it without a type-check timeout.
+    ///
+    /// HStack, not HSplitView: on this toolchain HSplitView lays out at its
+    /// subviews' ideal height (~135pt) and ignores an explicit frame height,
+    /// collapsing the layout into a thin centred strip. An HStack with
+    /// maxHeight:.infinity children fills the frame reliably.
+    private var mainLayout: some View {
+        HStack(spacing: 0) {
+            MDMCategoryTreeView(selection: $category, selectedQueue: $selectedQueue)
+                .frame(width: 143)
+
+            Divider()
+
+            VStack(spacing: 0) {
+                taskList
+                Divider()
+                statusBar
+            }
+            .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+
+            if showingInspector {
+                Divider()
+                inspectorPanel
+                    .frame(width: 300)
+                    .frame(maxHeight: .infinity)
+                    .background(theme.color(.surface))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - List
