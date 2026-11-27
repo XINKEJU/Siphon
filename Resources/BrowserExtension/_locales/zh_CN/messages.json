@@ -1,0 +1,449 @@
+{
+  "extName": {
+    "message": "Siphon Connector"
+  },
+  "extDescription": {
+    "message": "把浏览器下载交给本机 Siphon macOS App。支持 Chrome、Edge、Brave 和 Firefox。"
+  },
+  "popup_status_checking": {
+    "message": "检查连接…"
+  },
+  "popup_searchPlaceholder": {
+    "message": "搜索下载"
+  },
+  "popup_refresh": {
+    "message": "刷新"
+  },
+  "popup_clearCompleted": {
+    "message": "清空已完成"
+  },
+  "popup_statsTitle": {
+    "message": "本次统计"
+  },
+  "popup_statIntercepted": {
+    "message": "已拦截"
+  },
+  "popup_statSkipped": {
+    "message": "已跳过"
+  },
+  "popup_statMedia": {
+    "message": "嗅探媒体"
+  },
+  "popup_statErrors": {
+    "message": "错误"
+  },
+  "popup_resetStats": {
+    "message": "重置统计"
+  },
+  "popup_mediaSectionTitle": {
+    "message": "本页媒体"
+  },
+  "popup_siteDisable": {
+    "message": "本站不再接管"
+  },
+  "popup_sniffedTitle": {
+    "message": "嗅探到的媒体"
+  },
+  "popup_sendAll": {
+    "message": "发送全部"
+  },
+  "popup_clear": {
+    "message": "清空"
+  },
+  "popup_mediaHelp": {
+    "message": "也可右键点击链接，选择「用 Siphon 下载」。受 DRM 保护的视频无法下载，浮钮会直接标注。"
+  },
+  "popup_imagesTitle": {
+    "message": "本页图片"
+  },
+  "popup_imageMinWidth": {
+    "message": "最小宽度 px"
+  },
+  "popup_imageMinHeight": {
+    "message": "最小高度 px"
+  },
+  "popup_collectImages": {
+    "message": "收集图片"
+  },
+  "popup_imagesNotCollected": {
+    "message": "尚未收集图片"
+  },
+  "popup_sendSelected": {
+    "message": "发送选中"
+  },
+  "popup_selectAll": {
+    "message": "全选"
+  },
+  "popup_imagesHelp": {
+    "message": "只收集 http(s) 图片；小图标可用宽高过滤掉。"
+  },
+  "popup_rulesTitle": {
+    "message": "接管规则"
+  },
+  "popup_captureAll": {
+    "message": "接管浏览器全部下载"
+  },
+  "popup_notifyOnCapture": {
+    "message": "拦截时显示通知"
+  },
+  "popup_rulesHelp": {
+    "message": "扩展优先执行 Siphon 下发的接管规则（文件类型、站点、最小体积等）；这里的开关是本地兜底。只有 Siphon 接受任务后，扩展才会取消浏览器下载；失败时浏览器下载继续并弹出提示。"
+  },
+  "popup_connectionTitle": {
+    "message": "本机连接"
+  },
+  "popup_sendToLocal": {
+    "message": "发送到本机"
+  },
+  "popup_checking": {
+    "message": "检查中…"
+  },
+  "popup_browserProxy": {
+    "message": "浏览器代理"
+  },
+  "popup_reading": {
+    "message": "读取中…"
+  },
+  "popup_refreshStatus": {
+    "message": "刷新状态"
+  },
+  "popup_openAppSettings": {
+    "message": "打开 Siphon 设置"
+  },
+  "popup_diagnosticsTitle": {
+    "message": "连接诊断"
+  },
+  "popup_copyExtensionId": {
+    "message": "复制扩展 ID"
+  },
+  "popup_diagnosticsHelp": {
+    "message": "把扩展 ID 粘贴到 Siphon 设置 → 集成 →「扩展 ID」，点「安装原生网关」，然后完全退出并重启浏览器（浏览器只在启动时读取网关清单）。"
+  },
+  "popup_sizeFilterTitle": {
+    "message": "文件大小过滤"
+  },
+  "popup_minFileSize": {
+    "message": "最小文件大小（MB）"
+  },
+  "popup_sizeFilterHelp": {
+    "message": "0 表示不限制。小于此大小的文件不拦截，由浏览器直接下载。"
+  },
+  "popup_excludeHostsTitle": {
+    "message": "排除站点"
+  },
+  "popup_excludeHostPlaceholder": {
+    "message": "例如：youtube.com"
+  },
+  "popup_add": {
+    "message": "添加"
+  },
+  "popup_excludeHostsHelp": {
+    "message": "排除站点上的下载将由浏览器处理。"
+  },
+  "popup_excludeExtsTitle": {
+    "message": "排除扩展名"
+  },
+  "popup_excludeExtPlaceholder": {
+    "message": "例如：html"
+  },
+  "popup_tokenTitle": {
+    "message": "本地接口令牌（仅 HTTP 回退需要）"
+  },
+  "popup_tokenPlaceholder": {
+    "message": "从 Siphon 设置 → 集成 复制"
+  },
+  "popup_save": {
+    "message": "保存"
+  },
+  "popup_tokenHelp": {
+    "message": "推荐在 Siphon 中「安装原生网关」：令牌由本机 0600 文件自动传递，无需填写。仅当扩展走 HTTP 回退时，才需要把 Siphon 设置里的令牌粘贴到这里。出于安全考虑，/ping 不再下发令牌。"
+  },
+  "popup_saveConfig": {
+    "message": "保存设置"
+  },
+  "popup_statusQueued": {
+    "message": "排队中"
+  },
+  "popup_statusDownloading": {
+    "message": "下载中"
+  },
+  "popup_statusStopped": {
+    "message": "已暂停"
+  },
+  "popup_statusComplete": {
+    "message": "已完成"
+  },
+  "popup_statusError": {
+    "message": "失败"
+  },
+  "popup_recentEmpty": {
+    "message": "最近没有匹配的下载。"
+  },
+  "popup_pause": {
+    "message": "暂停"
+  },
+  "popup_resume": {
+    "message": "继续"
+  },
+  "popup_remove": {
+    "message": "移除"
+  },
+  "popup_copyLink": {
+    "message": "复制链接"
+  },
+  "popup_failed": {
+    "message": "失败"
+  },
+  "popup_clearing": {
+    "message": "清理中…"
+  },
+  "popup_currentSite": {
+    "message": "当前站点：{host}"
+  },
+  "popup_noSite": {
+    "message": "当前页面没有可用的站点地址。"
+  },
+  "popup_resumeSite": {
+    "message": "恢复本站接管"
+  },
+  "popup_deselectAll": {
+    "message": "取消全选"
+  },
+  "popup_imageCount": {
+    "message": "共 {n} 张 · 已选 {m} 张"
+  },
+  "popup_imageNoneMatch": {
+    "message": "没有符合尺寸的图片。"
+  },
+  "popup_imageCollectHint": {
+    "message": "点「收集图片」读取当前页面。"
+  },
+  "popup_open": {
+    "message": "打开"
+  },
+  "popup_sending": {
+    "message": "发送中…"
+  },
+  "popup_sentCount": {
+    "message": "已发送 {sent}/{count}"
+  },
+  "popup_sendFailed": {
+    "message": "发送失败"
+  },
+  "popup_noMedia": {
+    "message": "未嗅探到媒体链接。播放视频后再打开此弹窗。"
+  },
+  "popup_send": {
+    "message": "发送"
+  },
+  "popup_sent": {
+    "message": "已发送"
+  },
+  "popup_connected": {
+    "message": "● 已连接 Siphon"
+  },
+  "popup_disconnected": {
+    "message": "○ Siphon 未运行"
+  },
+  "popup_delete": {
+    "message": "删除"
+  },
+  "popup_noExcludedHosts": {
+    "message": "无排除站点"
+  },
+  "popup_noExcludedExts": {
+    "message": "无排除扩展名"
+  },
+  "popup_saved": {
+    "message": "已保存"
+  },
+  "popup_saveFailed": {
+    "message": "保存失败"
+  },
+  "popup_transportNone": {
+    "message": "未连接"
+  },
+  "popup_transportNative": {
+    "message": "原生网关"
+  },
+  "popup_transportHttp": {
+    "message": "HTTP 回退"
+  },
+  "popup_transportHttpNoToken": {
+    "message": "HTTP 回退（缺令牌）"
+  },
+  "popup_diagFailed": {
+    "message": "诊断失败：扩展后台未响应，请在扩展页重新加载本扩展。"
+  },
+  "popup_unknown": {
+    "message": "未知"
+  },
+  "popup_diagAppOnline": {
+    "message": "● Siphon 本地接口在线"
+  },
+  "popup_diagAppOffline": {
+    "message": "○ Siphon 本地接口不可达：请先启动 App"
+  },
+  "popup_diagNativeOk": {
+    "message": "● 原生网关可用（推荐通道）"
+  },
+  "popup_diagNativeMissing": {
+    "message": "○ 原生网关不可用：清单未安装，或其中允许的扩展 ID 与上方不一致"
+  },
+  "popup_diagTokenOk": {
+    "message": "● HTTP 回退令牌已配置"
+  },
+  "popup_diagTokenMissing": {
+    "message": "○ HTTP 回退令牌未配置：若原生网关不可用，请在下方粘贴令牌"
+  },
+  "popup_diagErrorDetail": {
+    "message": "错误详情：{error}"
+  },
+  "popup_proxyUnreadable": {
+    "message": "不可读"
+  },
+  "popup_proxyPac": {
+    "message": "PAC 脚本"
+  },
+  "popup_proxySystem": {
+    "message": "跟随系统"
+  },
+  "popup_copied": {
+    "message": "已复制"
+  },
+  "popup_tokenSaved": {
+    "message": "已保存令牌"
+  },
+  "popup_tokenSaveFailed": {
+    "message": "保存失败，请重试"
+  },
+  "popup_kindAudio": {
+    "message": "音频"
+  },
+  "popup_kindVideo": {
+    "message": "视频"
+  },
+  "popup_kindMedia": {
+    "message": "媒体"
+  },
+  "bg_ctxLink": {
+    "message": "用 Siphon 下载链接"
+  },
+  "bg_ctxImage": {
+    "message": "用 Siphon 下载图片"
+  },
+  "bg_ctxMedia": {
+    "message": "用 Siphon 下载媒体"
+  },
+  "bg_ctxSelection": {
+    "message": "用 Siphon 下载选中的链接"
+  },
+  "bg_ctxPage": {
+    "message": "用 Siphon 下载本页"
+  },
+  "bg_ctxAllLinks": {
+    "message": "用 Siphon 下载本页全部链接"
+  },
+  "bg_ctxAllImages": {
+    "message": "用 Siphon 下载本页全部图片"
+  },
+  "bg_ctxBrowser": {
+    "message": "用浏览器下载（不接管）"
+  },
+  "bg_notifyCapturedTitle": {
+    "message": "Siphon 已接管下载"
+  },
+  "bg_notifyFailedTitle": {
+    "message": "Siphon 接管失败：{name}"
+  },
+  "bg_errNoLinks": {
+    "message": "没有可下载的链接"
+  },
+  "bg_sentLinks": {
+    "message": "已发送 {sent}/{count} 个链接"
+  },
+  "bg_sentImages": {
+    "message": "已发送 {sent}/{count} 张图片"
+  },
+  "bg_errNoImages": {
+    "message": "没有符合条件的图片"
+  },
+  "bg_labelPageImages": {
+    "message": "本页图片"
+  },
+  "bg_labelPageLinks": {
+    "message": "本页链接"
+  },
+  "bg_labelSelectedLinks": {
+    "message": "选中的链接"
+  },
+  "bg_errReadImages": {
+    "message": "读取本页图片失败"
+  },
+  "bg_errReadLinks": {
+    "message": "读取本页链接失败"
+  },
+  "bg_errTokenInvalid": {
+    "message": "令牌无效，请在扩展「设置」里重新粘贴本地接口令牌"
+  },
+  "bg_notifyFailedNative": {
+    "message": "原生网关不可用（{error}）。请在 Siphon 设置 → 集成 填入本扩展 ID 并点「安装原生网关」，然后完全退出并重启浏览器；或在扩展「设置」里粘贴令牌走 HTTP 回退。"
+  },
+  "bg_notifyFailedDefault": {
+    "message": "Siphon 未运行或本地接口不可达"
+  },
+  "bg_errNoMedia": {
+    "message": "未嗅探到媒体流"
+  },
+  "bg_errTokenRotated": {
+    "message": "令牌无效或已轮换，请在 Siphon 设置 → 集成 复制后重新粘贴"
+  },
+  "bg_errTokenMissing": {
+    "message": "缺少令牌，请在扩展「设置」中粘贴 Siphon 的本地接口令牌"
+  },
+  "bg_errUnsupported": {
+    "message": "不支持的地址"
+  },
+  "bg_errNativeBackoff": {
+    "message": "原生网关暂不可用（已退避）"
+  },
+  "bg_errNativeTimeout": {
+    "message": "原生网关响应超时"
+  },
+  "bg_errNativeMissing": {
+    "message": "原生网关未安装或扩展 ID 不在白名单"
+  },
+  "page_toastSending": {
+    "message": "正在发送到 Siphon…"
+  },
+  "page_toastSent": {
+    "message": "已发送到 Siphon"
+  },
+  "page_toastNoResponse": {
+    "message": "Siphon 未响应，已交给浏览器"
+  },
+  "page_btnIdle": {
+    "message": "发送到 Siphon"
+  },
+  "page_btnTitle": {
+    "message": "把此视频的媒体流发送到 Siphon"
+  },
+  "page_btnSending": {
+    "message": "发送中…"
+  },
+  "page_btnSent": {
+    "message": "已发送"
+  },
+  "page_btnNoMedia": {
+    "message": "未找到媒体"
+  },
+  "page_btnFailed": {
+    "message": "发送失败"
+  },
+  "page_btnDrm": {
+    "message": "受 DRM 保护"
+  },
+  "page_btnDrmTitle": {
+    "message": "受 DRM 保护的视频无法下载"
+  }
+}

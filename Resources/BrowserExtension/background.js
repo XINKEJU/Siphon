@@ -15,8 +15,21 @@
 //      token pasted once into the popup's 设置 tab. `/ping` is liveness only.
 
 const ENDPOINT = "http://127.0.0.1:17801/add";
+const BROWSER_ADD = "http://127.0.0.1:17801/browser/add";
 const PING = "http://127.0.0.1:17801/ping";
 const NATIVE_HOST = "com.xinkeju.siphon";
+const APP_VERSION = chrome.runtime.getManifest().version;
+
+const t = (key, fallback) => (chrome.i18n && chrome.i18n.getMessage(key)) || fallback;
+
+// Fill `{name}` tokens in a translated string after chrome.i18n lookup.
+const tf = (key, fallback, vars) => {
+  let text = t(key, fallback);
+  for (const [name, value] of Object.entries(vars || {})) {
+    text = text.split(`{${name}}`).join(String(value));
+  }
+  return text;
+};
 
 // MARK: - file type patterns
 
@@ -74,6 +87,13 @@ const SKIP_CTYPES = new Set([
   "application/javascript", "application/x-javascript",
   "image/svg+xml",
   "font/woff", "font/woff2", "font/ttf", "font/otf",
+]);
+
+// Types a browser normally opens itself instead of saving. Only consulted when
+// the app's rules say "don't take files the browser would open".
+const OPENED_EXTS = new Set([
+  "pdf", "epub", "mp3", "m4a", "aac", "wav", "ogg", "flac", "opus",
+  "mp4", "m4v", "webm", "mov", "ogv",
 ]);
 
 const BAD_URL_RE = /^(chrome|chrome-extension|edge|about|data|blob|javascript|moz-extension):/i;
@@ -175,9 +195,9 @@ function bumpStat(key) {
 // undo it. Back off briefly instead.
 let nativeBlockedUntil = 0;
 
-function sendNative(payload) {
+function sendNative(payload, timeoutMs = 4000) {
   if (Date.now() < nativeBlockedUntil) {
-    return Promise.resolve({ ok: false, nativeError: "原生网关暂不可用（已退避）" });
+    return Promise.resolve({ ok: false, nativeError: t("bg_errNativeBackoff", "原生网关暂不可用（已退避）") });
   }
   return new Promise(resolve => {
     let done = false;
@@ -191,8 +211,8 @@ function sendNative(payload) {
     }
     const timer = setTimeout(() => {
       nativeBlockedUntil = Date.now() + 30_000;
-      finish({ ok: false, nativeError: "原生网关响应超时" });
-    }, 4000);
+      finish({ ok: false, nativeError: t("bg_errNativeTimeout", "原生网关响应超时") });
+    }, timeoutMs);
     function finish(value) {
       if (done) return;
       done = true;
@@ -200,12 +220,18 @@ function sendNative(payload) {
       try { port.disconnect(); } catch (_) {}
       resolve(value || { ok: false });
     }
-    port.onMessage.addListener(msg => finish(msg));
+    port.onMessage.addListener(msg => {
+      // A working host clears an earlier backoff: the next download should not
+      // be held back by a host that has since been reinstalled.
+      if (msg && msg.ok) nativeBlockedUntil = 0;
+      finish(msg);
+    });
     port.onDisconnect.addListener(() => {
       // Our own `port.disconnect()` after a successful reply also fires this;
       // only treat an unexpected disconnect as a broken host.
       if (done) return;
-      const reason = chrome.runtime.lastError?.message || "原生网关未安装或扩展 ID 不在白名单";
+      const reason = chrome.runtime.lastError?.message
+        || t("bg_errNativeMissing", "原生网关未安装或扩展 ID 不在白名单");
       void chrome.runtime.lastError;
       nativeBlockedUntil = Date.now() + 30_000;
       finish({ ok: false, nativeError: reason });
@@ -217,6 +243,40 @@ function sendNative(payload) {
       finish({ ok: false, nativeError: String(e) });
     }
   });
+}
+
+// MARK: - hello / rules handshake
+//
+// MDM's extension announces itself with `hello` at install and at every browser
+// start; the app answers the same capture rules it would for `rules`, and notes
+// the browser + extension version so its Settings can show what really connects.
+let rules = null;
+
+async function refreshRules() {
+  let reply;
+  try {
+    // The app may be closed; its gateway launches it and can take a few seconds.
+    reply = await sendNative({
+      hello: true,
+      v: APP_VERSION,
+      userAgent: navigator.userAgent,
+      brands: ((navigator.userAgentData && navigator.userAgentData.brands) || [])
+        .map(b => b.brand),
+    }, 15000);
+  } catch (_) {
+    return null;
+  }
+  if (reply && reply.ok) {
+    rules = reply;
+    try { await chrome.storage.local.set({ rules }); } catch (_) {}
+  }
+  return reply;
+}
+
+async function loadRules() {
+  if (rules) return rules;
+  try { rules = (await chrome.storage.local.get("rules")).rules || null; } catch (_) {}
+  return rules;
 }
 
 // MARK: - HTTP fallback token
@@ -233,10 +293,10 @@ async function getToken() {
   return apiToken;
 }
 
-async function sendHTTP(payload) {
+async function sendHTTP(payload, endpoint = ENDPOINT) {
   try {
     const token = await getToken();
-    const r = await fetch(ENDPOINT, {
+    const r = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -249,8 +309,8 @@ async function sendHTTP(payload) {
       // the user rotates it in the app, so tell them to paste the new one.
       return {
         ok: false, via: "http", status: 401,
-        error: token ? "令牌无效或已轮换，请在 Siphon 设置 → 集成 复制后重新粘贴"
-                     : "缺少令牌，请在扩展「设置」中粘贴 Siphon 的本地接口令牌",
+        error: token ? t("bg_errTokenRotated", "令牌无效或已轮换，请在 Siphon 设置 → 集成 复制后重新粘贴")
+                     : t("bg_errTokenMissing", "缺少令牌，请在扩展「设置」中粘贴 Siphon 的本地接口令牌"),
       };
     }
     return { ok: r.ok, via: "http", status: r.status };
@@ -260,34 +320,196 @@ async function sendHTTP(payload) {
   }
 }
 
-async function cookieHeader(url) {
+// MARK: - hand-off context (cookies, proxy, private window)
+
+// Cookies and proxy settings are read once per host / few seconds; a "download
+// all links" page can hand over hundreds of URLs and must not make hundreds of
+// settings calls.
+const cookieCache = new Map();
+const COOKIE_TTL = 20_000;
+
+function userAgentBrands() {
+  try {
+    return ((navigator.userAgentData && navigator.userAgentData.brands) || [])
+      .map(b => b.brand);
+  } catch (_) {
+    return [];
+  }
+}
+
+async function cookieJarFor(url) {
+  let host = "";
+  try { host = new URL(url).host; } catch (_) { return []; }
+  const cached = cookieCache.get(host);
+  if (cached && Date.now() - cached.at < COOKIE_TTL) return cached.jar;
   try {
     const cookies = await chrome.cookies.getAll({ url });
-    if (!cookies || !cookies.length) return "";
-    return cookies.map(c => `${c.name}=${c.value}`).join("; ");
+    const jar = (cookies || []).map(c => ({
+      name: c.name, value: c.value, domain: c.domain, path: c.path,
+      secure: c.secure, httpOnly: c.httpOnly,
+      expirationDate: c.expirationDate, sameSite: c.sameSite,
+    }));
+    cookieCache.set(host, { at: Date.now(), jar });
+    if (cookieCache.size > 100) cookieCache.clear();
+    return jar;
   } catch (_) {
-    return "";
+    return [];
+  }
+}
+
+let proxyCache = null;
+
+/// The browser's proxy for this window, in the shape the app understands.
+/// `system` (or no proxy API) means "nothing sent": the app keeps its own
+/// Options proxy, exactly as MDM does.
+async function proxyContext(isPrivate) {
+  if (!chrome.proxy || !chrome.proxy.settings) return {};
+  if (proxyCache && Date.now() - proxyCache.at < 10_000) return proxyCache.value;
+  try {
+    const details = await chrome.proxy.settings.get({ incognito: !!isPrivate });
+    const value = (details && details.value) || {};
+    let out = {};
+    if (value.mode === "pac_script" && value.pacScript && value.pacScript.data) {
+      out.proxyPac = value.pacScript.data;
+    } else if (value.mode === "fixed_servers" && value.rules) {
+      const r = value.rules;
+      const pick = r.singleProxy || r.proxyForHttps || r.proxyForHttp;
+      if (pick && pick.host) {
+        out.proxy = `${pick.scheme || "http"}://${pick.host}:${pick.port || 80}`;
+      }
+    }
+    proxyCache = { at: Date.now(), value: out };
+    return out;
+  } catch (_) {
+    return {};
+  }
+}
+
+// MARK: - Alt/Option "keep in browser" pass
+//
+// A content script records the click's URL with a modifier; the next matching
+// download is left alone. Kept in session storage so a service-worker restart
+// between the click and onCreated does not lose it.
+const PASS_KEY = "browserPasses";
+
+async function markBrowserPass(url) {
+  if (!url) return;
+  try {
+    const stored = await chrome.storage.session.get(PASS_KEY);
+    const passes = stored[PASS_KEY] || {};
+    passes[url] = Date.now() + 15_000;
+    await chrome.storage.session.set({ [PASS_KEY]: passes });
+  } catch (_) {}
+}
+
+async function consumeBrowserPass(url) {
+  if (!url) return false;
+  try {
+    const stored = await chrome.storage.session.get(PASS_KEY);
+    const passes = stored[PASS_KEY] || {};
+    if (!(url in passes)) return false;
+    const until = passes[url];
+    delete passes[url];
+    await chrome.storage.session.set({ [PASS_KEY]: passes });
+    return Date.now() <= until;
+  } catch (_) {
+    return false;
   }
 }
 
 // MARK: - sending
 
-async function send(url, { headers = {}, referer = "", useCookies = true, filename = "" } = {}) {
-  if (!url || BAD_URL_RE.test(url)) return { ok: false };
-  const merged = { ...headers };
-  if (referer && !hasHeader(merged, "referer")) merged.Referer = referer;
-  if (useCookies && !hasHeader(merged, "cookie")) {
-    const cookie = await cookieHeader(url);
-    if (cookie) merged.Cookie = cookie;
+/// MDM's flat hand-off. Every field the browser knows travels unchanged; the
+/// app decides which ones it can use. `linksPart` marks a bulk page grab.
+async function handoff(options) {
+  const url = options.url;
+  if (!url || BAD_URL_RE.test(url)) return { ok: false, error: t("bg_errUnsupported", "不支持的地址") };
+  const jar = options.cookieJar || await cookieJarFor(url);
+  const cookies = jar.map(c => `${c.name}=${c.value}`).join("; ");
+  const payload = {
+    v: APP_VERSION,
+    userAgent: navigator.userAgent,
+    brands: userAgentBrands(),
+    url,
+    referrer: options.referrer || "",
+    pageUrl: options.pageUrl || options.referrer || "",
+    filename: options.filename || "",
+    nameGuessed: options.nameGuessed !== false,
+    size: Math.max(0, Number(options.size || 0)),
+    mime: options.mime || "",
+    private: !!options.private,
+    explicit: !!options.explicit,
+    finalUrl: options.finalUrl || "",
+    post: options.post || "",
+    postType: options.postType || "",
+  };
+  if (jar.length) {
+    payload.cookieJar = jar;
+    payload.cookies = cookies;
   }
-  const payload = { type: "add", url };
-  if (filename) payload.filename = filename;
-  if (Object.keys(merged).length) payload.headers = merged;
-  const viaNative = await sendNative(payload);
+  if (options.linksPart) payload.linksPart = options.linksPart;
+  Object.assign(payload, await proxyContext(payload.private));
+  if (!payload.size) delete payload.size;
+  if (!payload.mime) delete payload.mime;
+  if (!payload.finalUrl) delete payload.finalUrl;
+  if (!payload.post) { delete payload.post; delete payload.postType; }
+  if (!payload.filename) delete payload.filename;
+
+  // The gateway may start the app, which is why this timeout is long.
+  const viaNative = await sendNative(payload, 20_000);
   if (viaNative && viaNative.ok) return { ok: true, via: "native" };
-  const viaHTTP = await sendHTTP(payload);
+  // A definitive refusal from a reachable app must not be retried over HTTP.
+  // "not-running" still may: the gateway might be the broken half while the
+  // app keeps its loopback API up for the token-paste fallback.
+  if (viaNative && !viaNative.nativeError && viaNative.ok === false
+      && viaNative.why !== "not-running") {
+    return { ok: false, via: "native", error: viaNative.error, why: viaNative.why };
+  }
+  const viaHTTP = await sendHTTP(payload, BROWSER_ADD);
   if (viaHTTP.ok) return viaHTTP;
-  return { ...viaHTTP, nativeError: viaNative?.nativeError || "" };
+  return {
+    ...viaHTTP,
+    nativeError: viaNative?.nativeError || "",
+    error: viaHTTP.error || viaNative?.error || "",
+  };
+}
+
+async function send(url, { referrer = "", referer = "", filename = "",
+                           explicit = false, private: isPrivate = false } = {}) {
+  return handoff({
+    url,
+    referrer: referrer || referer,
+    filename,
+    nameGuessed: !filename,
+    explicit,
+    private: isPrivate,
+  });
+}
+
+/// "Download all links": deduplicated, throttled four at a time, and marked
+/// with an MDM-style `linksPart` so the app can group the batch.
+async function sendBatch(urls, { referrer = "", private: isPrivate = false,
+                                 explicit = false, limit = 500 } = {}) {
+  const list = [...new Set((urls || []).map(u => String(u || "").trim()))]
+    .filter(u => /^https?:/i.test(u) && !BAD_URL_RE.test(u))
+    .slice(0, limit);
+  if (!list.length) return { ok: false, sent: 0, count: 0, error: t("bg_errNoLinks", "没有可下载的链接") };
+  const batch = "b" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  let sent = 0;
+  for (let i = 0; i < list.length; i += 4) {
+    const part = list.slice(i, i + 4);
+    const results = await Promise.all(part.map((url, j) => handoff({
+      url,
+      referrer,
+      pageUrl: referrer,
+      nameGuessed: true,
+      private: isPrivate,
+      explicit,
+      linksPart: { batch, index: i + j, count: list.length },
+    })));
+    sent += results.filter(r => r.ok).length;
+  }
+  return { ok: sent > 0, sent, count: list.length };
 }
 
 // MARK: - URL analysis helpers
@@ -316,6 +538,25 @@ function getFilename(url) {
   } catch (_) {
     return "";
   }
+}
+
+/// The name the server actually gave the file (`Content-Disposition`). When
+/// present the app must not replace it with the address's last segment.
+function contentDispositionFilename(disposition) {
+  if (!disposition) return "";
+  const star = /filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i.exec(disposition);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^"|"$/g, ""));
+    } catch (_) { /* fall through */ }
+  }
+  const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(disposition);
+  return plain ? plain[1].trim() : "";
+}
+
+function browserWouldOpen(ext, mime) {
+  if (ext && OPENED_EXTS.has(ext)) return true;
+  return /^(application\/pdf|audio\/|video\/)/i.test(mime || "");
 }
 
 function isExcluded(url, config) {
@@ -403,6 +644,52 @@ try {
     onResponseHeaders, RESPONSE_FILTER, ["responseHeaders"]);
 }
 
+// MARK: - form POST tracking
+//
+// A button that answers with a file looks like any other download; the form
+// body only exists in the original request, so remember it briefly and replay
+// it in the hand-off (MDM's PostData).
+const postBodies = new Map();
+const POST_TTL = 30_000;
+
+function trackPostBody(url, body) {
+  postBodies.set(url, { ...body, at: Date.now() });
+  if (postBodies.size > 200) {
+    const cutoff = Date.now() - POST_TTL;
+    for (const [k, v] of postBodies) if (v.at < cutoff) postBodies.delete(k);
+  }
+}
+
+function trackedPost(url) {
+  const entry = postBodies.get(url);
+  if (!entry) return null;
+  if (Date.now() - entry.at > POST_TTL) {
+    postBodies.delete(url);
+    return null;
+  }
+  return entry;
+}
+
+try {
+  chrome.webRequest.onBeforeRequest.addListener(details => {
+    if (details.method !== "POST" || details.tabId < 0) return;
+    const form = details.requestBody && details.requestBody.formData;
+    if (!form) return;
+    try {
+      const body = new URLSearchParams();
+      for (const [key, values] of Object.entries(form)) {
+        for (const value of (values || [])) body.append(key, value);
+      }
+      trackPostBody(details.url, {
+        post: body.toString(),
+        postType: "application/x-www-form-urlencoded",
+      });
+    } catch (_) {}
+  }, { urls: ["http://*/*", "https://*/*"] }, ["requestBody"]);
+} catch (_) {
+  // Firefox builds without requestBody still work; the POST is simply not replayed.
+}
+
 // MARK: - media sniffing
 
 const sniffQueues = new Map();
@@ -471,7 +758,52 @@ chrome.tabs.onRemoved.addListener(tabId => clearSniff(tabId));
 
 // MARK: - download interception
 
+/// The app's `hello` / `rules` answer decides; local Settings remain the
+/// fallback while the app has never answered (MDM behaves the same way).
 async function shouldIntercept(item, config) {
+  if (!config.captureAll) return false;
+  const url = item.finalUrl || item.url;
+  if (!url || BAD_URL_RE.test(url)) return false;
+  // Alt/Option click: the content script asked us to leave this one alone.
+  if (await consumeBrowserPass(url) || await consumeBrowserPass(item.url)) return false;
+
+  const tracked = getTrackedResponse(item.url) || {};
+  const ctype = (tracked.ctype || item.mime || "").split(";")[0].trim().toLowerCase();
+  const forced = !!tracked.cdisp && /attachment/i.test(tracked.cdisp);
+  const r = await loadRules();
+
+  if (r && r.ok && typeof r.capture === "boolean") {
+    if (!r.capture) return false;                 // integration or this browser off
+    if (isExcluded(url, config)) return false;    // local extra exclusions still win
+
+    const ext = getExt(url);
+    if (ext === "torrent" && r.torrents === false) return false;
+
+    const types = new Set(String(r.types || "").toLowerCase().split(/\s+/).filter(Boolean));
+    if (ext && types.size && !types.has(ext) && !forced) return false;
+    if (r.opened === false && !forced && browserWouldOpen(ext, ctype)) return false;
+
+    const size = Number(item.totalBytes ?? item.fileSize ?? 0);
+    // Both sides can set a floor; the stricter one wins until the popup moves
+    // entirely to the app's rules in the next stage.
+    const min = Math.max(Number(config.minFileSize || 0), Number(r.minKb || 0) * 1024);
+    if (size > 0 && min > 0 && size < min) return false;
+
+    const host = getHost(url).toLowerCase();
+    const sites = String(r.excludedSites || "").toLowerCase()
+      .split(/[\s,]+/).filter(Boolean);
+    if (sites.some(site => host === site || host.endsWith("." + site))) return false;
+    const addresses = (r.excludedAddresses || []).filter(Boolean);
+    if (addresses.some(a => url === a || url.startsWith(a))) return false;
+
+    if (!forced && (ctype === "text/html" || ctype === "application/xhtml+xml")) return false;
+    return true;
+  }
+
+  return legacyShouldIntercept(item, config);
+}
+
+function legacyShouldIntercept(item, config) {
   if (!config.captureAll) return false;
   if (!item.url || BAD_URL_RE.test(item.url)) return false;
   if (isExcluded(item.url, config)) return false;
@@ -488,12 +820,34 @@ async function shouldIntercept(item, config) {
   const forced = !!tracked?.cdisp && /attachment/i.test(tracked.cdisp);
   // "Save page as" is the one common onCreated event that is not a file fetch.
   if (!forced && (ctype === "text/html" || ctype === "application/xhtml+xml")) return false;
+  return true;
+}
 
-  // `onCreated` only fires for things the browser has already classified as a
-  // download. Content-Disposition downloads routinely have no file extension
-  // and an empty `mime` at this point, so the old extension/Content-Type
-  // allow-list silently skipped most of them. With captureAll on, trust the
-  // browser's classification and hand everything else to Siphon.
+/// Early click: decide from the URL alone, before the browser issues a
+/// request. Only known direct-file extensions qualify. Anything else keeps the
+/// downloads-API path, which can see Content-Type, size and final URLs.
+async function shouldTakeEarly(url) {
+  const config = await getConfig();
+  if (!config.captureAll) return false;
+  if (!url || BAD_URL_RE.test(url)) return false;
+  const ext = getExt(url);
+  if (!ext || !DOWNLOAD_EXTS.has(ext)) return false;
+  if (isExcluded(url, config)) return false;
+
+  const r = await loadRules();
+  if (!r || !r.ok || typeof r.capture !== "boolean") return true;
+  if (!r.capture) return false;
+  if (r.torrents === false && ext === "torrent") return false;
+  const types = new Set(String(r.types || "").toLowerCase().split(/\s+/).filter(Boolean));
+  if (types.size && !types.has(ext)) return false;
+  if (r.opened === false && OPENED_EXTS.has(ext)) return false;
+
+  const host = getHost(url).toLowerCase();
+  const sites = String(r.excludedSites || "").toLowerCase()
+    .split(/[\s,]+/).filter(Boolean);
+  if (sites.some(site => host === site || host.endsWith("." + site))) return false;
+  const addresses = (r.excludedAddresses || []).filter(Boolean);
+  if (addresses.some(a => url === a || url.startsWith(a))) return false;
   return true;
 }
 
@@ -504,13 +858,30 @@ chrome.downloads.onCreated.addListener(async item => {
     return;
   }
 
-  // Chrome DownloadItem has no requestHeaders (cookies/referrer are added by
-  // send()), so this is usually empty; keep the hook for engines that supply it.
-  const headers = sanitizeHeaders(item.requestHeaders);
-  const referer = item.referrer || "";
-  const filename = getFilename(item.url) || item.filename || "";
+  // Hold the browser copy while the app decides. Starting Siphon can take a
+  // few seconds; without this the browser may finish (and cancel then fails).
+  try { await chrome.downloads.pause(item.id); } catch (_) {}
 
-  const result = await send(item.url, { headers, referer, filename });
+  const tracked = getTrackedResponse(item.url) || {};
+  const post = trackedPost(item.url) || {};
+  const resolved = item.finalUrl || item.url;
+  const dispositionName = contentDispositionFilename(tracked.cdisp);
+  const filename = dispositionName || getFilename(resolved) || "";
+
+  const result = await handoff({
+    url: item.url,
+    finalUrl: item.finalUrl && item.finalUrl !== item.url ? item.finalUrl : "",
+    referrer: item.referrer || "",
+    pageUrl: item.referrer || "",
+    filename,
+    nameGuessed: !dispositionName,
+    size: Number(item.totalBytes ?? item.fileSize ?? tracked.clen ?? 0),
+    mime: tracked.ctype || item.mime || "",
+    private: !!item.incognito,
+    post: post.post || "",
+    postType: post.postType || "",
+  });
+
   if (result.ok) {
     bumpStat("intercepted");
     try { await chrome.downloads.cancel(item.id); } catch (_) {}
@@ -519,8 +890,8 @@ chrome.downloads.onCreated.addListener(async item => {
     }
   } else {
     bumpStat("errors");
-    // Never fail silently: the browser download just continued, which is
-    // exactly what users perceive as "接管不了" with no explanation.
+    // Let the browser continue; never fail silently.
+    try { await chrome.downloads.resume(item.id); } catch (_) {}
     showFailureNotification(result, filename || item.url);
   }
 });
@@ -528,18 +899,21 @@ chrome.downloads.onCreated.addListener(async item => {
 function showFailureNotification(result, name) {
   let reason;
   if (result?.status === 401) {
-    reason = result.error || "令牌无效，请在扩展「设置」里重新粘贴本地接口令牌";
+    reason = result.error || t("bg_errTokenInvalid",
+      "令牌无效，请在扩展「设置」里重新粘贴本地接口令牌");
   } else if (result?.nativeError) {
-    reason = "原生网关不可用（" + result.nativeError + "）。请在 Siphon 设置 → 集成 填入本扩展 ID 并点「安装原生网关」，然后完全退出并重启浏览器；或在扩展「设置」里粘贴令牌走 HTTP 回退。";
+    reason = tf("bg_notifyFailedNative",
+      "原生网关不可用（{error}）。请在 Siphon 设置 → 集成 填入本扩展 ID 并点「安装原生网关」，然后完全退出并重启浏览器；或在扩展「设置」里粘贴令牌走 HTTP 回退。",
+      { error: result.nativeError });
   } else {
-    reason = result?.error || "Siphon 未运行或本地接口不可达";
+    reason = result?.error || t("bg_notifyFailedDefault", "Siphon 未运行或本地接口不可达");
   }
   try {
     const short = name.length > 40 ? name.slice(0, 37) + "..." : name;
     chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon128.png",
-      title: "Siphon 接管失败：" + short,
+      title: tf("bg_notifyFailedTitle", "Siphon 接管失败：{name}", { name: short }),
       message: reason,
     }, () => { void chrome.runtime.lastError; });
   } catch (_) {}
@@ -552,7 +926,7 @@ function showCaptureNotification(filename) {
     chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon128.png",
-      title: "Siphon 已接管下载",
+      title: t("bg_notifyCapturedTitle", "Siphon 已接管下载"),
       message: name,
     }, () => { void chrome.runtime.lastError; });
   } catch (_) {}
@@ -560,30 +934,192 @@ function showCaptureNotification(filename) {
 
 // MARK: - context menus
 
+/// Links picked out of a text selection. Kept ASCII-delimited because a
+/// selection is free text, not HTML.
+function linksInText(text) {
+  return String(text || "").match(/https?:\/\/[^\s"'<>()]+/gi) || [];
+}
+
+/// Runs in the page: every http(s) anchor, deduplicated later by the worker.
+function collectPageLinks() {
+  const seen = new Set();
+  const out = [];
+  for (const a of document.querySelectorAll("a[href]")) {
+    try {
+      const u = new URL(a.href, location.href);
+      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      const href = u.href.split("#")[0];
+      if (seen.has(href)) continue;
+      seen.add(href);
+      out.push(href);
+    } catch (_) {}
+  }
+  return out;
+}
+
+/// Runs in the page: every http(s) image, with the rendered size so the popup
+/// can filter out icons and tracking pixels. `srcset` candidates are included
+/// because many galleries only put the full-size file there.
+function collectPageImages() {
+  const seen = new Set();
+  const out = [];
+  const add = (src, width, height) => {
+    if (!src) return;
+    try {
+      const u = new URL(src, location.href);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return;
+      const href = u.href.split("#")[0];
+      if (seen.has(href) || out.length >= 500) return;
+      seen.add(href);
+      out.push({ url: href, width: width || 0, height: height || 0 });
+    } catch (_) {}
+  };
+  for (const img of document.images) {
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    add(img.currentSrc || img.src, w, h);
+    const srcset = img.getAttribute("srcset") || "";
+    for (const part of srcset.split(",")) {
+      const src = part.trim().split(/\s+/)[0];
+      if (src) add(src, w, h);
+    }
+  }
+  return out;
+}
+
+function setupMenus() {
+  const create = () => {
+    const items = [
+      { id: "siphon-link", title: t("bg_ctxLink", "用 Siphon 下载链接"), contexts: ["link"] },
+      { id: "siphon-image", title: t("bg_ctxImage", "用 Siphon 下载图片"), contexts: ["image"] },
+      { id: "siphon-media", title: t("bg_ctxMedia", "用 Siphon 下载媒体"), contexts: ["video", "audio"] },
+      { id: "siphon-selection", title: t("bg_ctxSelection", "用 Siphon 下载选中的链接"), contexts: ["selection"] },
+      { id: "siphon-page", title: t("bg_ctxPage", "用 Siphon 下载本页"), contexts: ["page"] },
+      { id: "siphon-all-links", title: t("bg_ctxAllLinks", "用 Siphon 下载本页全部链接"), contexts: ["page"] },
+      { id: "siphon-all-images", title: t("bg_ctxAllImages", "用 Siphon 下载本页全部图片"), contexts: ["page"] },
+      { id: "siphon-browser", title: t("bg_ctxBrowser", "用浏览器下载（不接管）"),
+        contexts: ["link", "image", "video", "audio"] },
+    ];
+    for (const item of items) {
+      chrome.contextMenus.create(item, () => { void chrome.runtime.lastError; });
+    }
+  };
+  try {
+    chrome.contextMenus.removeAll(() => {
+      void chrome.runtime.lastError;
+      create();
+    });
+  } catch (_) {
+    create();
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "siphon-send-link",
-    title: "用 Siphon 下载",
-    contexts: ["link", "video", "audio", "image"],
-  });
-  chrome.contextMenus.create({
-    id: "siphon-send-page",
-    title: "用 Siphon 下载本页",
-    contexts: ["page"],
-  });
+  setupMenus();
   loadStats();
   // Apply the one-time capture-defaults repair immediately on upgrade so the
   // popup shows the corrected state without waiting for the first download.
   getConfig();
+  // Announce the extension so Settings can show the browser as connected and
+  // the app can hand back its capture rules.
+  refreshRules();
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  const pageUrl = info.pageUrl || tab?.url || "";
+  const isPrivate = !!tab?.incognito;
+
+  if (info.menuItemId === "siphon-browser") {
+    const url = info.linkUrl || info.srcUrl;
+    if (!url) return;
+    // Leave this one to the browser: record the pass, then start it normally.
+    await markBrowserPass(url);
+    try {
+      chrome.downloads.download({ url }, () => { void chrome.runtime.lastError; });
+    } catch (_) {}
+    return;
+  }
+
+  if (info.menuItemId === "siphon-all-images" && tab?.id != null) {
+    let images = [];
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: collectPageImages,
+      });
+      images = (results && results[0] && results[0].result) || [];
+    } catch (e) {
+      showFailureNotification({ error: String(e) }, t("bg_errReadImages", "读取本页图片失败"));
+      return;
+    }
+    // Drop obvious icons and tracking pixels; unknown sizes are kept.
+    const urls = images
+      .filter(it => !(it.width && it.height) || (it.width >= 100 && it.height >= 100))
+      .map(it => it.url);
+    if (!urls.length) {
+      showFailureNotification({ error: t("bg_errNoImages", "没有符合条件的图片") },
+        t("bg_labelPageImages", "本页图片"));
+      return;
+    }
+    const result = await sendBatch(urls, { referrer: pageUrl, private: isPrivate });
+    if (result.ok) {
+      bumpStat("intercepted");
+      showCaptureNotification(tf("bg_sentImages", "已发送 {sent}/{count} 张图片",
+        { sent: result.sent, count: result.count }));
+    } else {
+      bumpStat("errors");
+      showFailureNotification(result, t("bg_labelPageImages", "本页图片"));
+    }
+    return;
+  }
+
+  if (info.menuItemId === "siphon-all-links" && tab?.id != null) {
+    let links = [];
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: collectPageLinks,
+      });
+      links = (results && results[0] && results[0].result) || [];
+    } catch (e) {
+      showFailureNotification({ error: String(e) }, t("bg_errReadLinks", "读取本页链接失败"));
+      return;
+    }
+    const result = await sendBatch(links, { referrer: pageUrl, private: isPrivate });
+    if (result.ok) {
+      bumpStat("intercepted");
+      showCaptureNotification(tf("bg_sentLinks", "已发送 {sent}/{count} 个链接",
+        { sent: result.sent, count: result.count }));
+    } else {
+      bumpStat("errors");
+      showFailureNotification(result, t("bg_labelPageLinks", "本页链接"));
+    }
+    return;
+  }
+
+  if (info.menuItemId === "siphon-selection") {
+    const links = linksInText(info.selectionText);
+    const result = await sendBatch(links, { referrer: pageUrl, private: isPrivate });
+    if (result.ok) {
+      bumpStat("intercepted");
+      showCaptureNotification(tf("bg_sentLinks", "已发送 {sent}/{count} 个链接",
+        { sent: result.sent, count: result.count }));
+    } else {
+      bumpStat("errors");
+      showFailureNotification(result, t("bg_labelSelectedLinks", "选中的链接"));
+    }
+    return;
+  }
+
   const url = info.linkUrl || info.srcUrl || info.pageUrl;
   if (!url) return;
-  const result = await send(url, { referer: info.pageUrl || "" });
+  const result = await send(url, { referrer: pageUrl, private: isPrivate });
   if (result.ok) {
     bumpStat("intercepted");
     showCaptureNotification(getFilename(url) || url);
+  } else {
+    bumpStat("errors");
+    showFailureNotification(result, getFilename(url) || url);
   }
 });
 
@@ -604,6 +1140,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       const native = await sendNative({ type: "ping" });
       let appReachable = false;
       try { const r = await fetch(PING); appReachable = r.ok; } catch (_) {}
+      const capture = await loadRules();
       reply({
         ok: true,
         extensionId: chrome.runtime.id,
@@ -611,6 +1148,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         nativeOk: !!native?.ok,
         nativeError: native?.nativeError || "",
         tokenConfigured: !!token,
+        rules: capture,
       });
     })();
     return true;
@@ -620,7 +1158,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   // control endpoint. The answer has no local paths by construction.
   if (msg?.type === "recent") {
     (async () => {
-      const native = await sendNative({ type: "recent" });
+      // MDM's RecentAsk shape: the app currently answers the last 60 rows.
+      const native = await sendNative({ recent: { limit: 60 } });
       if (native?.ok) { reply({ ok: true, recent: native.recent || [] }); return; }
       const token = await getToken();
       if (!token) { reply({ ok: false, error: "本地接口令牌未配置" }); return; }
@@ -649,6 +1188,42 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     })();
     return true;
   }
+  // Pause / resume / remove from the Downloads tab. Uses MDM's downloadAct
+// envelope; the answer never carries local paths.
+  if (msg?.type === "downloadAct") {
+    (async () => {
+      const act = String(msg.act || "");
+      const id = String(msg.id || "");
+      if (!act || !id) { reply({ ok: false, error: "missing act/id" }); return; }
+      const native = await sendNative({ downloadAct: { act, id } });
+      if (native?.ok) { reply(native); return; }
+      const token = await getToken();
+      if (!token) { reply({ ok: false, error: "本地接口令牌未配置" }); return; }
+      try {
+        const response = await fetch("http://127.0.0.1:17801/act", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + token,
+          },
+          body: JSON.stringify({ act, id }),
+        });
+        reply(await response.json());
+      } catch (error) {
+        reply({ ok: false, error: String(error) });
+      }
+    })();
+    return true;
+  }
+  // Alt/Option was held on a click: let the browser keep that download.
+  if (msg?.type === "browserPass") {
+    markBrowserPass(String(msg.url || "")).then(() => reply({ ok: true }));
+    return true;
+  }
+  if (msg?.type === "refreshRules") {
+    refreshRules().then(r => reply({ ok: !!(r && r.ok), rules: r || null }));
+    return true;
+  }
   if (msg?.type === "getToken") {
     getToken().then(t => reply({ ok: true, token: t || "" }));
     return true;
@@ -666,7 +1241,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     return true;
   }
   if (msg?.type === "send") {
-    send(msg.url, { referer: msg.referer || "", filename: msg.filename || "" })
+    send(msg.url, { referrer: msg.referrer || msg.referer || "",
+                      filename: msg.filename || "" })
       .then(result => {
         if (result.ok) bumpStat("intercepted");
         reply(result);
@@ -675,6 +1251,109 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   }
   if (msg?.type === "clearSniffed") {
     clearSniff(msg.tabId).then(() => reply({ ok: true }));
+    return true;
+  }
+  // Early click (page.js): the page has already held the navigation, so this
+  // is the only chance to use a single-use URL. A refusal records a browser
+  // pass first: the page will start a normal download and the downloads
+  // listener must not race it with a second hand-off.
+  if (msg?.type === "earlyClick") {
+    (async () => {
+      const url = String(msg.url || "");
+      const tab = _sender?.tab;
+      if (!(await shouldTakeEarly(url))) {
+        reply({ ok: false, taken: false });
+        return;
+      }
+      const result = await send(url, {
+        referrer: msg.referrer || tab?.url || "",
+        explicit: true,
+        private: !!tab?.incognito,
+      });
+      if (result.ok) {
+        bumpStat("intercepted");
+      } else {
+        bumpStat("errors");
+        await markBrowserPass(url);
+        showFailureNotification(result, getFilename(url) || url);
+      }
+      reply({ ok: !!result.ok, error: result.error || "" });
+    })();
+    return true;
+  }
+  // Floating video button (page.js): send the tab's sniffed stream, preferring
+  // HLS/DASH manifests, then fall back to the video's own http(s) source.
+  if (msg?.type === "pageMedia") {
+    (async () => {
+      const tab = _sender?.tab;
+      const pageUrl = msg.pageUrl || tab?.url || "";
+      let urls = [];
+      if (tab?.id != null) urls = (await listSniff(tab.id)).map(item => item.url);
+      const direct = String(msg.src || "");
+      if (/^https?:/i.test(direct)) urls.push(direct.split("#")[0]);
+      urls = [...new Set(urls.filter(u => /^https?:/i.test(u)))];
+      if (!urls.length && !/^https?:/i.test(direct)) {
+        reply({ ok: false, error: t("bg_errNoMedia", "未嗅探到媒体流") });
+        return;
+      }
+      // Prefer the oldest manifest: HLS/DASH pages fetch the master playlist
+      // before the variants, and the newest entry is often just one variant.
+      const manifests = urls.filter(u => /\.(m3u8|mpd)(\?|#|$)/i.test(u));
+      let chosen;
+      if (manifests.length) {
+        chosen = [manifests[manifests.length - 1]];
+      } else if (/^https?:/i.test(direct)) {
+        chosen = [direct];
+      } else {
+        chosen = urls.slice(0, 3);
+      }
+      const result = await sendBatch(chosen, {
+        referrer: pageUrl,
+        private: !!tab?.incognito,
+      });
+      if (result.ok) bumpStat("intercepted");
+      reply(result);
+    })();
+    return true;
+  }
+  // This-page image grabber: collect `<img>` / `srcset` candidates with their
+  // rendered size, then hand the chosen ones over as one linksPart batch.
+  if (msg?.type === "images") {
+    (async () => {
+      const tabId = Number(msg.tabId);
+      if (!Number.isFinite(tabId) || tabId < 0) {
+        reply({ ok: false, items: [], error: "没有可读取的标签页" });
+        return;
+      }
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: collectPageImages,
+        });
+        const items = (results && results[0] && results[0].result) || [];
+        reply({ ok: true, items });
+      } catch (error) {
+        reply({ ok: false, items: [], error: String(error) });
+      }
+    })();
+    return true;
+  }
+  if (msg?.type === "sendImages") {
+    sendBatch(msg.urls || [], {
+      referrer: msg.referrer || "",
+      private: !!msg.private,
+    }).then(result => {
+      if (result.ok) bumpStat("intercepted");
+      reply(result);
+    });
+    return true;
+  }
+  // Read-only proxy summary for the Settings tab. `system` (or no proxy API)
+  // means the app keeps its own Options proxy, exactly like a download.
+  if (msg?.type === "getProxy") {
+    proxyContext(false)
+      .then(value => reply({ ok: true, ...value }))
+      .catch(error => reply({ ok: false, error: String(error) }));
     return true;
   }
   if (msg?.type === "getConfig") {
@@ -697,6 +1376,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  setupMenus();
   loadStats();
   getConfig();
+  refreshRules();
 });

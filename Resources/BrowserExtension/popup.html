@@ -204,10 +204,9 @@
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
     }
-    .item-list:empty::after {
-      content: "未嗅探到媒体链接";
+    .empty {
       display: block;
-      padding: 24px;
+      padding: 18px 12px;
       text-align: center;
       color: var(--text-tertiary);
       font-size: 12px;
@@ -238,6 +237,30 @@
       margin-top: 2px;
     }
     .item button { padding: 5px 10px; font-size: 12px; }
+    .item .actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .item .actions button { padding: 5px 8px; }
+    .item input[type="checkbox"] { flex-shrink: 0; }
+    .item .thumb {
+      width: 34px;
+      height: 34px;
+      border-radius: 5px;
+      object-fit: cover;
+      background: var(--bg-secondary);
+      flex-shrink: 0;
+    }
+    .conn-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 12px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .conn-row strong { color: var(--text); font-weight: 600; text-align: right; }
     input[type="text"], input[type="number"] {
       font: inherit;
       font-size: 13px;
@@ -262,13 +285,6 @@
       padding: 6px 10px;
       margin: 8px 0;
       background: var(--bg-secondary);
-    }
-    .exclude-list:empty::after {
-      content: "无排除项";
-      display: block;
-      padding: 4px 0;
-      color: var(--text-tertiary);
-      font-size: 12px;
     }
     .exclude-item {
       display: flex;
@@ -333,6 +349,7 @@
           <button class="btn-secondary" data-filter="error">Failed</button>
         </div>
         <div id="recentList" class="item-list" style="max-height:260px;overflow-y:auto"></div>
+        <div class="btn-row"><button class="btn-secondary" id="clearCompleted">清空已完成</button></div>
       </div>
       <div class="section">
         <p class="section-title">本次统计</p>
@@ -358,7 +375,22 @@
           <button class="btn-secondary" id="refresh">刷新</button>
           <button class="btn-secondary" id="clear">清空</button>
         </div>
-        <p class="help">也可右键点击链接，选择「用 Siphon 下载」。</p>
+        <p class="help">也可右键点击链接，选择「用 Siphon 下载」。受 DRM 保护的视频无法下载，浮钮会直接标注。</p>
+      </div>
+      <div class="section">
+        <p class="section-title">本页图片</p>
+        <div class="add-row">
+          <input type="number" id="imageMinWidth" min="0" step="1" placeholder="最小宽度 px">
+          <input type="number" id="imageMinHeight" min="0" step="1" placeholder="最小高度 px">
+          <button class="btn-secondary" id="collectImages">收集图片</button>
+        </div>
+        <div id="imageList" class="item-list" style="margin-top:8px"></div>
+        <p class="help" id="imageCount">尚未收集图片</p>
+        <div class="btn-row">
+          <button class="btn-primary" id="sendImages">发送选中</button>
+          <button class="btn-secondary" id="selectAllImages">全选</button>
+        </div>
+        <p class="help">只收集 http(s) 图片；小图标可用宽高过滤掉。</p>
       </div>
     </div>
 
@@ -373,7 +405,16 @@
           <label for="notifyOnCapture">拦截时显示通知</label>
           <label class="switch"><input type="checkbox" id="notifyOnCapture"><span class="slider"></span></label>
         </div>
-        <p class="help">只有 Siphon 接受任务后，扩展才会取消浏览器下载；失败时浏览器下载继续并弹出提示。</p>
+        <p class="help">扩展优先执行 Siphon 下发的接管规则（文件类型、站点、最小体积等）；这里的开关是本地兜底。只有 Siphon 接受任务后，扩展才会取消浏览器下载；失败时浏览器下载继续并弹出提示。</p>
+      </div>
+      <div class="section">
+        <p class="section-title">本机连接</p>
+        <div class="conn-row"><span>发送到本机</span><strong id="transportInfo">检查中…</strong></div>
+        <div class="conn-row"><span>浏览器代理</span><strong id="proxyInfo">读取中…</strong></div>
+        <div class="btn-row">
+          <button class="btn-secondary" id="refreshConnection">刷新状态</button>
+          <button class="btn-secondary" id="openAppSettings">打开 Siphon 设置</button>
+        </div>
       </div>
       <div class="section">
         <p class="section-title">连接诊断</p>

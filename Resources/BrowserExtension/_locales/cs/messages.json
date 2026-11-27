@@ -1,0 +1,449 @@
+{
+  "extName": {
+    "message": "Siphon Connector"
+  },
+  "extDescription": {
+    "message": "Send browser downloads to the native Siphon macOS app. Supports Chrome, Edge, Brave, and Firefox."
+  },
+  "popup_status_checking": {
+    "message": "Checking connection…"
+  },
+  "popup_searchPlaceholder": {
+    "message": "Search downloads"
+  },
+  "popup_refresh": {
+    "message": "Refresh"
+  },
+  "popup_clearCompleted": {
+    "message": "Clear completed"
+  },
+  "popup_statsTitle": {
+    "message": "This session"
+  },
+  "popup_statIntercepted": {
+    "message": "Captured"
+  },
+  "popup_statSkipped": {
+    "message": "Skipped"
+  },
+  "popup_statMedia": {
+    "message": "Media found"
+  },
+  "popup_statErrors": {
+    "message": "Errors"
+  },
+  "popup_resetStats": {
+    "message": "Reset stats"
+  },
+  "popup_mediaSectionTitle": {
+    "message": "Media on this page"
+  },
+  "popup_siteDisable": {
+    "message": "Stop capturing this site"
+  },
+  "popup_sniffedTitle": {
+    "message": "Detected media"
+  },
+  "popup_sendAll": {
+    "message": "Send all"
+  },
+  "popup_clear": {
+    "message": "Clear"
+  },
+  "popup_mediaHelp": {
+    "message": "You can also right-click a link and choose “Download with Siphon”. DRM-protected videos cannot be downloaded; the floating button marks them."
+  },
+  "popup_imagesTitle": {
+    "message": "Images on this page"
+  },
+  "popup_imageMinWidth": {
+    "message": "Min width px"
+  },
+  "popup_imageMinHeight": {
+    "message": "Min height px"
+  },
+  "popup_collectImages": {
+    "message": "Collect images"
+  },
+  "popup_imagesNotCollected": {
+    "message": "No images collected yet"
+  },
+  "popup_sendSelected": {
+    "message": "Send selected"
+  },
+  "popup_selectAll": {
+    "message": "Select all"
+  },
+  "popup_imagesHelp": {
+    "message": "Only http(s) images are collected; use width/height to filter out small icons."
+  },
+  "popup_rulesTitle": {
+    "message": "Capture rules"
+  },
+  "popup_captureAll": {
+    "message": "Capture all browser downloads"
+  },
+  "popup_notifyOnCapture": {
+    "message": "Show a notification on capture"
+  },
+  "popup_rulesHelp": {
+    "message": "Siphon's rules (file types, sites, minimum size, and more) take priority; these switches are the local fallback. The browser download is cancelled only after Siphon accepts the task; on failure the browser download continues and a notice is shown."
+  },
+  "popup_connectionTitle": {
+    "message": "Local connection"
+  },
+  "popup_sendToLocal": {
+    "message": "Send to this Mac"
+  },
+  "popup_checking": {
+    "message": "Checking…"
+  },
+  "popup_browserProxy": {
+    "message": "Browser proxy"
+  },
+  "popup_reading": {
+    "message": "Reading…"
+  },
+  "popup_refreshStatus": {
+    "message": "Refresh status"
+  },
+  "popup_openAppSettings": {
+    "message": "Open Siphon settings"
+  },
+  "popup_diagnosticsTitle": {
+    "message": "Connection diagnostics"
+  },
+  "popup_copyExtensionId": {
+    "message": "Copy extension ID"
+  },
+  "popup_diagnosticsHelp": {
+    "message": "Paste the extension ID into Siphon Settings → Integration → “Extension ID”, click “Install Native Gateway”, then quit and restart the browser completely (browsers read the gateway manifest only at startup)."
+  },
+  "popup_sizeFilterTitle": {
+    "message": "File size filter"
+  },
+  "popup_minFileSize": {
+    "message": "Minimum file size (MB)"
+  },
+  "popup_sizeFilterHelp": {
+    "message": "0 means no limit. Files smaller than this are not captured and are downloaded by the browser."
+  },
+  "popup_excludeHostsTitle": {
+    "message": "Excluded sites"
+  },
+  "popup_excludeHostPlaceholder": {
+    "message": "e.g. youtube.com"
+  },
+  "popup_add": {
+    "message": "Add"
+  },
+  "popup_excludeHostsHelp": {
+    "message": "Downloads from excluded sites are handled by the browser."
+  },
+  "popup_excludeExtsTitle": {
+    "message": "Excluded extensions"
+  },
+  "popup_excludeExtPlaceholder": {
+    "message": "e.g. html"
+  },
+  "popup_tokenTitle": {
+    "message": "Local API token (HTTP fallback only)"
+  },
+  "popup_tokenPlaceholder": {
+    "message": "Copy from Siphon Settings → Integration"
+  },
+  "popup_save": {
+    "message": "Save"
+  },
+  "popup_tokenHelp": {
+    "message": "Recommended: use “Install Native Gateway” in Siphon. The token is passed automatically from a local 0600 file, so nothing needs to be entered. Only when the extension uses the HTTP fallback do you paste the token from Siphon Settings here. For security, /ping no longer returns the token."
+  },
+  "popup_saveConfig": {
+    "message": "Save settings"
+  },
+  "popup_statusQueued": {
+    "message": "Queued"
+  },
+  "popup_statusDownloading": {
+    "message": "Downloading"
+  },
+  "popup_statusStopped": {
+    "message": "Paused"
+  },
+  "popup_statusComplete": {
+    "message": "Completed"
+  },
+  "popup_statusError": {
+    "message": "Failed"
+  },
+  "popup_recentEmpty": {
+    "message": "No matching recent downloads."
+  },
+  "popup_pause": {
+    "message": "Pause"
+  },
+  "popup_resume": {
+    "message": "Resume"
+  },
+  "popup_remove": {
+    "message": "Remove"
+  },
+  "popup_copyLink": {
+    "message": "Copy link"
+  },
+  "popup_failed": {
+    "message": "Failed"
+  },
+  "popup_clearing": {
+    "message": "Clearing…"
+  },
+  "popup_currentSite": {
+    "message": "Current site: {host}"
+  },
+  "popup_noSite": {
+    "message": "No site address is available for this page."
+  },
+  "popup_resumeSite": {
+    "message": "Resume capture for this site"
+  },
+  "popup_deselectAll": {
+    "message": "Deselect all"
+  },
+  "popup_imageCount": {
+    "message": "{n} images · {m} selected"
+  },
+  "popup_imageNoneMatch": {
+    "message": "No images match the size filter."
+  },
+  "popup_imageCollectHint": {
+    "message": "Click “Collect images” to read this page."
+  },
+  "popup_open": {
+    "message": "Open"
+  },
+  "popup_sending": {
+    "message": "Sending…"
+  },
+  "popup_sentCount": {
+    "message": "Sent {sent}/{count}"
+  },
+  "popup_sendFailed": {
+    "message": "Send failed"
+  },
+  "popup_noMedia": {
+    "message": "No media links detected. Play a video, then reopen this popup."
+  },
+  "popup_send": {
+    "message": "Send"
+  },
+  "popup_sent": {
+    "message": "Sent"
+  },
+  "popup_connected": {
+    "message": "● Connected to Siphon"
+  },
+  "popup_disconnected": {
+    "message": "○ Siphon is not running"
+  },
+  "popup_delete": {
+    "message": "Delete"
+  },
+  "popup_noExcludedHosts": {
+    "message": "No excluded sites"
+  },
+  "popup_noExcludedExts": {
+    "message": "No excluded extensions"
+  },
+  "popup_saved": {
+    "message": "Saved"
+  },
+  "popup_saveFailed": {
+    "message": "Save failed"
+  },
+  "popup_transportNone": {
+    "message": "Not connected"
+  },
+  "popup_transportNative": {
+    "message": "Native gateway"
+  },
+  "popup_transportHttp": {
+    "message": "HTTP fallback"
+  },
+  "popup_transportHttpNoToken": {
+    "message": "HTTP fallback (no token)"
+  },
+  "popup_diagFailed": {
+    "message": "Diagnostics failed: the extension background did not respond. Reload the extension."
+  },
+  "popup_unknown": {
+    "message": "Unknown"
+  },
+  "popup_diagAppOnline": {
+    "message": "● Siphon local API is online"
+  },
+  "popup_diagAppOffline": {
+    "message": "○ Siphon local API unreachable: start the app first"
+  },
+  "popup_diagNativeOk": {
+    "message": "● Native gateway available (recommended)"
+  },
+  "popup_diagNativeMissing": {
+    "message": "○ Native gateway unavailable: the manifest is not installed, or its allowed extension ID differs from the one above"
+  },
+  "popup_diagTokenOk": {
+    "message": "● HTTP fallback token configured"
+  },
+  "popup_diagTokenMissing": {
+    "message": "○ HTTP fallback token not configured: if the native gateway is unavailable, paste the token below"
+  },
+  "popup_diagErrorDetail": {
+    "message": "Error details: {error}"
+  },
+  "popup_proxyUnreadable": {
+    "message": "Unreadable"
+  },
+  "popup_proxyPac": {
+    "message": "PAC script"
+  },
+  "popup_proxySystem": {
+    "message": "Follow system"
+  },
+  "popup_copied": {
+    "message": "Copied"
+  },
+  "popup_tokenSaved": {
+    "message": "Token saved"
+  },
+  "popup_tokenSaveFailed": {
+    "message": "Save failed, try again"
+  },
+  "popup_kindAudio": {
+    "message": "Audio"
+  },
+  "popup_kindVideo": {
+    "message": "Video"
+  },
+  "popup_kindMedia": {
+    "message": "Media"
+  },
+  "bg_ctxLink": {
+    "message": "Download link with Siphon"
+  },
+  "bg_ctxImage": {
+    "message": "Download image with Siphon"
+  },
+  "bg_ctxMedia": {
+    "message": "Download media with Siphon"
+  },
+  "bg_ctxSelection": {
+    "message": "Download selected links with Siphon"
+  },
+  "bg_ctxPage": {
+    "message": "Download this page with Siphon"
+  },
+  "bg_ctxAllLinks": {
+    "message": "Download all links on this page with Siphon"
+  },
+  "bg_ctxAllImages": {
+    "message": "Download all images on this page with Siphon"
+  },
+  "bg_ctxBrowser": {
+    "message": "Download with browser (do not capture)"
+  },
+  "bg_notifyCapturedTitle": {
+    "message": "Siphon captured the download"
+  },
+  "bg_notifyFailedTitle": {
+    "message": "Siphon capture failed: {name}"
+  },
+  "bg_errNoLinks": {
+    "message": "No downloadable links"
+  },
+  "bg_sentLinks": {
+    "message": "Sent {sent}/{count} links"
+  },
+  "bg_sentImages": {
+    "message": "Sent {sent}/{count} images"
+  },
+  "bg_errNoImages": {
+    "message": "No images match the filter"
+  },
+  "bg_labelPageImages": {
+    "message": "Images on this page"
+  },
+  "bg_labelPageLinks": {
+    "message": "Links on this page"
+  },
+  "bg_labelSelectedLinks": {
+    "message": "Selected links"
+  },
+  "bg_errReadImages": {
+    "message": "Failed to read images on this page"
+  },
+  "bg_errReadLinks": {
+    "message": "Failed to read links on this page"
+  },
+  "bg_errTokenInvalid": {
+    "message": "Invalid token. Paste the local API token again in the extension Settings."
+  },
+  "bg_notifyFailedNative": {
+    "message": "The native gateway is unavailable ({error}). In Siphon Settings → Integration, enter this extension's ID and click “Install Native Gateway”, then quit and restart the browser; or paste a token in the extension Settings to use the HTTP fallback."
+  },
+  "bg_notifyFailedDefault": {
+    "message": "Siphon is not running or the local API is unreachable"
+  },
+  "bg_errNoMedia": {
+    "message": "No media stream detected"
+  },
+  "bg_errTokenRotated": {
+    "message": "Invalid or rotated token. Copy a new one from Siphon Settings → Integration and paste it again."
+  },
+  "bg_errTokenMissing": {
+    "message": "Missing token. Paste Siphon's local API token in the extension Settings."
+  },
+  "bg_errUnsupported": {
+    "message": "Unsupported address"
+  },
+  "bg_errNativeBackoff": {
+    "message": "The native gateway is temporarily unavailable (backing off)"
+  },
+  "bg_errNativeTimeout": {
+    "message": "The native gateway timed out"
+  },
+  "bg_errNativeMissing": {
+    "message": "The native gateway is not installed or the extension ID is not allow-listed"
+  },
+  "page_toastSending": {
+    "message": "Sending to Siphon…"
+  },
+  "page_toastSent": {
+    "message": "Sent to Siphon"
+  },
+  "page_toastNoResponse": {
+    "message": "Siphon did not respond; handed off to the browser"
+  },
+  "page_btnIdle": {
+    "message": "Send to Siphon"
+  },
+  "page_btnTitle": {
+    "message": "Send this video's media stream to Siphon"
+  },
+  "page_btnSending": {
+    "message": "Sending…"
+  },
+  "page_btnSent": {
+    "message": "Sent"
+  },
+  "page_btnNoMedia": {
+    "message": "No media found"
+  },
+  "page_btnFailed": {
+    "message": "Send failed"
+  },
+  "page_btnDrm": {
+    "message": "DRM protected"
+  },
+  "page_btnDrmTitle": {
+    "message": "DRM-protected videos cannot be downloaded"
+  }
+}

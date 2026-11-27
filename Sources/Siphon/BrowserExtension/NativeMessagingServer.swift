@@ -3,10 +3,10 @@ import Network
 
 /// Local HTTP control endpoint for browser extensions and scripts.
 ///
-/// Design choice: instead of Chrome Native Messaging (which requires shipping a separate
-/// helper executable + a host manifest), we expose a loopback HTTP endpoint — the approach
-/// used by Gopeed's REST API. A Manifest V3 extension can `fetch` it with host_permissions,
-/// and `curl` works out of the box:
+/// The browser reaches Siphon through the `SiphonNM` Native Messaging gateway
+/// (`NativeMessagingHostInstaller` writes the host manifests); the gateway then
+/// forwards every message here over a loopback socket. The same endpoint also
+/// serves plain `curl` and paired remote clients:
 ///
 ///     curl -X POST http://127.0.0.1:17801/add \
 ///          -H 'Content-Type: application/json' \
@@ -27,6 +27,11 @@ import Network
 /// POST /add   {"url": "...", "name"?: "...", "queue"?: "...",
 ///              "headers"?: {"Cookie": "...", "Referer": "..."},
 ///              "checksum"?: "sha256:…"}                    -> {"ok":true}
+/// POST /browser/add  MDM flat hand-off (no `type`): url, referrer, cookies,
+///              cookieJar, userAgent, filename, finalUrl, size, mime, post, …
+/// POST /rules {"hello":true|"rules":true,…} -> types/capture/excludedSites/…
+/// POST /extension-seen {"browser":"…","version":"…"}     -> seen summary
+/// POST /act   {"act":"pause|resume|remove|…","id":"uuid"} -> {"ok":true,"act":…}
 /// GET  /ping  -> {"ok":true,"app":"Siphon"}              (liveness only)
 /// GET  /tasks -> {"ok":true,"tasks":[…]}                   (store-backed)
 /// POST /pause /resume /remove {"id": "uuid"}               (store-backed)

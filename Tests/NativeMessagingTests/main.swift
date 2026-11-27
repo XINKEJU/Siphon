@@ -110,5 +110,70 @@ do {
     _ = r3
 }
 
+// MARK: - MDM-style control messages (hello / rules, flat hand-off, act)
+
+do {
+    let srv = NativeMessagingServer()
+    var routedPath = ""
+    var routedBody = ""
+    srv.configure(onURL: { _, _, _, _ in },
+                  apiHandler: { _, path, body in
+                      routedPath = path
+                      routedBody = String(data: body, encoding: .utf8) ?? ""
+                      return Data(#"{"ok":true,"types":"ZIP PDF MP4"}"#.utf8)
+                  })
+    func post(_ path: String, _ body: String) -> String {
+        let req = "POST \(path) HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            + "Authorization: Bearer test-token\r\nContent-Length: \(body.utf8.count)\r\n\r\n"
+            + body
+        return String(data: srv.process(Data(req.utf8)), encoding: .utf8) ?? ""
+    }
+
+    let rulesBody = #"{"hello":true,"userAgent":"Mozilla/5.0 Brave/126.0","brands":["Brave"],"v":"0.9.0"}"#
+    let rulesResp = post("/rules", rulesBody)
+    check(routedPath == "/rules", "hello routed to /rules", "got \(routedPath)")
+    check(rulesResp.contains("200 OK") && rulesResp.contains("ZIP PDF MP4"),
+          "rules answer passes through unchanged")
+
+    let handoff = #"{"url":"https://x.test/f.zip","referrer":"https://x.test/p","cookies":"a=b","filename":"f.zip"}"#
+    _ = post("/browser/add", handoff)
+    check(routedPath == "/browser/add", "flat hand-off routed to /browser/add", "got \(routedPath)")
+    check(routedBody == handoff, "hand-off body forwarded verbatim")
+
+    _ = post("/extension-seen", #"{"browser":"Brave","version":"0.9.0"}"#)
+    check(routedPath == "/extension-seen", "extension-seen routed")
+
+    _ = post("/act", #"{"act":"pause","id":"11111111-2222-3333-4444-555555555555"}"#)
+    check(routedPath == "/act", "download act routed")
+}
+
+// MARK: - capture rules answer
+
+check(BrowserCaptureRules.browserName(
+    userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+    brands: ["Brave"]) == "Brave", "brands win for Brave")
+check(BrowserCaptureRules.browserName(
+    userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/126 Safari/537.36 Edg/126",
+    brands: []) == "Microsoft Edge", "Edge UA recognised")
+check(BrowserCaptureRules.browserName(
+    userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+    brands: ["Google Chrome"]) == "Google Chrome", "Chrome UA recognised")
+check(BrowserCaptureRules.browserName(
+    userAgent: "Mozilla/5.0 (Macintosh) Gecko/20100101 Firefox/128.0",
+    brands: []) == "Firefox", "Firefox UA recognised")
+
+let on = BrowserCaptureRules.answer(browser: "Google Chrome", appVersion: "9.9.9",
+                                    integrationOn: true)
+check(on["ok"] as? Bool == true, "rules answer ok")
+check(on["version"] as? String == "9.9.9", "rules answer carries app version")
+check(!(on["types"] as? String ?? "").isEmpty, "rules answer carries file types")
+check(on["capture"] as? Bool == true, "capture on when integration is on")
+check(on["captureOff"] == nil, "no captureOff while capturing")
+
+let off = BrowserCaptureRules.answer(browser: "Google Chrome", appVersion: "9.9.9",
+                                     integrationOn: false)
+check(off["capture"] as? Bool == false, "capture off when integration is off")
+check(off["captureOff"] as? String == "integration-off", "captureOff names the reason")
+
 if failures == 0 { print("NATIVE MESSAGING TESTS PASSED") }
 else { print("NATIVE MESSAGING TESTS FAILED: \(failures)"); exit(1) }

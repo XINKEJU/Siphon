@@ -101,6 +101,12 @@ public struct DownloadTask: Identifiable, Sendable {
         self.note = note
     }
 
+    /// The hand-off came from a private/incognito window. Its cookies are never
+/// persisted; the tasks list may keep the row unless the user opts out.
+    public var isPrivate: Bool {
+        options.contains { $0.key.lowercased() == "siphon.private" && $0.value == "1" }
+    }
+
     /// Human-readable fallback name. Custom schemes carry their filename in
     /// the URI payload, not in `lastPathComponent` (which is "/" for ed2k).
     private static func inferredName(for source: URL) -> String {

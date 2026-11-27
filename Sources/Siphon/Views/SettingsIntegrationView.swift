@@ -54,6 +54,22 @@ struct IntegrationSettingsView: View {
     // Browser extension v2 (native messaging)
     @State private var extensionID = NativeMessagingHostInstaller.extensionID
     @State private var gatewayStatus = ""
+    @State private var seenSummary = BrowserCaptureRules.seenSummary()
+
+    // Capture rules answered to the extension (hello / rules)
+    @State private var captureTypes = BrowserCaptureRules.types
+    @State private var captureExcludedSites = BrowserCaptureRules.excludedSites
+    @State private var captureExcludedAddresses =
+        BrowserCaptureRules.excludedAddresses.joined(separator: "\n")
+    @State private var captureMinKb = BrowserCaptureRules.minKb
+    @State private var captureOpened = BrowserCaptureRules.takesOpenedFiles
+    @State private var captureTorrents = BrowserCaptureRules.takesTorrents
+    @State private var captureBrowsers = BrowserCaptureRules.enabledBrowsers
+    @State private var keepPrivateDownloads = {
+        let d = UserDefaults.standard
+        return d.object(forKey: "Siphon.keepPrivateDownloads") == nil
+            ? true : d.bool(forKey: "Siphon.keepPrivateDownloads")
+    }()
 
     // Site rules + cookie cache
     @State private var siteRules: [SiteRule] = []
@@ -164,6 +180,14 @@ struct IntegrationSettingsView: View {
                         }
                     }
                     .disabled(false)
+                    Button("修复网关") {
+                        let written = NativeMessagingHostInstaller.repairIfNeeded()
+                        gatewayStatus = written.isEmpty
+                            ? "网关已是最新（或尚未填写扩展 ID）"
+                            : "已修复 \(written.count) 份清单"
+                        seenSummary = BrowserCaptureRules.seenSummary()
+                    }
+                    .help("每次启动会自动执行：为已安装的浏览器补齐或重新指向当前网关")
                     Button("卸载网关", role: .destructive) {
                         NativeMessagingHostInstaller.uninstall()
                         gatewayStatus = "已卸载"
@@ -184,6 +208,86 @@ struct IntegrationSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text("已连接的浏览器：\n" + seenSummary)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button {
+                        seenSummary = BrowserCaptureRules.seenSummary()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }.help("刷新")
+                }
+            }
+            Section("浏览器接管规则") {
+                Text("扩展在每次启动时用 hello / rules 取这一份规则；改完立即生效，不需要重启浏览器。")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("自动接管的文件类型（空格分隔）", text: $captureTypes)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption.monospaced())
+                    .onChange(of: captureTypes) { _, new in
+                        BrowserCaptureRules.types = new
+                    }
+                Button("恢复默认类型") {
+                    captureTypes = BrowserCaptureRules.defaultTypes
+                    BrowserCaptureRules.types = captureTypes
+                }
+                .font(.caption)
+                TextField("不自动接管的站点（空格分隔，子域一并生效）",
+                          text: $captureExcludedSites)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: captureExcludedSites) { _, new in
+                        BrowserCaptureRules.excludedSites = new
+                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("不自动接管的完整地址（每行一个）")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextEditor(text: $captureExcludedAddresses)
+                        .font(.caption.monospaced())
+                        .frame(height: 54)
+                        .onChange(of: captureExcludedAddresses) { _, new in
+                            BrowserCaptureRules.excludedAddresses = new
+                                .split(whereSeparator: { $0.isNewline })
+                                .map { $0.trimmingCharacters(in: .whitespaces) }
+                                .filter { !$0.isEmpty }
+                        }
+                }
+                HStack {
+                    Text("小于 \(captureMinKb) KB 的文件留给浏览器")
+                        .font(.caption)
+                    Spacer()
+                    Stepper("", value: $captureMinKb, in: 0...1_048_576, step: 16)
+                        .labelsHidden()
+                        .onChange(of: captureMinKb) { _, new in
+                            BrowserCaptureRules.minKb = new
+                        }
+                }
+                Toggle("也接管浏览器会直接打开的文件（PDF、音视频等）",
+                       isOn: $captureOpened)
+                    .onChange(of: captureOpened) { _, new in
+                        BrowserCaptureRules.takesOpenedFiles = new
+                    }
+                Toggle("接管 .torrent（关闭后交给浏览器的种子程序）",
+                       isOn: $captureTorrents)
+                    .onChange(of: captureTorrents) { _, new in
+                        BrowserCaptureRules.takesTorrents = new
+                    }
+                Toggle("在列表中保留隐私窗口的下载（关闭则退出时清除）",
+                       isOn: $keepPrivateDownloads)
+                    .onChange(of: keepPrivateDownloads) { _, new in
+                        store.setKeepPrivateDownloads(new)
+                    }
+                Text("接管的浏览器").font(.subheadline.weight(.semibold))
+                ForEach(BrowserCaptureRules.browserNames, id: \.self) { name in
+                    Toggle(name, isOn: Binding(
+                        get: { captureBrowsers.contains(name) },
+                        set: { on in
+                            BrowserCaptureRules.setBrowser(name, enabled: on)
+                            captureBrowsers = BrowserCaptureRules.enabledBrowsers
+                        }))
+                }
             }
             Section("网络代理") {
                 Toggle("使用系统代理（PAC / 自动发现）", isOn: $proxyPACEnabled)
@@ -805,7 +909,7 @@ struct IntegrationSettingsView: View {
 
     private static func parseHeaders(_ text: String) -> [String: String] {
         var out: [String: String] = [:]
-        for line in text.split(whereSeparator: \.isNewline) {
+        for line in text.split(whereSeparator: { $0.isNewline }) {
             guard let idx = line.firstIndex(of: ":") else { continue }
             let key = String(line[..<idx]).trimmingCharacters(in: .whitespaces)
             let value = String(line[line.index(after: idx)...])

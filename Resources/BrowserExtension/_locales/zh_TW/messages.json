@@ -1,0 +1,449 @@
+{
+  "extName": {
+    "message": "Siphon Connector"
+  },
+  "extDescription": {
+    "message": "把瀏覽器下載交給本機 Siphon macOS App。支援 Chrome、Edge、Brave 和 Firefox。"
+  },
+  "popup_status_checking": {
+    "message": "檢查連線…"
+  },
+  "popup_searchPlaceholder": {
+    "message": "搜尋下載"
+  },
+  "popup_refresh": {
+    "message": "重新整理"
+  },
+  "popup_clearCompleted": {
+    "message": "清除已完成"
+  },
+  "popup_statsTitle": {
+    "message": "本次統計"
+  },
+  "popup_statIntercepted": {
+    "message": "已攔截"
+  },
+  "popup_statSkipped": {
+    "message": "已略過"
+  },
+  "popup_statMedia": {
+    "message": "嗅探媒體"
+  },
+  "popup_statErrors": {
+    "message": "錯誤"
+  },
+  "popup_resetStats": {
+    "message": "重設統計"
+  },
+  "popup_mediaSectionTitle": {
+    "message": "本頁媒體"
+  },
+  "popup_siteDisable": {
+    "message": "本站不再接管"
+  },
+  "popup_sniffedTitle": {
+    "message": "嗅探到的媒體"
+  },
+  "popup_sendAll": {
+    "message": "傳送全部"
+  },
+  "popup_clear": {
+    "message": "清除"
+  },
+  "popup_mediaHelp": {
+    "message": "也可右鍵點擊連結，選擇「用 Siphon 下載」。受 DRM 保護的影片無法下載，浮鈕會直接標註。"
+  },
+  "popup_imagesTitle": {
+    "message": "本頁圖片"
+  },
+  "popup_imageMinWidth": {
+    "message": "最小寬度 px"
+  },
+  "popup_imageMinHeight": {
+    "message": "最小高度 px"
+  },
+  "popup_collectImages": {
+    "message": "收集圖片"
+  },
+  "popup_imagesNotCollected": {
+    "message": "尚未收集圖片"
+  },
+  "popup_sendSelected": {
+    "message": "傳送所選"
+  },
+  "popup_selectAll": {
+    "message": "全選"
+  },
+  "popup_imagesHelp": {
+    "message": "只收集 http(s) 圖片；小圖示可用寬高過濾掉。"
+  },
+  "popup_rulesTitle": {
+    "message": "接管規則"
+  },
+  "popup_captureAll": {
+    "message": "接管瀏覽器全部下載"
+  },
+  "popup_notifyOnCapture": {
+    "message": "攔截時顯示通知"
+  },
+  "popup_rulesHelp": {
+    "message": "擴充功能優先執行 Siphon 下發的接管規則（檔案類型、站點、最小體積等）；這裡的開關是本機後備。只有 Siphon 接受任務後，擴充功能才會取消瀏覽器下載；失敗時瀏覽器下載繼續並彈出提示。"
+  },
+  "popup_connectionTitle": {
+    "message": "本機連線"
+  },
+  "popup_sendToLocal": {
+    "message": "傳送到本機"
+  },
+  "popup_checking": {
+    "message": "檢查中…"
+  },
+  "popup_browserProxy": {
+    "message": "瀏覽器代理"
+  },
+  "popup_reading": {
+    "message": "讀取中…"
+  },
+  "popup_refreshStatus": {
+    "message": "重新整理狀態"
+  },
+  "popup_openAppSettings": {
+    "message": "開啟 Siphon 設定"
+  },
+  "popup_diagnosticsTitle": {
+    "message": "連線診斷"
+  },
+  "popup_copyExtensionId": {
+    "message": "複製擴充功能 ID"
+  },
+  "popup_diagnosticsHelp": {
+    "message": "把擴充功能 ID 貼到 Siphon 設定 → 整合 →「擴充功能 ID」，點「安裝原生閘道」，然後完全退出並重新啟動瀏覽器（瀏覽器只在啟動時讀取閘道清單）。"
+  },
+  "popup_sizeFilterTitle": {
+    "message": "檔案大小過濾"
+  },
+  "popup_minFileSize": {
+    "message": "最小檔案大小（MB）"
+  },
+  "popup_sizeFilterHelp": {
+    "message": "0 表示不限制。小於此大小的檔案不攔截，由瀏覽器直接下載。"
+  },
+  "popup_excludeHostsTitle": {
+    "message": "排除站點"
+  },
+  "popup_excludeHostPlaceholder": {
+    "message": "例如：youtube.com"
+  },
+  "popup_add": {
+    "message": "新增"
+  },
+  "popup_excludeHostsHelp": {
+    "message": "排除站點上的下載將由瀏覽器處理。"
+  },
+  "popup_excludeExtsTitle": {
+    "message": "排除副檔名"
+  },
+  "popup_excludeExtPlaceholder": {
+    "message": "例如：html"
+  },
+  "popup_tokenTitle": {
+    "message": "本機介面權杖（僅 HTTP 回退需要）"
+  },
+  "popup_tokenPlaceholder": {
+    "message": "從 Siphon 設定 → 整合 複製"
+  },
+  "popup_save": {
+    "message": "儲存"
+  },
+  "popup_tokenHelp": {
+    "message": "推薦在 Siphon 中「安裝原生閘道」：權杖由本機 0600 檔案自動傳遞，無需填寫。僅當擴充功能走 HTTP 回退時，才需要把 Siphon 設定裡的權杖貼到這裡。出於安全考量，/ping 不再下發權杖。"
+  },
+  "popup_saveConfig": {
+    "message": "儲存設定"
+  },
+  "popup_statusQueued": {
+    "message": "排隊中"
+  },
+  "popup_statusDownloading": {
+    "message": "下載中"
+  },
+  "popup_statusStopped": {
+    "message": "已暫停"
+  },
+  "popup_statusComplete": {
+    "message": "已完成"
+  },
+  "popup_statusError": {
+    "message": "失敗"
+  },
+  "popup_recentEmpty": {
+    "message": "最近沒有符合的下載。"
+  },
+  "popup_pause": {
+    "message": "暫停"
+  },
+  "popup_resume": {
+    "message": "繼續"
+  },
+  "popup_remove": {
+    "message": "移除"
+  },
+  "popup_copyLink": {
+    "message": "複製連結"
+  },
+  "popup_failed": {
+    "message": "失敗"
+  },
+  "popup_clearing": {
+    "message": "清理中…"
+  },
+  "popup_currentSite": {
+    "message": "目前站點：{host}"
+  },
+  "popup_noSite": {
+    "message": "目前頁面沒有可用的站點位址。"
+  },
+  "popup_resumeSite": {
+    "message": "恢復本站接管"
+  },
+  "popup_deselectAll": {
+    "message": "取消全選"
+  },
+  "popup_imageCount": {
+    "message": "共 {n} 張 · 已選 {m} 張"
+  },
+  "popup_imageNoneMatch": {
+    "message": "沒有符合尺寸的圖片。"
+  },
+  "popup_imageCollectHint": {
+    "message": "點「收集圖片」讀取目前頁面。"
+  },
+  "popup_open": {
+    "message": "開啟"
+  },
+  "popup_sending": {
+    "message": "傳送中…"
+  },
+  "popup_sentCount": {
+    "message": "已傳送 {sent}/{count}"
+  },
+  "popup_sendFailed": {
+    "message": "傳送失敗"
+  },
+  "popup_noMedia": {
+    "message": "未嗅探到媒體連結。播放影片後再開啟此彈窗。"
+  },
+  "popup_send": {
+    "message": "傳送"
+  },
+  "popup_sent": {
+    "message": "已傳送"
+  },
+  "popup_connected": {
+    "message": "● 已連線 Siphon"
+  },
+  "popup_disconnected": {
+    "message": "○ Siphon 未執行"
+  },
+  "popup_delete": {
+    "message": "刪除"
+  },
+  "popup_noExcludedHosts": {
+    "message": "無排除站點"
+  },
+  "popup_noExcludedExts": {
+    "message": "無排除副檔名"
+  },
+  "popup_saved": {
+    "message": "已儲存"
+  },
+  "popup_saveFailed": {
+    "message": "儲存失敗"
+  },
+  "popup_transportNone": {
+    "message": "未連線"
+  },
+  "popup_transportNative": {
+    "message": "原生閘道"
+  },
+  "popup_transportHttp": {
+    "message": "HTTP 回退"
+  },
+  "popup_transportHttpNoToken": {
+    "message": "HTTP 回退（缺權杖）"
+  },
+  "popup_diagFailed": {
+    "message": "診斷失敗：擴充功能背景未回應，請在擴充功能頁重新載入本擴充功能。"
+  },
+  "popup_unknown": {
+    "message": "未知"
+  },
+  "popup_diagAppOnline": {
+    "message": "● Siphon 本機介面在線"
+  },
+  "popup_diagAppOffline": {
+    "message": "○ Siphon 本機介面不可達：請先啟動 App"
+  },
+  "popup_diagNativeOk": {
+    "message": "● 原生閘道可用（推薦通道）"
+  },
+  "popup_diagNativeMissing": {
+    "message": "○ 原生閘道不可用：清單未安裝，或其中允許的擴充功能 ID 與上方不一致"
+  },
+  "popup_diagTokenOk": {
+    "message": "● HTTP 回退權杖已設定"
+  },
+  "popup_diagTokenMissing": {
+    "message": "○ HTTP 回退權杖未設定：若原生閘道不可用，請在下方貼上權杖"
+  },
+  "popup_diagErrorDetail": {
+    "message": "錯誤詳情：{error}"
+  },
+  "popup_proxyUnreadable": {
+    "message": "無法讀取"
+  },
+  "popup_proxyPac": {
+    "message": "PAC 指令碼"
+  },
+  "popup_proxySystem": {
+    "message": "跟隨系統"
+  },
+  "popup_copied": {
+    "message": "已複製"
+  },
+  "popup_tokenSaved": {
+    "message": "已儲存權杖"
+  },
+  "popup_tokenSaveFailed": {
+    "message": "儲存失敗，請重試"
+  },
+  "popup_kindAudio": {
+    "message": "音訊"
+  },
+  "popup_kindVideo": {
+    "message": "影片"
+  },
+  "popup_kindMedia": {
+    "message": "媒體"
+  },
+  "bg_ctxLink": {
+    "message": "用 Siphon 下載連結"
+  },
+  "bg_ctxImage": {
+    "message": "用 Siphon 下載圖片"
+  },
+  "bg_ctxMedia": {
+    "message": "用 Siphon 下載媒體"
+  },
+  "bg_ctxSelection": {
+    "message": "用 Siphon 下載所選連結"
+  },
+  "bg_ctxPage": {
+    "message": "用 Siphon 下載本頁"
+  },
+  "bg_ctxAllLinks": {
+    "message": "用 Siphon 下載本頁全部連結"
+  },
+  "bg_ctxAllImages": {
+    "message": "用 Siphon 下載本頁全部圖片"
+  },
+  "bg_ctxBrowser": {
+    "message": "用瀏覽器下載（不接管）"
+  },
+  "bg_notifyCapturedTitle": {
+    "message": "Siphon 已接管下載"
+  },
+  "bg_notifyFailedTitle": {
+    "message": "Siphon 接管失敗：{name}"
+  },
+  "bg_errNoLinks": {
+    "message": "沒有可下載的連結"
+  },
+  "bg_sentLinks": {
+    "message": "已傳送 {sent}/{count} 個連結"
+  },
+  "bg_sentImages": {
+    "message": "已傳送 {sent}/{count} 張圖片"
+  },
+  "bg_errNoImages": {
+    "message": "沒有符合條件的圖片"
+  },
+  "bg_labelPageImages": {
+    "message": "本頁圖片"
+  },
+  "bg_labelPageLinks": {
+    "message": "本頁連結"
+  },
+  "bg_labelSelectedLinks": {
+    "message": "所選連結"
+  },
+  "bg_errReadImages": {
+    "message": "讀取本頁圖片失敗"
+  },
+  "bg_errReadLinks": {
+    "message": "讀取本頁連結失敗"
+  },
+  "bg_errTokenInvalid": {
+    "message": "權杖無效，請在擴充功能「設定」裡重新貼上本機介面權杖"
+  },
+  "bg_notifyFailedNative": {
+    "message": "原生閘道不可用（{error}）。請在 Siphon 設定 → 整合 填入本擴充功能 ID 並點「安裝原生閘道」，然後完全退出並重新啟動瀏覽器；或在擴充功能「設定」裡貼上權杖走 HTTP 回退。"
+  },
+  "bg_notifyFailedDefault": {
+    "message": "Siphon 未執行或本機介面不可達"
+  },
+  "bg_errNoMedia": {
+    "message": "未嗅探到媒體串流"
+  },
+  "bg_errTokenRotated": {
+    "message": "權杖無效或已輪換，請在 Siphon 設定 → 整合 複製後重新貼上"
+  },
+  "bg_errTokenMissing": {
+    "message": "缺少權杖，請在擴充功能「設定」中貼上 Siphon 的本機介面權杖"
+  },
+  "bg_errUnsupported": {
+    "message": "不支援的位址"
+  },
+  "bg_errNativeBackoff": {
+    "message": "原生閘道暫不可用（已退避）"
+  },
+  "bg_errNativeTimeout": {
+    "message": "原生閘道回應逾時"
+  },
+  "bg_errNativeMissing": {
+    "message": "原生閘道未安裝或擴充功能 ID 不在白名單"
+  },
+  "page_toastSending": {
+    "message": "正在傳送到 Siphon…"
+  },
+  "page_toastSent": {
+    "message": "已傳送到 Siphon"
+  },
+  "page_toastNoResponse": {
+    "message": "Siphon 未回應，已交給瀏覽器"
+  },
+  "page_btnIdle": {
+    "message": "傳送到 Siphon"
+  },
+  "page_btnTitle": {
+    "message": "把此影片的媒體串流傳送到 Siphon"
+  },
+  "page_btnSending": {
+    "message": "傳送中…"
+  },
+  "page_btnSent": {
+    "message": "已傳送"
+  },
+  "page_btnNoMedia": {
+    "message": "未找到媒體"
+  },
+  "page_btnFailed": {
+    "message": "傳送失敗"
+  },
+  "page_btnDrm": {
+    "message": "受 DRM 保護"
+  },
+  "page_btnDrmTitle": {
+    "message": "受 DRM 保護的影片無法下載"
+  }
+}

@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Siphon Connector",
+  "default_locale": "en",
+  "name": "__MSG_extName__",
   "version": "0.5.0",
-  "description": "Send browser downloads to the native Siphon macOS app.",
+  "description": "__MSG_extDescription__",
   "browser_specific_settings": {
     "gecko": {
       "id": "siphon-connector@inkeju.com",
@@ -16,6 +17,7 @@
     "cookies",
     "webRequest",
     "scripting",
+    "proxy",
     "tabs",
     "nativeMessaging",
     "notifications"
@@ -25,8 +27,16 @@
     "scripts": ["background.js"],
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["page.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
   "action": {
-    "default_title": "Siphon",
+    "default_title": "__MSG_extName__",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

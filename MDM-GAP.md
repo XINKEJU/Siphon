@@ -32,7 +32,7 @@
 | UI 形态 | IDM 式单窗 + 每任务进度窗 + 12 页 Options | 原生三栏 + 单进度面板 + 12 页壳（半成品） | 结构需大改 |
 | 自动化 | CLI + Automation API(JSON Schema) + MCP(7) + 远程 HTTPS + headless | REST + SSE + MDXP + MCP(5) + siphon:// | 缺 CLI/远程/规范 |
 | 国际化 | 87 语言 + RTL + CLDR 数字 | 中英 2 语言（97 key） | 最大单项差距 |
-| 扩展 | 3 平台 manifest + 51 locale + 视频浮钮 + 页面脚本 | Chromium/Firefox + 三页 popup + 无浮钮/页面脚本 | 中等差距 |
+| 扩展 | 3 平台 manifest + 51 locale + 视频浮钮 + 页面脚本 | Chromium/Firefox + 三页 popup + 视频浮钮 + 页面早期脚本 | 中等差距 |
 | 测试/发布 | CI + labserver 基准 + 安装器矩阵 + 崩溃报告 | verify.sh 34 步 + DMG + 未签名 | 发布链路弱 |
 
 ---
@@ -192,26 +192,28 @@
 | J8 | 分组完成通知 | 有 | 每任务 | ⚠️ | P2 | Swift 原生 |
 | J9 | “仅在我使用电脑时”限速 | 有 | 无 | ❌ | P2 | Swift 原生 |
 
-### K. 浏览器集成与扩展（16 项）
+### K. 浏览器集成与扩展（18 项）
 
 | # | 能力 | MDM 事实 | Siphon 现状 | 差距 | 优先级 | 路径 |
 |---|---|---|---|---|---|---|
 | K1 | Chromium MV3 | 有 | 有（v0.5.0） | ✅ | — | — |
 | K2 | Firefox MV3 | 有（min 140） | 有 | ✅ | — | — |
 | K3 | Safari | manifest 存在 | 无（`dist/safari/` 空） | ❌ | P2 | 需 Apple 账号 + Xcode 包装 |
-| K4 | popup 三页 | Downloads/This page/Settings | 三页已有 | ✅ | — | — |
-| K5 | 视频浮钮 | `video.js` 覆盖按钮，多状态/菜单 | 无注入脚本 | ❌ | P1 | JS 原生 |
-| K6 | 页面早期拦截 | `page.js` document_start | 无 | ❌ | P1 | JS 原生 |
-| K7 | 本页媒体（HLS/DASH/DRM） | 识别 + 发送 | webRequest 嗅探媒体列表 | ⚠️ | P1 | JS 原生 |
-| K8 | 本页图片→Link grabber | 有 | 无 | ❌ | P2 | JS 原生 |
-| K9 | 扩展 locale | 51 个 | 无 | ❌ | P2 | 翻译流水线 |
-| K10 | 接管规则（文件类型/站点/大小） | 有，与 app 设置同步 | 有基础过滤 + 排除 | ⚠️ | P1 | 对齐 |
-| K11 | 表单重放 | 有 | 无 | ❌ | P2 | JS + 引擎 |
-| K12 | 未接管/手动提示 | 有 | 部分 | ⚠️ | P2 | 对齐 |
+| K4 | popup 三页 | Downloads/This page/Settings | 三页完整：Downloads（搜索/状态筛选/暂停/继续/移除/清空已完成）、This page（HLS/DASH 媒体、图片收集筛选、站点放行）、Settings（接管开关/代理/发送通道/打开设置） | ✅ | — | — |
+| K5 | 视频浮钮 | `video.js` 覆盖按钮，多状态/菜单 | `page.js` 在每个 `<video>` 上覆盖「发送到 Siphon」，跟随滚动/全屏容器，发送中/已发送/失败三态，优先取嗅探到的 HLS/DASH | ✅ | — | JS 原生 |
+| K6 | 页面早期拦截 | `page.js` document_start | `page.js` document_start：已知文件扩展名在点击时先交给 Siphon，接受则不产生浏览器请求（保护一次性签名链接），拒绝则恢复浏览器导航；Option/Alt 放行 | ✅ | — | JS 原生 |
+| K7 | 本页媒体（HLS/DASH/DRM） | 识别 + 发送 | webRequest 嗅探 HLS/DASH/音视频清单，popup 标注类型并可单发/全发；EME 加密视频的浮钮标注「受 DRM 保护」并禁用发送 | ✅ | — | JS 原生 |
+| K8 | 本页图片→Link grabber | 有 | popup 内 Link grabber：缩略图、宽高筛选、全选与批量发送；右键「本页全部图片」按 100px 过滤图标 | ✅ | — | JS 原生 |
+| K9 | 扩展 locale | 51 个 | 51 个 locale 目录已生成（简繁英人工，其余英文回退），生成器见 tools/i18n/extension_locales.py | ✅ | — | 翻译流水线 |
+| K10 | 接管规则（文件类型/站点/大小） | 有，与 app 设置同步 | `hello`/`rules` 下发类型、排除站点/地址、最小体积、种子与按浏览器开关 | ✅ | — | `BrowserCaptureRules` |
+| K11 | 表单重放 | 有 | `post`/`postType` 作为单流 POST 重发（不做 Range 续传） | ✅ | — | `HTTPDownloadEngine` |
+| K12 | 未接管/手动提示 | 有 | 失败系统通知、早期拦截失败自动回退浏览器下载、Option/Alt 放行、右键「用浏览器下载」 | ✅ | — | 对齐 |
 | K13 | Recent 列表 | 有 | 有 `/recent` | ✅ | — | — |
-| K14 | 原生网关安装 | 安装程序写入 + app 提示 | 手动填扩展 ID + 安装按钮 | ⚠️ | P1 | Swift 原生 |
+| K14 | 原生网关安装 | 安装程序写入 + app 提示 | 手动填 ID 后每次启动自愈，覆盖 12 种浏览器目录 | ✅ | — | `repairIfNeeded` |
 | K15 | 自动绑定 | MDM 无此概念（安装器绑定） | 已改手动 | ⚠️ | P2 | 对齐 MDM 模式 |
 | K16 | 版本一致性 | — | App 0.5.0 = 扩展 0.5.0 | ✅ | P0 | 已统一 |
+| K17 | 交接字段 | referrer/cookies/UA/finalUrl/size/mime/post/proxy | 全量映射；finalUrl 一次性回退；按任务代理/PAC；私有窗口 Cookie 不落盘 | ✅ | — | `mdmBrowserAdd` |
+| K18 | 右键与批量 | 链接/图片/媒体/选区/全部链接 | 六类菜单 + `linksPart` 批量 + Option/Alt 放行 | ✅ | — | `background.js` |
 
 ### L. 自动化与远程（9 项）
 

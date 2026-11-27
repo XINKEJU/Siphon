@@ -179,6 +179,7 @@ swiftc -framework Network -o "$TMP/nativemsg" \
     Tests/NativeMessagingTests/main.swift \
     Sources/Siphon/BrowserExtension/NativeMessagingServer.swift \
     Sources/Siphon/BrowserExtension/NativeMessagingHostInstaller.swift \
+    Sources/Siphon/BrowserExtension/BrowserCaptureRules.swift \
     "${KEYCHAIN[@]}"
 "$TMP/nativemsg"
 
@@ -229,6 +230,18 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(size))
             self.end_headers(); self.wfile.write(data)
+    def do_POST(self):
+        # A form that answers with the file (the browser hand-off replays it).
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        path = os.path.join(ROOT, "big.bin")
+        with open(path, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
     def log_message(self, *a): pass
 socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(("127.0.0.1", 18767), H) as s:
@@ -557,7 +570,26 @@ python3 -c 'import json; json.load(open("Resources/BrowserExtension/manifest-fir
 if command -v node >/dev/null 2>&1; then
     node --check Resources/BrowserExtension/background.js
     node --check Resources/BrowserExtension/popup.js
+    node --check Resources/BrowserExtension/page.js
 fi
+# MDM-style hand-off: flat fields, bulk page grabs and the browser-pass escape.
+grep -q "BROWSER_ADD" Resources/BrowserExtension/background.js
+grep -q "linksPart" Resources/BrowserExtension/background.js
+grep -q "siphon-all-links" Resources/BrowserExtension/background.js
+grep -q "contentDispositionFilename" Resources/BrowserExtension/background.js
+grep -q '"proxy"' Resources/BrowserExtension/manifest.json
+# In-page video button + image Link grabber: the overlay must ask the worker
+# for sniffed streams, and right-click must offer a whole-page image grab.
+grep -q "siphon-video-button" Resources/BrowserExtension/page.js
+grep -q 'type: "pageMedia"' Resources/BrowserExtension/page.js
+grep -q "siphon-all-images" Resources/BrowserExtension/background.js
+grep -q "collectPageImages" Resources/BrowserExtension/background.js
+# Early interception: known file links are taken before the browser burns a
+# single-use URL, and DRM media is marked instead of silently failing.
+grep -q 'type: "earlyClick"' Resources/BrowserExtension/page.js
+grep -q 'type === "earlyClick"' Resources/BrowserExtension/background.js
+grep -q "shouldTakeEarly" Resources/BrowserExtension/background.js
+grep -q 'addEventListener("encrypted"' Resources/BrowserExtension/page.js
 # macOS 深度适配：Dock 真实进度 + Dock 菜单、Quick Look、废纸篓语义、
 # Finder「来自何处」、Services 菜单、网络感知。这些能力都是“静默失效”型，
 # 删掉不会让编译失败，所以必须由回归脚本盯着。
@@ -590,6 +622,17 @@ grep -q 'case "recent"' Sources/SiphonNM/main.swift
 grep -q 'data-tab="main">Downloads' Resources/BrowserExtension/popup.html
 grep -q 'data-tab="media">This page' Resources/BrowserExtension/popup.html
 grep -q 'data-tab="config">Settings' Resources/BrowserExtension/popup.html
+# Extension locales: 51 Chrome `_locales` directories (en/zh_CN/zh_TW are
+# hand-written, the rest fall back to English) wired through the manifest and
+# used at runtime by both the popup and the in-page script.
+grep -q '"default_locale": "en"' Resources/BrowserExtension/manifest.json
+grep -q '__MSG_extName__' Resources/BrowserExtension/manifest.json
+[[ -f Resources/BrowserExtension/_locales/en/messages.json ]] \
+    || { echo "extension _locales/en/messages.json missing" >&2; exit 1; }
+[[ $(find Resources/BrowserExtension/_locales -mindepth 1 -maxdepth 1 -type d | wc -l) -ge 51 ]] \
+    || { echo "fewer than 51 extension locales" >&2; exit 1; }
+grep -q "i18n.getMessage" Resources/BrowserExtension/popup.js
+grep -q "i18n.getMessage" Resources/BrowserExtension/page.js
 grep -q 'type === "recent"' Resources/BrowserExtension/background.js
 grep -q 'type === "setSiteCapture"' Resources/BrowserExtension/background.js
 # The app must cancel the browser download only after /add succeeded.

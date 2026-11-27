@@ -266,6 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   siphon://pause              → pause all
     ///   siphon://resume             → resume all
     ///   siphon://popup              → show the compact download popup
+    ///   siphon://options            → show the main window with Settings
     ///   siphon://show               → show main window
     private func handleSiphonURL(_ url: URL) {
         let host = url.host?.lowercased() ?? ""
@@ -290,6 +291,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in store?.pauseAll() }
         case "resume":
             Task { @MainActor in store?.resumeAll() }
+        case "options", "settings":
+            showMainWindow()
+            if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) { return }
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
         case "show":
             showMainWindow()
         default:

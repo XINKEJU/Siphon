@@ -23,9 +23,11 @@ public struct MDMCommand: Codable, Sendable {
     public var size: Int64?
     public var mime: String?
     public var post: String?
+    public var postType: String?
     public var privateWindow: Bool?
     public var browserHandoff: Bool?
     public var proxy: String?
+    public var proxyPac: String?
     public var query: String?
     public var action: String?
     public var ids: [String]?
@@ -52,9 +54,11 @@ public struct MDMCommand: Codable, Sendable {
                 size: Int64? = nil,
                 mime: String? = nil,
                 post: String? = nil,
+                postType: String? = nil,
                 privateWindow: Bool? = nil,
                 browserHandoff: Bool? = nil,
                 proxy: String? = nil,
+                proxyPac: String? = nil,
                 query: String? = nil,
                 action: String? = nil,
                 ids: [String]? = nil,
@@ -78,9 +82,11 @@ public struct MDMCommand: Codable, Sendable {
         self.size = size
         self.mime = mime
         self.post = post
+        self.postType = postType
         self.privateWindow = privateWindow
         self.browserHandoff = browserHandoff
         self.proxy = proxy
+        self.proxyPac = proxyPac
         self.query = query
         self.action = action
         self.ids = ids
@@ -93,8 +99,8 @@ public struct MDMCommand: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case url, dir, name, description, checksum, later, silent, startQueue, referer, pageUrl
-        case userAgent, finalUrl, size, mime, post, privateWindow, browserHandoff
-        case proxy, query, action, ids, category, queue, remote, torrentFile
+        case userAgent, finalUrl, size, mime, post, postType, privateWindow, browserHandoff
+        case proxy, proxyPac, query, action, ids, category, queue, remote, torrentFile
         // cookies deliberately absent
     }
 }

@@ -43,7 +43,29 @@ extension DownloadStore {
         if let cookies = command.cookies, !cookies.isEmpty {
             options["Cookie"] = cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
         }
-        if let post = command.post { options["PostData"] = post }
+        if let post = command.post {
+            options["PostData"] = post
+            if let type = command.postType, !type.isEmpty {
+                options["PostContentType"] = type
+            }
+        }
+        // Internal hand-off context. `Siphon.*` keys are stripped before the
+        // request is built, so none of these ever leak as HTTP headers.
+        if let finalUrl = command.finalUrl, !finalUrl.isEmpty {
+            options["Siphon.FinalURL"] = finalUrl
+        }
+        if let size = command.size, size > 0 {
+            options["Siphon.ExpectedSize"] = String(size)
+        }
+        if let proxy = command.proxy, !proxy.isEmpty {
+            options["Siphon.Proxy"] = proxy
+        }
+        if let pac = command.proxyPac, !pac.isEmpty {
+            options["Siphon.ProxyPac"] = pac
+        }
+        if command.privateWindow == true {
+            options["Siphon.Private"] = "1"
+        }
 
         let directory = command.dir.flatMap { raw -> URL? in
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -65,6 +87,13 @@ extension DownloadStore {
                             directory: directory)
 
         let created = tasks.first { !before.contains($0.id) }
+        // The browser already knows the size and type; show them immediately
+        // instead of waiting for our own probe (MDM's Download File Info).
+        if let created, let size = command.size, size > 0,
+           let index = tasks.firstIndex(where: { $0.id == created.id }),
+           tasks[index].progress.totalBytes == 0 {
+            tasks[index].progress.totalBytes = size
+        }
         if command.later == true, let created {
             pause(created.id)
         }
@@ -76,6 +105,72 @@ extension DownloadStore {
         return MDMAddAnswer(ok: created != nil || tasks.contains(where: {
             $0.source.absoluteString == raw
         }), id: created?.id.uuidString, note: created == nil ? "duplicate or unresolved" : nil)
+    }
+
+    /// A flat hand-off from the browser extension (`POST /browser/add`).
+    ///
+    /// MDM's wire form is camelCase and carries the browser's own context:
+    /// `referrer`/`pageUrl`, `cookies`/`cookieJar`, `userAgent`, `filename`
+    /// (plus `nameGuessed`), `finalUrl`, `size`, `mime`, `post`/`postType`,
+    /// `private`, `proxy`/`proxyPac`. This maps the fields the engines already
+    /// understand onto the same `MDMCommand` that remote clients use, so a
+    /// browser download and a remote add take one code path.
+    ///
+    /// Returns immediately: the browser cancels its own copy once we answer ok,
+    /// exactly as the legacy `/add` path has always behaved.
+    public func mdmBrowserAdd(_ json: [String: Any]) -> [String: Any] {
+        guard let raw = (json["url"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return ["ok": false, "error": "missing url"]
+        }
+        var command = MDMCommand(url: raw)
+        command.referer = (json["referrer"] as? String) ?? (json["pageUrl"] as? String)
+        command.pageUrl = json["pageUrl"] as? String
+        command.userAgent = json["userAgent"] as? String
+        command.mime = json["mime"] as? String
+        command.post = json["post"] as? String
+        command.postType = json["postType"] as? String
+        command.finalUrl = json["finalUrl"] as? String
+        command.proxy = json["proxy"] as? String
+        command.proxyPac = json["proxyPac"] as? String
+        command.size = (json["size"] as? NSNumber)?.int64Value
+        command.privateWindow = json["private"] as? Bool
+        command.browserHandoff = true
+        // A guessed name is only the address's last segment; the app names the
+        // file from the server's answer in that case, as with no name at all.
+        if json["nameGuessed"] as? Bool != true {
+            command.name = json["filename"] as? String
+        }
+        command.cookies = Self.cookieDictionary(from: json)
+
+        Task { _ = await self.addMDMCommand(command) }
+        return ["ok": true]
+    }
+
+    /// `cookieJar` (domains and flags) wins over the flat `cookies` header
+    /// string: the jar is what the browser actually sent for this request.
+    private static func cookieDictionary(from json: [String: Any]) -> [String: String]? {
+        if let jar = json["cookieJar"] as? [[String: Any]], !jar.isEmpty {
+            var out: [String: String] = [:]
+            for item in jar {
+                guard let name = item["name"] as? String, !name.isEmpty,
+                      let value = item["value"] as? String else { continue }
+                out[name] = value
+            }
+            if !out.isEmpty { return out }
+        }
+        if let raw = json["cookies"] as? String, !raw.isEmpty {
+            var out: [String: String] = [:]
+            for pair in raw.split(separator: ";") {
+                let trimmed = pair.trimmingCharacters(in: .whitespaces)
+                guard let eq = trimmed.firstIndex(of: "=") else { continue }
+                let name = String(trimmed[..<eq])
+                let value = String(trimmed[trimmed.index(after: eq)...])
+                if !name.isEmpty { out[name] = value }
+            }
+            if !out.isEmpty { return out }
+        }
+        return nil
     }
 
     public func performMDMAction(_ action: String, ids: [String]?) {

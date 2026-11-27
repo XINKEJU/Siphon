@@ -136,6 +136,7 @@ public final class DownloadStore: EngineDelegate {
         static let autoResumeInterrupted = "Siphon.autoResumeInterrupted"
         static let hourlyQuotaMB = "Siphon.hourlyQuotaMB"
         static let downloadDirectory = "Siphon.downloadDirectory"
+        static let keepPrivate = "Siphon.keepPrivateDownloads"
     }
     /// Tasks already handed to an engine. Resuming these must call `resume(id)`,
     /// never `submit(task)` again (that would create a duplicate aria2 GID).
@@ -495,6 +496,9 @@ public final class DownloadStore: EngineDelegate {
         let smartKey = "Siphon.clipboardSmartDetection"
         let smart = d.object(forKey: smartKey) == nil || d.bool(forKey: smartKey)
         clipboard.smartDetection = smart
+        // MDM registers its helper for the browsers installed at every start.
+        // Do the same so a moved gateway or a browser added later heals itself.
+        if browserCaptureEnabled { NativeMessagingHostInstaller.repairIfNeeded() }
     }
 
     public func restartAria2() async {
@@ -1393,6 +1397,10 @@ public final class DownloadStore: EngineDelegate {
             if let error { tasks[i].errorDescription = error.localizedDescription }
             return
         }
+        // MDM's one retry: when a site refuses the clicked link itself (a one-time
+        // link the browser already used), go on from the address the browser's
+        // own download had reached. Other sites lose the old cookies.
+        if state == .error, retryWithFinalURL(index: i) { return }
         // Engines that move bytes through an external process cannot verify inline.
         // Hold the completion transition until the store's own hash check finishes.
         if state == .completed,
@@ -1440,6 +1448,50 @@ public final class DownloadStore: EngineDelegate {
             return
         }
         applyState(index: i, state: state, error: error)
+    }
+
+    /// One-shot fallback to the browser's final URL. Only retried before any byte
+    /// was written, and only once — a second failure is a real one.
+    private func retryWithFinalURL(index i: Int) -> Bool {
+        let task = tasks[i]
+        func value(_ key: String) -> String? {
+            task.options.first { $0.key.lowercased() == key.lowercased() }?.value
+        }
+        guard value("Siphon.FinalURL.Used") == nil,
+              let raw = value("Siphon.FinalURL"),
+              let final = URL(string: raw), final != task.source,
+              let scheme = final.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              task.progress.downloadedBytes == 0 else { return false }
+
+        var options = task.options
+        options["Siphon.FinalURL.Used"] = "1"
+        if final.host != task.source.host {
+            for key in options.keys
+            where ["cookie", "referer", "authorization"].contains(key.lowercased()) {
+                options.removeValue(forKey: key)
+            }
+        }
+        // A preallocated 0-byte file from the failed attempt would make the new
+        // source look like a resume; clear it and its sidecars first.
+        if let size = (try? FileManager.default.attributesOfItem(
+                atPath: task.destination.path))?[.size] as? NSNumber,
+           size.int64Value == 0 {
+            try? FileManager.default.removeItem(at: task.destination)
+            for part in MDMProduct.existingPartURLs(for: task.destination) {
+                try? FileManager.default.removeItem(at: part)
+            }
+        }
+        tasks[i].source = final
+        tasks[i].options = options
+        tasks[i].progress = DownloadProgress()
+        tasks[i].errorDescription = nil
+        tasks[i].state = .pending
+        submitted.remove(task.id)
+        save()
+        DiagnosticLog.shared.log("fallback \(task.name) → \(final.absoluteString)")
+        Task { await schedule() }
+        return true
     }
 
     /// Delegates to the pure `ChecksumPolicy` so the coverage rule is unit-tested.
@@ -1694,10 +1746,20 @@ public final class DownloadStore: EngineDelegate {
         browserCaptureEnabled = on
         UserDefaults.standard.set(on, forKey: PrefKey.browser)
         refreshControlServer()
+        // Turning capture on is the moment a user expects the helper to be in
+        // place; repair is a no-op until an extension ID has been saved.
+        if on { NativeMessagingHostInstaller.repairIfNeeded() }
     }
 
     /// MDXP bridge toggle. It shares the loopback control port with browser
     /// capture, so either feature being on keeps one server alive.
+    /// Private-window downloads: keep the rows across restarts (default) or let
+/// them disappear at quit, like the browser's own private history.
+public func setKeepPrivateDownloads(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: PrefKey.keepPrivate)
+        save()
+    }
+
     public func setMDXPEnabled(_ on: Bool) {
         mdxpEnabled = on
         UserDefaults.standard.set(on, forKey: PrefKey.mdxp)
@@ -1856,6 +1918,45 @@ public final class DownloadStore: EngineDelegate {
             (try? JSONSerialization.data(withJSONObject: dict)) ?? Data(#"{"ok":false}"#.utf8)
         }
         switch (method, path) {
+        case ("POST", "/rules"), ("GET", "/rules"):
+            // `hello` and `rules` ask the same question; `hello` additionally
+            // proves the extension reached us (recorded for Settings).
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+            let browser = BrowserCaptureRules.browserName(
+                userAgent: json["userAgent"] as? String,
+                brands: json["brands"] as? [String] ?? [])
+            if json["hello"] as? Bool == true || json["rules"] as? Bool == true {
+                BrowserCaptureRules.noteSeen(browser: browser,
+                                             version: json["v"] as? String ?? "")
+            }
+            return reply(BrowserCaptureRules.answer(
+                browser: browser,
+                appVersion: MDMProduct.version,
+                integrationOn: browserCaptureEnabled))
+        case ("POST", "/browser/add"):
+            guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+                return reply(["ok": false, "error": "malformed json"])
+            }
+            return reply(mdmBrowserAdd(json))
+        case ("POST", "/extension-seen"):
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+            let browser = (json["browser"] as? String) ?? BrowserCaptureRules.browserName(
+                userAgent: json["userAgent"] as? String,
+                brands: json["brands"] as? [String] ?? [])
+            BrowserCaptureRules.noteSeen(browser: browser,
+                                         version: json["version"] as? String ?? "")
+            return reply(["ok": true, "seen": BrowserCaptureRules.seenSummary()])
+        case ("POST", "/act"):
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+            let act = json["act"] as? String ?? ""
+            let known: Set<String> = ["pause", "resume", "start", "remove", "delete",
+                                      "start_queue", "stop_queue"]
+            guard known.contains(act) else {
+                return reply(["ok": true, "act": ["done": false, "why": "unsupported"]])
+            }
+            let ids = (json["id"] as? String).map { [$0] }
+            performMDMAction(act, ids: ids)
+            return reply(["ok": true, "act": ["done": true]])
         case ("GET", "/recent"):
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
@@ -2005,7 +2106,14 @@ public final class DownloadStore: EngineDelegate {
     }
 
     private func save() {
-        let codable = tasks.map { TaskRecord($0, limit: taskSpeedLimits[$0.id]) }
+        // MDM keeps private-window downloads in the list by default and forgets
+        // them at quit when the user turns that off; the file itself still stays.
+        let defaults = UserDefaults.standard
+        let keepPrivate = defaults.object(forKey: PrefKey.keepPrivate) == nil
+            ? true : defaults.bool(forKey: PrefKey.keepPrivate)
+        let codable = tasks
+            .filter { keepPrivate || !$0.isPrivate }
+            .map { TaskRecord($0, limit: taskSpeedLimits[$0.id]) }
         let d: Data
         do {
             d = try JSONEncoder().encode(codable)
@@ -2100,7 +2208,11 @@ private struct TaskRecord: Codable {
         lastAttemptAt = t.lastAttemptAt
         uploaded = t.progress.uploadedBytes
         error = t.errorDescription; origin = t.origin
-        options = t.options.isEmpty ? nil : t.options
+        // Private-window cookies never reach disk, even when the row is kept.
+        let persistedOptions = t.isPrivate
+            ? t.options.filter { !["cookie", "authorization"].contains($0.key.lowercased()) }
+            : t.options
+        options = persistedOptions.isEmpty ? nil : persistedOptions
         checksum = t.checksum
         mirrors = t.mirrors.isEmpty ? nil : t.mirrors
         pieceHashes = t.pieceHashes.isEmpty ? nil : t.pieceHashes

@@ -148,6 +148,15 @@ public final class HTTPDownloadEngine: DownloadEngine {
         var effectiveHeaders: [String: String]
         var source: URL { sourceOverride ?? task.source }
 
+        /// A form download the browser posted again (MDM's hand-off). Sent as a
+        /// single POST stream: ranges are not meaningful for a form response.
+        var postBody: String? {
+            task.options.first { $0.key.lowercased() == "postdata" }?.value
+        }
+        var postContentType: String? {
+            task.options.first { $0.key.lowercased() == "postcontenttype" }?.value
+        }
+
         /// Terminal outcome of the last transfer, so the failover loop can decide
         /// whether to continue to the next mirror or stop.
         enum Outcome { case completed, failed, paused }
@@ -203,8 +212,13 @@ public final class HTTPDownloadEngine: DownloadEngine {
     /// carrying the proxy dictionary; `DIRECT` hosts use the default session.
     private let proxySessions = OSAllocatedUnfairLock<[String: URLSession]>(initialState: [:])
 
-    private func session(for url: URL) -> URLSession {
-        guard let dict = ProxyRouter.shared.proxyDictionary(for: url) else { return session }
+    private func session(for url: URL, task: DownloadTask? = nil) -> URLSession {
+        // An explicit per-task proxy (the browser's VPN/proxy extension) wins;
+        // an empty dictionary means "direct" and must not fall back to the
+        // system proxy, exactly as the browser request did.
+        let dict = task.flatMap { Self.proxyOverride(for: $0, url: url) }
+            ?? ProxyRouter.shared.proxyDictionary(for: url)
+        guard let dict, !dict.isEmpty else { return session }
         let key = dict.sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }.joined(separator: "&")
         if let existing = proxySessions.withLock({ $0[key] }) { return existing }
@@ -215,6 +229,71 @@ public final class HTTPDownloadEngine: DownloadEngine {
         }
         proxySessions.withLock { $0[key] = s }
         return s
+    }
+
+    /// Remove hand-off control keys before a request is built. Without this a
+    /// `PostData`/`Siphon.Proxy` option would go out as an HTTP header.
+    static func wireHeaders(_ headers: [String: String]) -> [String: String] {
+        headers.filter { key, _ in
+            let k = key.lowercased()
+            return !["dir", "out", "postdata", "postcontenttype"].contains(k)
+                && !k.hasPrefix("siphon.")
+        }
+    }
+
+    /// Size reported by the browser's own download, when it had one.
+    static func expectedSize(_ task: DownloadTask) -> Int64? {
+        guard let raw = task.options.first(where: {
+            $0.key.lowercased() == "siphon.expectedsize" })?.value,
+              let value = Int64(raw), value > 0 else { return nil }
+        return value
+    }
+
+    /// The browser's proxy for this task, when it sent one. `nil` means it sent
+    /// nothing (use the system's); an empty dictionary means DIRECT.
+    static func proxyOverride(for task: DownloadTask, url: URL) -> [String: Any]? {
+        func value(_ name: String) -> String? {
+            task.options.first { $0.key.lowercased() == name.lowercased() }?.value
+        }
+        if let pac = value("Siphon.ProxyPac"), !pac.isEmpty {
+            for directive in PACResolver(script: pac).resolve(url) {
+                switch directive {
+                case let .proxy(host, port), let .http(host, port):
+                    return ["HTTPProxy": host, "HTTPPort": port,
+                            "HTTPSProxy": host, "HTTPSPort": port]
+                case let .https(host, port):
+                    return ["HTTPSProxy": host, "HTTPSPort": port]
+                case let .socks(host, port, _):
+                    return ["SOCKSProxy": host, "SOCKSPort": port, "SOCKSEnable": 1]
+                case .direct:
+                    return [:]
+                }
+            }
+            // A script that errored says nothing; use no proxy rather than
+            // silently taking the system's, which the browser did not use.
+            return [:]
+        }
+        guard let raw = value("Siphon.Proxy")?
+            .trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
+        if ["direct", "system", "auto_detect"].contains(raw.lowercased()) { return [:] }
+        if let parsed = URL(string: raw), let host = parsed.host, let port = parsed.port {
+            switch parsed.scheme?.lowercased() {
+            case "socks", "socks4", "socks5":
+                return ["SOCKSProxy": host, "SOCKSPort": port, "SOCKSEnable": 1]
+            case "https":
+                return ["HTTPSProxy": host, "HTTPSPort": port]
+            default:
+                return ["HTTPProxy": host, "HTTPPort": port,
+                        "HTTPSProxy": host, "HTTPSPort": port]
+            }
+        }
+        let parts = raw.split(separator: ":")
+        if parts.count == 2, let port = Int(parts[1]) {
+            let host = String(parts[0])
+            return ["HTTPProxy": host, "HTTPPort": port,
+                    "HTTPSProxy": host, "HTTPSPort": port]
+        }
+        return [:]
     }
 
     public init() {}
@@ -452,7 +531,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
         // Per-host overrides (AB DM PerHostSettingsManager): merge any custom
         // User-Agent into the headers actually sent for this transfer.
         let perHost = PerHostSettings.shared.rule(for: job.source.host ?? "")
-        var headers = task.options
+        var headers = Self.wireHeaders(task.options)
         if let ua = perHost?.userAgent, !ua.isEmpty {
             headers["User-Agent"] = ua
         }
@@ -460,10 +539,22 @@ public final class HTTPDownloadEngine: DownloadEngine {
         // not receive them; redirects are re-scoped per hop by the session delegate.
         job.effectiveHeaders = CredentialScope.headers(headers, from: task.source, to: job.source)
 
-        // Probe remote size / range support / validators.
-        let info: ProbeInfo
-        do { info = try await probe(url: job.source, headers: job.effectiveHeaders) }
-        catch { dbg("probe failed: \(error)"); return .failed(error) }
+        // Probe remote size / range support / validators. A form the browser posted
+        // again is a single POST: probing with HEAD/Range would not describe it.
+        var info = ProbeInfo()
+        if job.postBody == nil {
+            do { info = try await probe(url: job.source, headers: job.effectiveHeaders,
+                                        task: task) }
+            catch { dbg("probe failed: \(error)"); return .failed(error) }
+        } else if let expected = Self.expectedSize(task), expected > 0 {
+            info.total = expected
+            info.knownTotal = true
+        }
+        // The browser already knew the size: use it when our probe could not.
+        if info.total == 0, let expected = Self.expectedSize(task) {
+            info.total = expected
+            info.knownTotal = true
+        }
         dbg("probe total=\(info.total) canRange=\(info.canRange) etag=\(info.etag ?? "nil")")
 
         // Disk space precheck (FluxDown disk_space.rs): fail with a clear error
@@ -485,12 +576,13 @@ public final class HTTPDownloadEngine: DownloadEngine {
         // changed since the file's mtime — 304 means the local copy is current:
         // finish the task without transferring. A pending sidecar means this is
         // a real resume, so the check is skipped then.
-        if let mtime = try? FileManager.default.attributesOfItem(
+        if job.postBody == nil,
+           let mtime = try? FileManager.default.attributesOfItem(
                 atPath: finalURL.path)[.modificationDate] as? Date,
            Sidecar.load(for: out)?.parts.isEmpty != false {
             var cond = job.effectiveHeaders
             cond["If-Modified-Since"] = Self.httpDate(mtime)
-            if await notModified(url: job.source, headers: cond) {
+            if await notModified(url: job.source, headers: cond, task: task) {
                 dbg("conditional-get: 304, local file is current")
                 let existing = fileSize(finalURL) ?? 0
                 var p = DownloadProgress()
@@ -524,6 +616,13 @@ public final class HTTPDownloadEngine: DownloadEngine {
 
         // --- resume validation: pin the remote file identity ---
         var sidecar = Sidecar.load(for: out)
+        // A form POST has no usable Range: resuming the old cursor would write
+        // the top of the response at the wrong offset. Post it again instead.
+        if job.postBody != nil, sidecar != nil {
+            Sidecar.clear(for: out)
+            try? FileManager.default.removeItem(at: out)
+            sidecar = nil
+        }
         if let sc = sidecar {
             // Sidecar sanity: every recorded cursor must be backed by bytes on
             // disk (preallocated file when the size is known, high-water mark
@@ -663,6 +762,9 @@ public final class HTTPDownloadEngine: DownloadEngine {
         // 主机健康度熔断：反复失败或历史吞吐很差时先降到 1~2 条连接。
         cap = HostHealthStore.shared.suggestedConnections(host: host, requested: cap)
         coordinator.effectiveCap = cap
+        // Without byte ranges a second connection would replay the response from
+        // its start into the tail of the file. One stream only.
+        if !canRange { coordinator.effectiveCap = 1 }
         // Per-host connection cap / speed limit overrides (AB DM per-host model).
         if let ph = perHost {
             coordinator.effectiveCap = max(1, min(coordinator.effectiveCap, ph.maxConnections))
@@ -1066,7 +1168,15 @@ public final class HTTPDownloadEngine: DownloadEngine {
         // `bytes=N-2^62` sentinel end was an invalid header.
         let singleStream = !canRange
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
-        req.httpMethod = "GET"
+        if singleStream, let body = job.postBody {
+            // Form download: replay the browser's POST verbatim.
+            req.httpMethod = "POST"
+            req.httpBody = body.data(using: .utf8)
+            req.setValue(job.postContentType ?? "application/x-www-form-urlencoded",
+                         forHTTPHeaderField: "Content-Type")
+        } else {
+            req.httpMethod = "GET"
+        }
         for (k, v) in headers where !["dir", "out"].contains(k.lowercased()) {
             req.setValue(v, forHTTPHeaderField: k)
         }
@@ -1077,7 +1187,8 @@ public final class HTTPDownloadEngine: DownloadEngine {
                 req.setValue("bytes=\(part.cursor)-\(part.end)", forHTTPHeaderField: "Range")
             }
         }
-        let (source, response) = try await ChunkedSource.connect(request: req, baseSession: session(for: url))
+        let (source, response) = try await ChunkedSource.connect(
+            request: req, baseSession: session(for: url, task: job.task))
         defer { source.invalidate() }
         dbg("stream \(part.cursor)-\(part.end): status \((response as? HTTPURLResponse)?.statusCode ?? -1)")
 
@@ -1310,7 +1421,8 @@ public final class HTTPDownloadEngine: DownloadEngine {
         var knownTotal = false
     }
 
-    private func probe(url: URL, headers: [String: String]) async throws -> ProbeInfo {
+    private func probe(url: URL, headers: [String: String],
+                       task: DownloadTask? = nil) async throws -> ProbeInfo {
         var result = ProbeInfo()
         // HEAD 与 Range-GET 都被拒时，现在的行为是「空探测 → 单路 GET 再试」，
         // 这对「既不回 Content-Length 又不支持 Range」的服务器是对的；但 TCP
@@ -1325,7 +1437,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
             head.setValue(v, forHTTPHeaderField: k)
         }
         do {
-            let (_, resp) = try await session(for: url).data(for: head)
+            let (_, resp) = try await session(for: url, task: task).data(for: head)
             gotHTTPResponse = true
             if let http = resp as? HTTPURLResponse,
                (200...299).contains(http.statusCode) {
@@ -1343,7 +1455,7 @@ public final class HTTPDownloadEngine: DownloadEngine {
         r2.httpMethod = "GET"
         r2.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         do {
-            let (_, resp) = try await session(for: url).bytes(for: r2)
+            let (_, resp) = try await session(for: url, task: task).bytes(for: r2)
             gotHTTPResponse = true
             if let http = resp as? HTTPURLResponse {
                 if http.statusCode == 206 {
@@ -1378,13 +1490,14 @@ public final class HTTPDownloadEngine: DownloadEngine {
     /// Conditional-request probe (aria2 --conditional-get): HEAD with
     /// If-Modified-Since; true only on an explicit 304. Any failure or 200
     /// means "download normally".
-    private func notModified(url: URL, headers: [String: String]) async -> Bool {
+    private func notModified(url: URL, headers: [String: String],
+                             task: DownloadTask? = nil) async -> Bool {
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         req.httpMethod = "HEAD"
         for (k, v) in headers where !["dir", "out"].contains(k.lowercased()) {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        guard let (_, resp) = try? await session(for: url).data(for: req),
+        guard let (_, resp) = try? await session(for: url, task: task).data(for: req),
               let http = resp as? HTTPURLResponse else { return false }
         return http.statusCode == 304
     }

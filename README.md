@@ -50,7 +50,15 @@
 | 统一 Command / ListAnswer / RecentAnswer 契约 | `MDM/ProductContract.swift` + `MDM/StoreMDMBridge.swift` |
 | 远程/popup 答案不含本地路径 | `GET /recent`（Bearer）+ `MDMRecentAnswer` 结构化保证 |
 | 角色化色板 + 10 套主题（覆盖全部界面与对话框）+ 100–200% 界面缩放 + i18n 通道 | `MDM/ThemeSystem.swift`、`MDM/I18n.swift`、`tools/i18n/extract.py` |
-| 扩展 popup 三页 Downloads / This page / Settings | `Resources/BrowserExtension/popup.*`（v0.5.0）；只有 App 接受任务后才取消浏览器下载 |
+| 扩展 popup 三页 Downloads / This page / Settings | `Resources/BrowserExtension/popup.*`（v0.5.0）：Downloads 搜索与状态筛选、暂停/继续/移除/清空已完成；This page 的 HLS/DASH/音视频清单、img/srcset 图片收集与宽高筛选、站点放行；Settings 的接管开关、代理显示、发送通道与「打开 Siphon 设置」（`siphon://options`）；只有 App 接受任务后才取消浏览器下载 |
+| 扩展连接握手 hello / rules | `BrowserCaptureRules` + `POST /rules`：把文件类型、排除站点、排除地址、最小体积、种子开关、按浏览器接管开关下发给扩展，改完即生效（无需重启浏览器） |
+| 原生网关自愈与连接状态 | 每次启动为已安装的 Chrome / Edge / Brave / Opera / Vivaldi / Chromium / Firefox / Zen / LibreWolf / Waterfox 补齐或修复清单（`repairIfNeeded`），`/extension-seen` 记录各浏览器与扩展版本，设置页可直接查看 |
+| 浏览器交接字段 | `cookies`/`cookieJar`、`referrer`/`pageUrl`、`userAgent`、`filename`（`nameGuessed` 时不覆盖服务端文件名）、`finalUrl` 一次性回退、`size`/`mime`、表单 `post`/`postType` 单流重发、按任务代理/PAC、私有窗口标记（Cookie 永不落盘） |
+| 扩展右键与批量 | 链接 / 图片 / 媒体 / 选区 / 本页 / 本页全部链接 / 本页全部图片；批量 4 路并发并带 `linksPart`；Option/Alt 点击与右键「用浏览器下载」保留给浏览器 |
+| 视频浮钮 | `page.js` 在每个 `<video>` 上覆盖「发送到 Siphon」，跟随滚动与全屏容器，发送中/已发送/失败三态；优先发送嗅探到的 HLS/DASH，无流时回退视频直链；检测到 EME 加密时标注「受 DRM 保护」并禁用 |
+| 页面早期拦截 | 已知文件扩展名的链接在点击时先问 Siphon：接受则不产生浏览器请求，一次性签名链接不会被烧掉；拒绝或失败则自动恢复浏览器导航，并先登记 browser-pass 避免二次交接 |
+| 扩展捕获判定 | 按 App 的 `rules` 判断类型、站点、地址、最小体积、种子与 `opened`；自动捕获先暂停浏览器副本，App 接受后才取消，失败则恢复 |
+| 扩展 51 个 locale | `Resources/BrowserExtension/_locales/`（v0.5.0）：51 个 Chrome WebExtension `_locales` 语言目录，简繁英人工文案、其余回退英文；生成器 `tools/i18n/extension_locales.py` |
 
 **边界**：MDM 的 87 种语言目录结构与 RTL 已迁入；仍未移植的是 gallery-dl 图库对话框、Safari 扩展包装（需 Apple 开发者账号）、签名/公证凭据与官网/基准营销站。这些属于 MDM 生态层，不影响本机的下载核心。
 
@@ -402,6 +410,8 @@ curl http://127.0.0.1:17801/ping   # 免鉴权；只返回 {"ok":true,"app":"Sip
 aria2 会话持久化：启动即带 `--save-session`（每 30 秒落盘），退出时 SIGTERM 优雅停止并同步写盘；重启后以 `--input-file` + `--deferred-input` 重载，Siphon 按源 URL / 磁力 BTIH 把 aria2 内的既有下载重新认领到任务上，配对的旧任务恢复为暂停态，未配对的留在 aria2 里静默暂停。
 
 `Resources/BrowserExtension/` 提供可直接「加载已解压的扩展程序」的 Manifest V3 示例。扩展优先走 Native Messaging 网关，令牌由网关从上述 `0600` 文件带外读取；HTTP 回退需在 popup 的「设置」页手动粘贴一次令牌。`/ping` 只做存活探测，任何情况下都不下发令牌。仅绑定回环地址，不监听公网。「自动捕获复制的下载链接」与「启用本地控制接口」两个开关的状态会持久化，重启后自动恢复。
+
+网关同时接受 MDM 的扁平消息（无 `type`）：`hello` / `rules` → `POST /rules`，`recent` → `GET /recent`，`downloadAct` → `POST /act`，下载交接 → `POST /browser/add`（`referrer`、`cookies`/`cookieJar`、`userAgent`、`filename`、`finalUrl`、`size`、`mime`、`post`、`private`、`proxy` 等字段原样转发，App 侧按能力取用）。旧版 `{type:"add"|"ping"|"recent"}` 继续可用。
 
 ### 8.1 各协议公开自测链接
 
