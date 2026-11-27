@@ -11,6 +11,7 @@ import SwiftUI
 /// built-in selection (`selection` becomes nil) so only one row highlights.
 struct MDMCategoryTreeView: View {
     @Environment(DownloadStore.self) private var store
+    @EnvironmentObject private var theme: MDMThemeStore
     @Binding var selection: MDMCategory?
     @Binding var selectedQueue: String?
 
@@ -77,6 +78,8 @@ struct MDMCategoryTreeView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(theme.color(.listBackground))
         .frame(width: 143)
         .font(.system(size: 12))
     }

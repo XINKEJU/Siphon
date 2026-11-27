@@ -42,7 +42,8 @@
 |---|---|
 | `Queued / Downloading / Stopped / Complete / Error` 五态 | `Sources/Siphon/MDM/ProductStatus.swift` 的 `MDMStatus`，映射原有 `DownloadState`，旧 `tasks.json` 不需迁移 |
 | All Downloads / Unfinished / Finished / Queues 分类树 + 内置文件类型 | `MDMCategoryTreeView`，宽度固定 143pt |
-| 14 槽列表（File Name / Q / Size / Status / Time left / Transfer rate / …） | `TaskListView` 当前 10 列 `Table`（SwiftUI `TableColumnBuilder` 上限），Peers / 分享率 / 保存路径折叠进 Details 列；真 14 列在阶段 1.1 用 AppKit 表格实装 |
+| 14 槽列表（File Name / Q / Size / Status / Time left / Transfer rate / …） | `TaskTableRepresentable` 用 AppKit `NSTableView` 实装 14 列：可拖宽、可重排、可显隐、点表头排序、每列独立过滤，列宽/顺序/过滤条件持久化 |
+| 工具栏 11 项 | Add URL / Add Torrent / Resume / Stop / Stop All / Delete / Delete Completed / Options / Scheduler / Start Queue / Stop Queue，全部直达，无「更多」折叠菜单 |
 | Tasks / File / Downloads / View / Help 菜单 | `SiphonApp.swift` 的 `SiphonCommands`，每个工具栏动作都有菜单入口 |
 | 独立进度窗口：Status / Limiter / Completion 三 tab、分段位图、连接表 | `Views/MDM/MDMProgressPanel.swift` |
 | Options 12 页两行标签 | `Views/MDM/MDMOptionsView.swift`，内容复用真实设置面板 |
@@ -51,7 +52,7 @@
 | 角色化色板 + 主题 + 100–200% 界面缩放 + i18n 通道 | `MDM/ThemeSystem.swift`、`MDM/I18n.swift`、`tools/i18n/extract.py` |
 | 扩展 popup 三页 Downloads / This page / Settings | `Resources/BrowserExtension/popup.*`（v0.5.0）；只有 App 接受任务后才取消浏览器下载 |
 
-**边界**：MDM 的 87 种语言仅迁移了中英两套目录结构；torrent 详情/做种面板、debrid、Click'n'Load、图库抓取、基准营销站尚未移植。这些属于 MDM 生态层，不影响本机的下载核心。
+**边界**：MDM 的 87 种语言目录结构与 RTL 已迁入；仍未移植的是 gallery-dl 图库对话框、Safari 扩展包装（需 Apple 开发者账号）、签名/公证凭据与官网/基准营销站。这些属于 MDM 生态层，不影响本机的下载核心。
 
 ---
 

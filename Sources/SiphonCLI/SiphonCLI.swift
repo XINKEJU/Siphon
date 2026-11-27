@@ -20,16 +20,24 @@ struct SiphonCLI {
                 try await add(Array(args.dropFirst()))
             case "list":
                 try await list(Array(args.dropFirst()))
-            case "pause":
-                try await action("pause", Array(args.dropFirst()))
-            case "resume":
-                try await action("resume", Array(args.dropFirst()))
+            case "pause", "resume":
+                try await action(command, Array(args.dropFirst()))
+            case "pause-all":
+                try await simple("pause-all")
+            case "resume-all":
+                try await simple("resume-all")
+            case "remove-completed":
+                try await simple("remove-completed")
+            case "queues":
+                try await printJSON("/queues")
+            case "config":
+                try await printJSON("/config")
             case "remove", "delete":
                 try await action(command, Array(args.dropFirst()))
             case "start-queue":
-                try await queue("start_queue")
+                try await queue("start_queue", Array(args.dropFirst()))
             case "stop-queue":
-                try await queue("stop_queue")
+                try await queue("stop_queue", Array(args.dropFirst()))
             case "schema":
                 try await schema()
             case "--version", "-v":
@@ -65,10 +73,15 @@ struct SiphonCLI {
           list [--state <state>] [--queue <q>] [--category <cat>] [--query <text>] [--json]
           pause <id>
           resume <id>
+          pause-all
+          resume-all
           remove <id>
           delete <id>
+          remove-completed
           start-queue
           stop-queue
+          queues
+          config
           schema
           --version
 
@@ -149,8 +162,23 @@ struct SiphonCLI {
         print("ok")
     }
 
-    static func queue(_ action: String) async throws {
-        _ = try await post("/queue", ["action": action])
+    /// A POST that needs no arguments (pause-all, remove-completed, …).
+    static func simple(_ path: String) async throws {
+        _ = try await post("/\(path)", [:])
+        print("ok")
+    }
+
+    static func printJSON(_ path: String) async throws {
+        let result = try await get(path)
+        let data = try JSONSerialization.data(withJSONObject: result,
+                                              options: [.prettyPrinted, .sortedKeys])
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    }
+
+    static func queue(_ action: String, _ args: [String]) async throws {
+        var payload: [String: Any] = ["action": action]
+        if let name = args.first, !name.isEmpty { payload["name"] = name }
+        _ = try await post("/queue", payload)
         print("ok")
     }
 

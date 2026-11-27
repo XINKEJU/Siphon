@@ -714,6 +714,13 @@ public final class DownloadStore: EngineDelegate {
     }
 
     public func add(_ task: DownloadTask) {
+        // MDM compatibility default: plain transfers identify as the system's
+        // default browser unless the caller (extension / API / per-host rule)
+        // supplied an explicit User-Agent.
+        var task = task
+        if !task.options.keys.contains(where: { $0.lowercased() == "user-agent" }) {
+            task.options["User-Agent"] = BrowserUserAgent.current
+        }
         // The same URL already in flight (pending/active/paused) in the same
         // folder: focus it instead of starting a duplicate connection set.
         let inFlight: Set<DownloadState> = [.pending, .active, .paused]
@@ -952,6 +959,23 @@ public final class DownloadStore: EngineDelegate {
     public func resumeAll() {
         for t in tasks where t.state == .paused || t.state == .error {
             resume(t.id)
+        }
+    }
+
+    /// MDM's "Start queue": resume every stopped / failed task in a queue.
+    /// Passing nil targets every queue.
+    public func startQueue(_ name: String?) {
+        for t in tasks where t.state == .paused || t.state == .error {
+            if let name, t.queueName != name { continue }
+            resume(t.id)
+        }
+    }
+
+    /// MDM's "Stop queue": pause everything still waiting or running in a queue.
+    public func stopQueue(_ name: String?) {
+        for t in tasks where t.state == .active || t.state == .pending {
+            if let name, t.queueName != name { continue }
+            pause(t.id)
         }
     }
 
@@ -1800,6 +1824,15 @@ public final class DownloadStore: EngineDelegate {
                                "priority": q.priority, "speedLimit": q.speedLimit,
                                "startHour": q.startHour ?? -1, "endHour": q.endHour ?? -1]
                           }])
+        case ("POST", "/queue"):
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+            let name = (json["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            switch json["action"] as? String {
+            case "start_queue": startQueue(name)
+            case "stop_queue": stopQueue(name)
+            default: return reply(["ok": false, "error": "unknown queue action"])
+            }
+            return reply(["ok": true])
         case ("GET", "/config"):
             return reply(configPayload())
         case ("POST", "/config"):

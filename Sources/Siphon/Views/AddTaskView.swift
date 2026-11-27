@@ -6,6 +6,7 @@ import AppKit
 /// rows, explicit destination picker, prominent default action.
 struct AddTaskView: View {
     @Environment(DownloadStore.self) private var store
+    @EnvironmentObject private var theme: MDMThemeStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var urlString = ""
@@ -142,6 +143,8 @@ struct AddTaskView: View {
             .padding(16)
         }
         .frame(width: 560)
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
     }
 
     private var isValid: Bool {

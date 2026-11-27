@@ -83,6 +83,10 @@ private struct TaskTableLayout: Codable {
     var order: [String] = TaskTableColumn.allCases.map(\.rawValue)
     var widths: [String: Double] = [:]
     var hidden: [String] = []
+    /// Per-column filters: column rawValue → substring. MDM keeps one filter
+    /// per column instead of a single global search field. Optional so layout
+    /// files written before this field existed still decode.
+    var filters: [String: String]?
     var sortColumn: String? = TaskTableColumn.added.rawValue
     var sortAscending = false
 }
@@ -91,7 +95,8 @@ private struct TaskTableLayout: Codable {
 /// with the native sort indicator. Right-click opens the column visibility menu.
 @MainActor
 private final class TaskTableHeaderView: NSTableHeaderView {
-    var visibilityMenu: (@MainActor () -> NSMenu)?
+    /// Called with the clicked column index (-1 for the empty area).
+    var visibilityMenu: (@MainActor (Int) -> NSMenu)?
 
     private var titleHeight: CGFloat = 22
 
@@ -116,7 +121,8 @@ private final class TaskTableHeaderView: NSTableHeaderView {
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        guard let menu = visibilityMenu?() else {
+        let index = column(at: convert(event.locationInWindow, from: nil))
+        guard let menu = visibilityMenu?(index) else {
             super.rightMouseDown(with: event)
             return
         }
@@ -241,6 +247,7 @@ extension TaskTableRepresentable {
         private var layoutState = Coordinator.loadLayout()
         private var sortColumn: TaskTableColumn = .added
         private var sortAscending = false
+        private var filters: [String: String] = [:]
         private var isConfiguring = false
         private var isSynchronizingSelection = false
 
@@ -259,6 +266,7 @@ extension TaskTableRepresentable {
                 sortColumn = saved
             }
             sortAscending = layoutState.sortAscending
+            filters = layoutState.filters ?? [:]
 
             let table = TaskNativeTableView(frame: .zero)
             table.delegate = self
@@ -307,8 +315,8 @@ extension TaskTableRepresentable {
             scroll.drawsBackground = true
             self.scrollView = scroll
 
-            header.visibilityMenu = { [weak self] in
-                self?.makeVisibilityMenu() ?? NSMenu()
+            header.visibilityMenu = { [weak self] index in
+                self?.makeHeaderMenu(clickedColumn: index) ?? NSMenu()
             }
             table.contextMenuForRow = { [weak self] row in
                 self?.contextMenu(at: row)
@@ -399,6 +407,7 @@ extension TaskTableRepresentable {
             }
             layoutState.sortColumn = sortColumn.rawValue
             layoutState.sortAscending = sortAscending
+            layoutState.filters = filters
             if let data = try? JSONEncoder().encode(layoutState) {
                 UserDefaults.standard.set(data, forKey: Self.layoutDefaultsKey)
             }
@@ -412,11 +421,31 @@ extension TaskTableRepresentable {
             }
         }
 
-        private func makeVisibilityMenu() -> NSMenu {
+        private func makeHeaderMenu(clickedColumn: Int) -> NSMenu {
             let menu = NSMenu()
             guard let tableView else { return menu }
+
+            if clickedColumn >= 0, tableView.tableColumns.indices.contains(clickedColumn),
+               let kind = TaskTableColumn(rawValue: tableView.tableColumns[clickedColumn].identifier.rawValue) {
+                let filterItem = TaskActionMenuItem(title: "过滤「\(kind.title)」…") { [weak self] in
+                    self?.promptFilter(kind)
+                }
+                menu.addItem(filterItem)
+                if filters[kind.rawValue] != nil {
+                    let clearItem = TaskActionMenuItem(title: "清除该列过滤") { [weak self] in
+                        guard let self else { return }
+                        self.filters.removeValue(forKey: kind.rawValue)
+                        self.saveLayout()
+                        self.refreshRows()
+                    }
+                    menu.addItem(clearItem)
+                }
+                menu.addItem(.separator())
+            }
+
             for column in tableView.tableColumns {
-                let item = TaskActionMenuItem(title: column.title) { [weak self, weak column] in
+                guard let kind = TaskTableColumn(rawValue: column.identifier.rawValue) else { continue }
+                let item = TaskActionMenuItem(title: kind.title) { [weak self, weak column] in
                     guard let self, let column else { return }
                     column.isHidden.toggle()
                     self.saveLayout()
@@ -426,13 +455,20 @@ extension TaskTableRepresentable {
                 item.state = column.isHidden ? .off : .on
                 menu.addItem(item)
             }
+
+            if !filters.isEmpty {
+                menu.addItem(.separator())
+                menu.addItem(TaskActionMenuItem(title: "清除所有过滤器") { [weak self] in
+                    self?.clearFilters()
+                })
+            }
             return menu
         }
 
         private func refreshRows() {
             guard let tableView else { return }
             let previousIDs = rows.map(\.id)
-            rows = tasks
+            rows = tasks.filter { matchesFilters($0) }
             rows.sort { lhs, rhs in
                 let result = compare(lhs, rhs, column: sortColumn)
                 if result == .orderedSame {
@@ -447,7 +483,51 @@ extension TaskTableRepresentable {
                                      columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns))
             }
             restoreSelection()
+            syncFilterBadges()
+        }
+
+        private func matchesFilters(_ task: DownloadTask) -> Bool {
+            for (key, needle) in filters where !needle.isEmpty {
+                guard let column = TaskTableColumn(rawValue: key) else { continue }
+                if !text(for: task, column: column)
+                    .localizedCaseInsensitiveContains(needle) { return false }
+            }
+            return true
+        }
+
+        private func syncFilterBadges() {
+            guard let tableView else { return }
+            for column in tableView.tableColumns {
+                guard let kind = TaskTableColumn(rawValue: column.identifier.rawValue) else { continue }
+                column.title = filters[kind.rawValue].map { _ in kind.title + " ▾" } ?? kind.title
+            }
             headerView?.sync(columns: tableView.tableColumns, theme: theme)
+        }
+
+        private func promptFilter(_ column: TaskTableColumn) {
+            let alert = NSAlert()
+            alert.messageText = "过滤「\(column.title)」"
+            alert.informativeText = "只显示该列包含此文本的任务。留空则清除该列过滤。"
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+            field.stringValue = filters[column.rawValue] ?? ""
+            alert.accessoryView = field
+            alert.addButton(withTitle: "应用")
+            alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let value = field.stringValue.trimmingCharacters(in: .whitespaces)
+            if value.isEmpty {
+                filters.removeValue(forKey: column.rawValue)
+            } else {
+                filters[column.rawValue] = value
+            }
+            saveLayout()
+            refreshRows()
+        }
+
+        private func clearFilters() {
+            filters.removeAll()
+            saveLayout()
+            refreshRows()
         }
 
         private func restoreSelection() {

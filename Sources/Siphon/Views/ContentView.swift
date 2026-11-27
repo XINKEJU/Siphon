@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// MDM/IDM window layout: menu bar (in `SiphonCommands`), a 143pt category
 /// tree, the 14-column download list, a status strip, and an optional preview
@@ -15,8 +16,8 @@ struct ContentView: View {
     @State private var category: MDMCategory? = .all
     @State private var selectedQueue: String?
     @State private var searchText = ""
-    @State private var showingDetail = false
     @State private var showingAddURL = false
+    @State private var showingTorrentImporter = false
     @State private var showingLinkGrabber = false
     @State private var showingFind = false
     @State private var showingScheduler = false
@@ -25,6 +26,17 @@ struct ContentView: View {
     @State private var showingVerify = false
     @State private var network = NetworkMonitor.shared
     @ObservedObject private var theme = MDMThemeStore.shared
+
+    private var torrentContentTypes: [UTType] {
+        ["torrent", "metalink", "meta4"].compactMap { UTType(filenameExtension: $0) }
+    }
+
+    private func handleTorrentImport(_ result: Result<[URL], Error>) {
+        guard case let .success(urls) = result else { return }
+        let accessible = urls.filter { $0.startAccessingSecurityScopedResource() }
+        defer { accessible.forEach { $0.stopAccessingSecurityScopedResource() } }
+        store.addDropped(urls)
+    }
 
     var body: some View {
         // HSplitView lays out at its subviews' ideal height (~135pt) and
@@ -39,29 +51,38 @@ struct ContentView: View {
         .background(theme.color(.listBackground))
         .searchable(text: $searchText, prompt: MDMI18n.t("dialog.find"))
         .toolbar { toolbarContent }
-        .sheet(isPresented: $showingAdd) { AddTaskView() }
-        .sheet(isPresented: $showingAddURL) { MDMAddURLDialog(isPresented: $showingAddURL) }
-        .sheet(isPresented: $showingLinkGrabber) { MDMLinkGrabberDialog(isPresented: $showingLinkGrabber) }
+        .sheet(isPresented: $showingAdd) { AddTaskView().environmentObject(theme) }
+        .sheet(isPresented: $showingAddURL) {
+            MDMAddURLDialog(isPresented: $showingAddURL).environmentObject(theme)
+        }
+        .sheet(isPresented: $showingLinkGrabber) {
+            MDMLinkGrabberDialog(isPresented: $showingLinkGrabber).environmentObject(theme)
+        }
         .sheet(isPresented: $showingFind) {
             MDMFindDialog(isPresented: $showingFind, query: $searchText) {
                 findNext()
             }
+            .environmentObject(theme)
         }
-        .sheet(isPresented: $showingScheduler) { MDMSchedulerDialog(isPresented: $showingScheduler) }
-        .sheet(isPresented: $showingOptions) { MDMOptionsView(isPresented: $showingOptions) }
+        .sheet(isPresented: $showingScheduler) {
+            MDMSchedulerDialog(isPresented: $showingScheduler).environmentObject(theme)
+        }
+        .sheet(isPresented: $showingOptions) {
+            MDMOptionsView(isPresented: $showingOptions).environmentObject(theme)
+        }
         .sheet(isPresented: $showingProperties) {
             if let task = selectedTask {
                 MDMPropertiesDialog(task: task, isPresented: $showingProperties)
+                    .environmentObject(theme)
             }
         }
-        .sheet(isPresented: $showingVerify) { MDMVerifyChecksumDialog(isPresented: $showingVerify) }
-        .sheet(isPresented: $showingDetail) {
-            if let task = selectedTask {
-                TaskDetailView(task: task)
-                    .frame(minWidth: 400, minHeight: 500)
-                    .padding()
-            }
+        .sheet(isPresented: $showingVerify) {
+            MDMVerifyChecksumDialog(isPresented: $showingVerify).environmentObject(theme)
         }
+        .fileImporter(isPresented: $showingTorrentImporter,
+                      allowedContentTypes: torrentContentTypes,
+                      allowsMultipleSelection: true,
+                      onCompletion: handleTorrentImport)
         .task {
             await store.start()
             store.handleNetworkChange(NetworkMonitor.shared.status)
@@ -79,9 +100,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .mdmOpenScheduler)) { _ in showingScheduler = true }
         .onReceive(NotificationCenter.default.publisher(for: .mdmOpenProperties)) { _ in showingProperties = true }
         .onReceive(NotificationCenter.default.publisher(for: .mdmOpenVerify)) { _ in showingVerify = true }
-        .onChange(of: showingInspector) { _, visible in
-            if visible { showingDetail = false }
-        }
+        .onReceive(NotificationCenter.default.publisher(for: .mdmOpenAddTorrent)) { _ in showingTorrentImporter = true }
         .alert("无法添加任务", isPresented: Binding(
             get: { store.lastError != nil },
             set: { if !$0 { store.lastError = nil } }
@@ -138,7 +157,9 @@ struct ContentView: View {
                      selectedQueue: selectedQueue,
                      onSelect: { task in
                         store.selectedTaskID = task.id
-                        if !showingInspector { showingDetail = true }
+                        // MDM: double-clicking a row opens that task's own
+                        // progress window (one window per download).
+                        MDMProgressPanelController.shared.show(taskID: task.id, store: store)
                      })
     }
 
@@ -262,71 +283,110 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // MDM's eleven toolbar actions, all direct (no "more" menu). Every one
+        // is also reachable from the menu bar; these are the fast paths.
+        toolbarAddActions
+        toolbarRunActions
+        if #available(macOS 26.0, *) {
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+        }
+        toolbarQueueActions
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarAddActions: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
                 showingAddURL = true
             } label: {
-                Label(MDMI18n.t("menu.addURL"), systemImage: "plus")
+                Label(MDMI18n.t("menu.addURL"), systemImage: "link.badge.plus")
             }
-            .help("添加文件直链 (⌘N)")
+            .help("添加 URL (⌘N)")
 
             Button {
-                showingLinkGrabber = true
+                showingTorrentImporter = true
             } label: {
-                Label(MDMI18n.t("menu.linkGrabber"), systemImage: "link.badge.plus")
+                Label("添加种子", systemImage: "arrow.down.doc")
             }
+            .help("添加 .torrent / .metalink 文件")
 
-            Menu {
-                Button(MDMI18n.t("menu.batch")) { showingAdd = true }
-                Button(MDMI18n.t("menu.downloadLater")) { showingAddURL = true }
-                Button(MDMI18n.t("menu.scheduler")) { showingScheduler = true }
-                Divider()
-                Button(MDMI18n.t("menu.find")) { showingFind = true }
-                Button(MDMI18n.t("menu.properties")) { showingProperties = true }
-                    .disabled(selectedTask == nil)
-                Button(MDMI18n.t("menu.verifyChecksum")) { showingVerify = true }
-                Divider()
-                Button(MDMI18n.t("menu.options")) { showingOptions = true }
-            } label: {
-                Label("更多", systemImage: "ellipsis.circle")
-            }
-        }
-
-        ToolbarItemGroup(placement: .primaryAction) {
             Button {
-                store.resumeAll()
+                store.resumeTasks(store.selectedTaskIDs)
             } label: {
-                Label(MDMI18n.t("menu.resumeAll"), systemImage: "play.fill")
+                Label("继续", systemImage: "play.fill")
             }
-            .buttonStyle(.bordered)
-            .tint(.green)
-            .disabled(!store.tasks.contains { $0.state == .paused || $0.state == .error })
+            .help("继续所选任务")
+            .disabled(!store.selectedTasks.contains { $0.state == .paused || $0.state == .error })
+
+            Button {
+                store.pauseTasks(store.selectedTaskIDs)
+            } label: {
+                Label("停止", systemImage: "pause.fill")
+            }
+            .help("停止所选任务")
+            .disabled(!store.selectedTasks.contains { $0.state == .active || $0.state == .pending })
 
             Button {
                 store.pauseAll()
             } label: {
-                Label(MDMI18n.t("menu.pauseAll"), systemImage: "pause.fill")
+                Label("全部停止", systemImage: "stop.fill")
             }
-            .buttonStyle(.bordered)
-            .tint(.orange)
-            .disabled(!store.tasks.contains { $0.state == .active })
+            .help("停止全部任务")
+            .disabled(!store.tasks.contains { $0.state == .active || $0.state == .pending })
         }
+    }
 
-        if #available(macOS 26.0, *) {
-            ToolbarSpacer(.fixed, placement: .primaryAction)
-        }
-
-        ToolbarItem(placement: .primaryAction) {
+    @ToolbarContentBuilder
+    private var toolbarRunActions: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
             Button {
-                if let task = selectedTask {
-                    MDMProgressPanelController.shared.show(taskID: task.id, store: store)
-                } else {
-                    showingAddURL = true
-                }
+                store.pendingDeleteIDs = store.selectedTaskIDs
             } label: {
-                Label("进度", systemImage: "chart.xyaxis.line")
+                Label("删除", systemImage: "trash")
             }
-            .help("打开所选任务的进度窗口")
+            .help("删除所选任务")
+            .disabled(store.selectedTaskIDs.isEmpty)
+
+            Button {
+                store.removeCompleted()
+            } label: {
+                Label("删除已完成", systemImage: "trash.slash")
+            }
+            .help("从列表移除已完成的任务")
+            .disabled(!store.tasks.contains { $0.state == .completed })
+
+            Button {
+                showingOptions = true
+            } label: {
+                Label(MDMI18n.t("menu.options"), systemImage: "gearshape")
+            }
+            .help("选项 (⌘,)")
+
+            Button {
+                showingScheduler = true
+            } label: {
+                Label(MDMI18n.t("menu.scheduler"), systemImage: "clock.arrow.circlepath")
+            }
+            .help("计划任务")
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarQueueActions: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                store.startQueue(selectedQueue)
+            } label: {
+                Label("启动队列", systemImage: "play.circle")
+            }
+            .help(selectedQueue.map { "启动队列「\($0)」" } ?? "启动全部队列")
+
+            Button {
+                store.stopQueue(selectedQueue)
+            } label: {
+                Label("停止队列", systemImage: "pause.circle")
+            }
+            .help(selectedQueue.map { "停止队列「\($0)」" } ?? "停止全部队列")
         }
     }
 

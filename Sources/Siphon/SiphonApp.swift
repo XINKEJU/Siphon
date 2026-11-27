@@ -53,6 +53,7 @@ struct SiphonApp: App {
 
 extension Notification.Name {
     static let mdmOpenAddURL = Notification.Name("mdm.openAddURL")
+    static let mdmOpenAddTorrent = Notification.Name("mdm.openAddTorrent")
     static let mdmOpenLinkGrabber = Notification.Name("mdm.openLinkGrabber")
     static let mdmOpenOptions = Notification.Name("mdm.openOptions")
     static let mdmOpenFind = Notification.Name("mdm.openFind")
@@ -78,6 +79,11 @@ struct SiphonCommands: Commands {
                 NotificationCenter.default.post(name: .mdmOpenAddURL, object: nil)
             }
             .keyboardShortcut("n", modifiers: .command)
+
+            Button("添加种子…") {
+                NotificationCenter.default.post(name: .mdmOpenAddTorrent, object: nil)
+            }
+            .keyboardShortcut("o", modifiers: .command)
 
             Button(MDMI18n.t("menu.downloadLater")) {
                 NotificationCenter.default.post(name: .mdmOpenAddURL, object: nil)
@@ -164,6 +170,15 @@ struct SiphonCommands: Commands {
 
             Button(MDMI18n.t("menu.resumeAll")) { store.resumeAll() }
             Button(MDMI18n.t("menu.pauseAll")) { store.pauseAll() }
+
+            Divider()
+
+            Button("启动队列") { store.startQueue(nil) }
+                .keyboardShortcut("q", modifiers: [.command, .shift])
+            Button("停止队列") { store.stopQueue(nil) }
+                .keyboardShortcut("q", modifiers: [.command, .option])
+            Button("删除已完成") { store.removeCompleted() }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
         }
 
         CommandMenu(MDMI18n.t("menu.view")) {

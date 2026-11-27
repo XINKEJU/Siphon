@@ -8,7 +8,7 @@ import CryptoKit
 /// DASH) never see the finished bytes, so `DownloadStore` runs this verifier
 /// once on the completed file instead. Specs accept `"algorithm:hex"` or bare
 /// hex (defaults to SHA-256), matching `DownloadTask.checksum`.
-/// Supported algorithms: md5, sha1, sha256, sha384, sha512.
+/// Supported algorithms: crc32, md5, sha1, sha256, sha384, sha512.
 public enum ChecksumVerifier {
     /// Normalize a user-supplied spec into `(algorithm, lowercase hex)`.
     public static func normalize(_ spec: String) throws -> (algorithm: String, hex: String) {
@@ -24,6 +24,7 @@ public enum ChecksumVerifier {
         }
         let algo: String
         switch rawAlgo {
+        case "crc32", "crc-32": algo = "crc32"
         case "md5": algo = "md5"
         case "sha1", "sha-1": algo = "sha1"
         case "sha256", "sha-256": algo = "sha256"
@@ -40,6 +41,18 @@ public enum ChecksumVerifier {
     /// Stream the file in 1 MiB chunks so memory stays flat for multi-GB files.
     public static func verify(fileAt url: URL, spec: String) throws -> Bool {
         let (algo, expected) = try normalize(spec)
+        if algo == "crc32" {
+            var crc: UInt32 = 0xFFFF_FFFF
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            while true {
+                let chunk = try handle.read(upToCount: 1 << 20) ?? Data()
+                if chunk.isEmpty { break }
+                crc = Self.crc32(chunk, seed: crc)
+            }
+            let actual = String(format: "%08x", crc ^ 0xFFFF_FFFF)
+            return actual == expected
+        }
         var hasher: any HashFunction
         switch algo {
         case "md5": hasher = Insecure.MD5()
@@ -59,12 +72,33 @@ public enum ChecksumVerifier {
         return actual.lowercased() == expected
     }
 
+    // MARK: - CRC32 (IEEE 802.3, the ZIP / HTTP Digest variant)
+
+    private static let crcTable: [UInt32] = (0..<256).map { i -> UInt32 in
+        var c = UInt32(i)
+        for _ in 0..<8 {
+            c = (c & 1) != 0 ? (0xEDB8_8320 ^ (c >> 1)) : (c >> 1)
+        }
+        return c
+    }
+
+    private static func crc32(_ data: Data, seed: UInt32) -> UInt32 {
+        var crc = seed
+        for byte in data {
+            crc = crcTable[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
+        }
+        return crc
+    }
+
     /// aria2's `--checksum=TYPE:DIGEST` syntax. Returns nil when the spec uses
     /// an algorithm aria2 cannot verify, so the task still runs and Siphon
     /// verifies the finished file itself.
     public static func aria2Spec(_ spec: String) -> String? {
         guard let (algo, hex) = try? normalize(spec) else { return nil }
         switch algo {
+        // aria2 has no CRC32 checker; return nil so Siphon verifies the file
+        // itself once the download completes.
+        case "crc32": return nil
         case "md5": return "md5:\(hex)"
         case "sha1": return "sha-1:\(hex)"
         case "sha384": return "sha-384:\(hex)"
