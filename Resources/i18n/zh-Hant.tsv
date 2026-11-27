@@ -1,0 +1,100 @@
+# language=zh-Hant
+# name=繁體中文
+# status=reviewed
+app.name	Siphon
+menu.tasks	任務
+menu.file	檔案
+menu.downloads	下載
+menu.view	顯示
+menu.help	說明
+menu.addURL	新增 URL…
+menu.downloadLater	稍後下載…
+menu.linkGrabber	連結擷取器…
+menu.batch	批次下載…
+menu.find	尋找…
+menu.scheduler	排程…
+menu.options	選項…
+menu.properties	屬性…
+menu.verifyChecksum	驗證校驗和…
+menu.pauseSelected	暫停所選
+menu.resumeSelected	繼續所選
+menu.copySelectedLinks	拷貝所選連結
+menu.deleteSelected	刪除所選…
+menu.clearSelection	取消選擇
+menu.showInspector	預覽窗格
+menu.showPopup	下載彈窗
+menu.resumeAll	恢復全部
+menu.pauseAll	全部暫停
+category.all	所有下載
+category.unfinished	未完成
+category.finished	已完成
+category.queues	佇列
+category.general	一般
+category.compressed	壓縮檔
+category.documents	文件
+category.music	音樂
+category.programs	程式
+category.video	影片
+category.torrents	種子
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	排隊中
+status.downloading	下載中
+status.stopped	已停止
+status.complete	已完成
+status.error	錯誤
+column.fileName	檔案名稱
+column.queue	佇列
+column.size	大小
+column.status	狀態
+column.timeLeft	剩餘時間
+column.rate	傳輸速率
+column.lastTry	上次嘗試
+column.description	描述
+column.added	加入時間
+column.source	來源
+column.peers	對等端
+column.shareRatio	分享率
+column.uploadSpeed	上傳速度
+column.saveTo	儲存位置
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	狀態
+progress.limiter	限速器
+progress.completion	完成後
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	一般
+options.fileTypes	檔案類型
+options.saveTo	儲存位置
+options.downloads	下載
+options.connection	連線
+options.remote	遠端
+options.proxy	代理
+options.socks	Socks
+options.sitesLogins	網站登入
+options.accounts	帳戶
+options.sounds	音效
+options.regional	區域
+options.archives	封存
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	取消
+action.close	關閉
+action.remove	從列表移除
+action.delete	刪除檔案並移除
+action.copyLink	複製連結
+action.open	開啟
+action.reveal	打開資料夾

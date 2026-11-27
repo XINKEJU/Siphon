@@ -70,7 +70,13 @@ public final class MCPServer {
                 if error == nil, data != nil, !Self.hasCompleteRequest(buffer) {
                     read(); return
                 }
-                let response = self.process(buffer)
+                let response: Data
+                if let raw = String(data: buffer, encoding: .utf8),
+                   raw.hasPrefix("GET /.well-known/mcp/server-card.json") {
+                    response = self.processServerCard()
+                } else {
+                    response = self.process(buffer)
+                }
                 conn.send(content: response, completion: .contentProcessed { _ in conn.cancel() })
             }
         }
@@ -146,7 +152,7 @@ public final class MCPServer {
             let rpc: [String: Any] = [
                 "protocolVersion": "2024-11-05",
                 "capabilities": ["tools": ["listChanged": false]],
-                "serverInfo": ["name": "Siphon", "version": "0.1"],
+                "serverInfo": ["name": "Siphon", "version": "0.5.0"],
             ]
             result = Self.jsonRPCResult(id: id, result: rpc)
         case "notifications/initialized", "ping":
@@ -170,6 +176,25 @@ public final class MCPServer {
         return http("200 OK", result)
     }
 
+    /// Serve the MCP server card for discovery. This endpoint is unauthenticated
+    /// but only exposes static metadata, never tokens or task data.
+    func processServerCard() -> Data {
+        let card: [String: Any] = [
+            "name": "Siphon",
+            "version": "0.5.0",
+            "protocolVersion": "2024-11-05",
+            "transport": ["type": "http", "url": "http://127.0.0.1:\(Self.port)/mcp"],
+            "authentication": ["type": "bearer", "tokenEndpoint": "settings://integration/token"],
+            "capabilities": ["tools": ["listChanged": false]],
+            "tools": Self.toolList().map { $0["name"] as? String ?? "" },
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: card),
+              let text = String(data: body, encoding: .utf8) else {
+            return http("500 Internal Server Error", "{}")
+        }
+        return http("200 OK", text)
+    }
+
     /// The tool metadata advertised to clients (name, description, JSON-schema args).
     private static func toolList() -> [[String: Any]] {
         [
@@ -181,8 +206,14 @@ public final class MCPServer {
                                  "mirrors": ["type": "array", "items": ["type": "string"]]],
                   "required": ["url"]]),
             tool("list_tasks",
-                 "List all download tasks with their state and progress.",
-                 ["type": "object", "properties": [:]]),
+                 "List download tasks with optional state/queue/category/query filters.",
+                 ["type": "object",
+                  "properties": [
+                    "state": ["type": "string", "enum": ["queued", "downloading", "stopped", "complete", "error"]],
+                    "queue": ["type": "string"],
+                    "category": ["type": "string"],
+                    "query": ["type": "string"],
+                  ]]),
             tool("pause_task",
                  "Pause a download task by id.",
                  ["type": "object",
@@ -198,6 +229,12 @@ public final class MCPServer {
                  ["type": "object",
                   "properties": ["id": ["type": "string"]],
                   "required": ["id"]]),
+            tool("start_queue",
+                 "Start or resume the download queue.",
+                 ["type": "object", "properties": [:]]),
+            tool("stop_queue",
+                 "Pause every active download in the queue.",
+                 ["type": "object", "properties": [:]]),
         ]
     }
 

@@ -1,0 +1,100 @@
+# language=ja
+# name=日本語
+# status=reviewed
+app.name	Siphon
+menu.tasks	タスク
+menu.file	ファイル
+menu.downloads	ダウンロード
+menu.view	表示
+menu.help	ヘルプ
+menu.addURL	URLを追加…
+menu.downloadLater	後でダウンロード…
+menu.linkGrabber	リンクグラバー…
+menu.batch	バッチ…
+menu.find	検索…
+menu.scheduler	スケジューラ…
+menu.options	設定…
+menu.properties	プロパティ…
+menu.verifyChecksum	チェックサムを検証…
+menu.pauseSelected	選択を一時停止
+menu.resumeSelected	選択を再開
+menu.copySelectedLinks	選択したリンクをコピー
+menu.deleteSelected	選択を削除…
+menu.clearSelection	選択を解除
+menu.showInspector	プレビューペイン
+menu.showPopup	ダウンロードポップアップ
+menu.resumeAll	すべて再開
+menu.pauseAll	すべて一時停止
+category.all	すべてのダウンロード
+category.unfinished	未完了
+category.finished	完了
+category.queues	キュー
+category.general	一般
+category.compressed	圧縮ファイル
+category.documents	ドキュメント
+category.music	音楽
+category.programs	プログラム
+category.video	ビデオ
+category.torrents	トレント
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	待機中
+status.downloading	ダウンロード中
+status.stopped	停止
+status.complete	完了
+status.error	エラー
+column.fileName	ファイル名
+column.queue	キュー
+column.size	サイズ
+column.status	状態
+column.timeLeft	残り時間
+column.rate	転送速度
+column.lastTry	最終試行
+column.description	説明
+column.added	追加日時
+column.source	ソース
+column.peers	ピア
+column.shareRatio	共有率
+column.uploadSpeed	アップロード速度
+column.saveTo	保存先
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	状態
+progress.limiter	リミッター
+progress.completion	完了後
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	一般
+options.fileTypes	ファイルタイプ
+options.saveTo	保存先
+options.downloads	ダウンロード
+options.connection	接続
+options.remote	リモート
+options.proxy	プロキシ
+options.socks	Socks
+options.sitesLogins	サイトログイン
+options.accounts	アカウント
+options.sounds	サウンド
+options.regional	地域
+options.archives	アーカイブ
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	キャンセル
+action.close	閉じる
+action.remove	リストから削除
+action.delete	ファイルを削除してリストから削除
+action.copyLink	リンクをコピー
+action.open	開く
+action.reveal	フォルダを開く

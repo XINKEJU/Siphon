@@ -14,6 +14,8 @@ public final class Aria2Engine: DownloadEngine {
     public weak var delegate: (any EngineDelegate)?
 
     private let rpc: Aria2RPC
+    /// BitTorrent facade used by the five-tab progress window and automation.
+    public lazy var torrentBackend: Aria2TorrentBackend = Aria2TorrentBackend(engine: self, rpc: rpc)
     /// GID ↔ task bindings. Touched from submit/adopt (caller context), the
     /// WebSocket notification handler and the poll loop — all different
     /// concurrency domains — so access is serialized by a lock instead of
@@ -60,6 +62,9 @@ public final class Aria2Engine: DownloadEngine {
     }
 
     public func canHandle(_ p: DownloadProtocol) -> Bool { supportedProtocols.contains(p) }
+
+    /// GID currently bound to a task, if any. Used by the torrent backend.
+    public func gid(for taskID: UUID) -> String? { gidMap.gid(forTask: taskID) }
 
     /// Begin the polling loop and the WebSocket event listener. Call once after
     /// aria2 is bootstrapped. Polling is adaptive: 1s while any tracked download is

@@ -21,8 +21,7 @@ public final class MDMProgressPanelController: NSObject, NSWindowDelegate {
         }
 
         let theme = MDMThemeStore.shared
-        let scale = CGFloat(theme.scale)
-        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520 * scale, height: 460 * scale),
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
         if let taskName = store.tasks.first(where: { $0.id == taskID })?.name, !taskName.isEmpty {
@@ -32,7 +31,7 @@ public final class MDMProgressPanelController: NSObject, NSWindowDelegate {
         }
         panel.center()
         panel.isReleasedWhenClosed = false
-        panel.minSize = NSSize(width: 420 * scale, height: 360 * scale)
+        panel.minSize = NSSize(width: 420, height: 360)
         panel.delegate = self
 
         let root = MDMProgressView(taskID: taskID, onClose: { [weak self] in
@@ -79,20 +78,36 @@ struct MDMProgressView: View {
     let onClose: () -> Void
     @State private var tab: Tab = .status
     @State private var limitText = ""
+    @State private var torrentSnapshot = TorrentSnapshot()
+    @State private var torrentRefreshTask: Task<Void, Never>?
 
     private enum Tab: String, CaseIterable, Identifiable {
         case status, limiter, completion
+        case files, peers, trackers, pieces, general
+
         var id: String { rawValue }
         var title: String {
             switch self {
             case .status: return MDMI18n.t("progress.status")
             case .limiter: return MDMI18n.t("progress.limiter")
             case .completion: return MDMI18n.t("progress.completion")
+            case .files: return "Files"
+            case .peers: return "Peers"
+            case .trackers: return "Trackers"
+            case .pieces: return "Pieces"
+            case .general: return "General"
             }
         }
+
+        static var torrentTabs: [Tab] { [.files, .peers, .trackers, .pieces, .general] }
+        static var normalTabs: [Tab] { [.status, .limiter, .completion] }
     }
 
     private var task: DownloadTask? { store.tasks.first { $0.id == taskID } }
+    private var isTorrent: Bool {
+        guard let p = task?.protocol else { return false }
+        return p == .bittorrent || p == .magnet || p == .metalink
+    }
     private var colorScheme: ColorScheme? {
         switch theme.appearance {
         case .system: return nil
@@ -102,24 +117,19 @@ struct MDMProgressView: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let scale = CGFloat(theme.scale)
-            panelContent
-                .frame(width: geometry.size.width / scale, height: geometry.size.height / scale)
-                .scaleEffect(scale, anchor: .topLeading)
-                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-        }
-        .background(theme.color(.surface))
-        .preferredColorScheme(colorScheme)
+        panelContent
+            .background(theme.color(.surface))
+            .preferredColorScheme(colorScheme)
+            .environment(\.layoutDirection, MDMI18n.shared.isRTL ? .rightToLeft : .leftToRight)
     }
 
     private var panelContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
-                ForEach(Tab.allCases) { item in
+                ForEach(isTorrent ? Tab.torrentTabs : Tab.normalTabs) { item in
                     Button(item.title) { tab = item }
                         .buttonStyle(.plain)
-                        .font(.system(size: 12, weight: tab == item ? .semibold : .regular))
+                        .font(theme.font(size: 12, weight: tab == item ? .semibold : .regular))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(tab == item ? Color.accentColor.opacity(0.16) : Color.clear,
@@ -140,6 +150,11 @@ struct MDMProgressView: View {
                     case .status: statusTab(task)
                     case .limiter: limiterTab(task)
                     case .completion: completionTab(task)
+                    case .files: torrentFilesTab(task)
+                    case .peers: torrentPeersTab(task)
+                    case .trackers: torrentTrackersTab(task)
+                    case .pieces: torrentPiecesTab(task)
+                    case .general: torrentGeneralTab(task)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -148,7 +163,34 @@ struct MDMProgressView: View {
             }
         }
         .padding(.bottom, 10)
-        .onAppear { limitText = store.speedLimitText }
+        .onAppear {
+            limitText = store.speedLimitText
+            if isTorrent {
+                if tab == .status || tab == .limiter || tab == .completion { tab = .files }
+                startTorrentRefresh()
+            }
+        }
+        .onDisappear { torrentRefreshTask?.cancel() }
+        .onChange(of: isTorrent) { _, newValue in
+            if newValue {
+                tab = .files
+                startTorrentRefresh()
+            } else {
+                torrentRefreshTask?.cancel()
+                if Tab.torrentTabs.contains(tab) { tab = .status }
+            }
+        }
+    }
+
+    private func startTorrentRefresh() {
+        torrentRefreshTask?.cancel()
+        torrentRefreshTask = Task {
+            while !Task.isCancelled {
+                let snap = await store.torrentSnapshot(for: taskID)
+                if !Task.isCancelled { torrentSnapshot = snap }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
     }
 
     @ViewBuilder
@@ -270,6 +312,159 @@ struct MDMProgressView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
             Text(value).font(.caption.monospacedDigit())
+        }
+    }
+
+    // MARK: - Torrent five tabs
+
+    @ViewBuilder
+    private func torrentFilesTab(_ task: DownloadTask) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Files").font(.headline)
+                Spacer()
+                Text("\(torrentSnapshot.files.filter(\.selected).count)/\(torrentSnapshot.files.count) selected")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if torrentSnapshot.files.isEmpty {
+                Text("Metadata not resolved yet.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(torrentSnapshot.files) { file in
+                    HStack {
+                        Image(systemName: file.selected ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(file.selected ? .green : .secondary)
+                        VStack(alignment: .leading) {
+                            Text(file.displayName).font(.caption).lineLimit(1)
+                            Text(file.path).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        Text(Formatting.bytes(file.length)).font(.caption.monospacedDigit())
+                        Text("\(Int(file.progress * 100))%").font(.caption.monospacedDigit())
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
+    private func torrentPeersTab(_ task: DownloadTask) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Peers").font(.headline)
+                Spacer()
+                Text("\(torrentSnapshot.peers.count) connected").font(.caption).foregroundStyle(.secondary)
+            }
+            if torrentSnapshot.peers.isEmpty {
+                Text("No peers connected.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(torrentSnapshot.peers) { peer in
+                    HStack {
+                        Text(peer.address).font(.caption.monospaced())
+                        Spacer()
+                        Text("↓\(Formatting.speed(peer.downloadSpeed)) ↑\(Formatting.speed(peer.uploadSpeed))")
+                            .font(.caption.monospacedDigit())
+                        Text("\(Int(peer.progress * 100))%").font(.caption.monospacedDigit())
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
+    private func torrentTrackersTab(_ task: DownloadTask) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Trackers").font(.headline)
+            if torrentSnapshot.trackers.isEmpty {
+                Text("No trackers.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(torrentSnapshot.trackers) { tracker in
+                    HStack {
+                        Image(systemName: tracker.status == "working" ? "checkmark.circle" : "circle")
+                            .foregroundStyle(tracker.status == "working" ? .green : .secondary)
+                        Text(tracker.url).font(.caption).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Text(tracker.status).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
+    private func torrentPiecesTab(_ task: DownloadTask) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Pieces").font(.headline)
+                Spacer()
+                Text("\(torrentSnapshot.pieces.filter { $0.state == .complete }.count)/\(torrentSnapshot.numPieces)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            if torrentSnapshot.pieces.isEmpty {
+                Text("No piece data.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 32), spacing: 1) {
+                    ForEach(torrentSnapshot.pieces) { piece in
+                        Rectangle()
+                            .fill(piece.state == .complete ? Color.green : Color.secondary.opacity(0.2))
+                            .frame(height: 8)
+                    }
+                }
+            }
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
+    private func torrentGeneralTab(_ task: DownloadTask) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            GroupBox("Transfer") {
+                VStack(alignment: .leading, spacing: 8) {
+                    statRow("Name", torrentSnapshot.name.isEmpty ? task.name : torrentSnapshot.name)
+                    statRow("Info hash", torrentSnapshot.infoHash ?? "—")
+                    statRow("Size", Formatting.bytes(torrentSnapshot.totalSize))
+                    statRow("Downloaded", Formatting.bytes(torrentSnapshot.downloaded))
+                    statRow("Uploaded", Formatting.bytes(torrentSnapshot.uploaded))
+                    statRow("Share ratio", String(format: "%.2f", torrentSnapshot.shareRatio))
+                    statRow("Down speed", Formatting.speed(torrentSnapshot.downloadSpeed))
+                    statRow("Up speed", Formatting.speed(torrentSnapshot.uploadSpeed))
+                    statRow("Seeders / Leechers", "\(torrentSnapshot.seeders) / \(torrentSnapshot.leechers)")
+                }
+            }
+
+            GroupBox("Options") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Sequential download", isOn: Binding(
+                        get: { torrentSnapshot.isSequential },
+                        set: { newValue in
+                            Task { try? await store.setTorrentSequential(taskID, enabled: newValue) }
+                        }
+                    ))
+                    HStack {
+                        Button("Recheck") {
+                            Task { try? await store.recheckTorrent(taskID) }
+                        }
+                        Spacer()
+                        if !(store.torrentBackend?.supportsPerTaskUploadLimit ?? false) {
+                            Text("Per-task upload limit requires librqbit helper")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+    }
+
+    private func statRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.caption.monospacedDigit()).lineLimit(1).truncationMode(.middle)
         }
     }
 

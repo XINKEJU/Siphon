@@ -112,6 +112,35 @@ public final class Aria2RPC {
         (try await call(method: "aria2.getGlobalStat", params: [])) as? [String: Any] ?? [:]
     }
 
+    public func tellStatus(_ gid: String) async throws -> [String: Any] {
+        (try await call(method: "aria2.tellStatus", params: [gid])) as? [String: Any] ?? [:]
+    }
+
+    public func getPeers(_ gid: String) async throws -> [[String: Any]] {
+        guard let res = try await call(method: "aria2.getPeers", params: [gid]) as? [[String: Any]] else { return [] }
+        return res
+    }
+
+    public func getTrackers(_ gid: String) async throws -> [[String: Any]] {
+        // aria2 exposes announce URIs through getOption's `bt-tracker` plus the
+        // per-download `announceList` in tellStatus. There is no getTrackers RPC;
+        // we synthesise tracker entries from the option list.
+        let opts = try await getOption(gid)
+        let list = (opts["bt-tracker"] as? String ?? "")
+            .split(separator: ",")
+            .map { ["uri": String($0), "status": "unknown"] as [String: Any] }
+        return list
+    }
+
+    public func getOption(_ gid: String) async throws -> [String: Any] {
+        (try await call(method: "aria2.getOption", params: [gid])) as? [String: Any] ?? [:]
+    }
+
+    public func setMaxOverallUploadLimit(_ bytesPerSec: Int64) async throws {
+        _ = try await call(method: "aria2.changeGlobalOption",
+                           params: [["max-overall-upload-limit": String(bytesPerSec)]])
+    }
+
     /// File list of a BT/Metalink download: index, path, length, selected.
     /// Empty until BitTorrent metadata has been resolved (magnet → .torrent).
     public func getFiles(_ gid: String) async throws -> [[String: Any]] {

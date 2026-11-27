@@ -46,11 +46,14 @@ if ! swift build -c release >"$ROOT/build-swift.log" 2>&1; then
       -framework AppKit -framework SwiftUI -framework Network \
       -framework SystemConfiguration -framework JavaScriptCore \
       -framework Security -framework AVFoundation \
-      -framework UniformTypeIdentifiers \
+      -framework UniformTypeIdentifiers -framework CryptoKit \
       -o "$BIN" "${APP_SOURCES[@]}"
 
     swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -I "$MODULE_DIR" \
       -L "$MODULE_DIR" -lSiphonBridge -o "$BIN_DIR/SiphonNM" Sources/SiphonNM/*.swift
+
+    # Terminal client for the loopback Automation API.
+    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -parse-as-library -o "$BIN_DIR/SiphonCLI" Sources/SiphonCLI/*.swift
     # NM lives in Resources/, so resolve the bridge dylib relative to it.
     install_name_tool -change "$MODULE_DIR/libSiphonBridge.dylib" \
       "@executable_path/../Frameworks/libSiphonBridge.dylib" \
@@ -63,6 +66,10 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BIN" "$CONTENTS/MacOS/Siphon"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
+# 87-language catalog: TSV files are loaded at runtime by MDMI18n.
+if [[ -d "$ROOT/Resources/i18n" ]]; then
+    cp -R "$ROOT/Resources/i18n" "$CONTENTS/Resources/i18n"
+fi
 
 # Lift LC_BUILD_VERSION.sdk to the SDK actually used for this build. Package.swift
 # pins 26.0 so plain `swift run` also gets the modern chrome; here we use the real

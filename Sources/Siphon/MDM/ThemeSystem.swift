@@ -95,6 +95,15 @@ public final class MDMThemeStore: ObservableObject {
 
     public func scaled(_ points: CGFloat) -> CGFloat { points * CGFloat(scale) }
 
+    /// Font that actually grows with the interface scale, instead of a bitmap
+    /// `scaleEffect` that only stretches pixels.
+    public func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size * CGFloat(scale), weight: weight)
+    }
+
+    /// Scaled metrics for controls, rows and spacing.
+    public var metrics: MDMMetrics { MDMMetrics(scale: CGFloat(scale)) }
+
     // MARK: - Palettes
 
     private func classic(_ role: MDMRole, dark: Bool) -> Color {
@@ -178,5 +187,26 @@ public final class MDMThemeStore: ObservableObject {
 private extension Color {
     init(_ r: Double, _ g: Double, _ b: Double) {
         self.init(red: r, green: g, blue: b)
+    }
+}
+
+/// Scaled layout metrics consumed by SwiftUI and AppKit table cells.
+public struct MDMMetrics: Sendable {
+    public let scale: CGFloat
+
+    public init(scale: CGFloat = 1.0) { self.scale = scale }
+
+    public var rowHeight: CGFloat { 22 * scale }
+    public var headerHeight: CGFloat { 24 * scale }
+    public var cellPadding: CGFloat { 4 * scale }
+    public var controlMinHeight: CGFloat { 20 * scale }
+    public var buttonPadding: CGFloat { 6 * scale }
+    public var sectionSpacing: CGFloat { 14 * scale }
+    public var captionSize: CGFloat { 11 * scale }
+    public var bodySize: CGFloat { 13 * scale }
+    public var titleSize: CGFloat { 15 * scale }
+
+    public func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size * scale, weight: weight)
     }
 }

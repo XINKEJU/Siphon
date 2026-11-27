@@ -23,6 +23,8 @@ let package = Package(
         .executable(name: "Siphon", targets: ["Siphon"]),
         // Native Messaging gateway spawned by Chrome/Edge/Brave.
         .executable(name: "SiphonNM", targets: ["SiphonNM"]),
+        // Terminal client for the loopback Automation API.
+        .executable(name: "SiphonCLI", targets: ["SiphonCLI"]),
         .library(name: "SiphonBridge", targets: ["SiphonBridge"])
     ],
     targets: [
@@ -35,6 +37,10 @@ let package = Package(
             name: "SiphonNM",
             dependencies: ["SiphonBridge"],
             path: "Sources/SiphonNM"
+        ),
+        .executableTarget(
+            name: "SiphonCLI",
+            path: "Sources/SiphonCLI"
         ),
         .executableTarget(
             name: "Siphon",

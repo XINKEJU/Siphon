@@ -1,0 +1,100 @@
+# language=ko
+# name=한국어
+# status=reviewed
+app.name	Siphon
+menu.tasks	작업
+menu.file	파일
+menu.downloads	다운로드
+menu.view	보기
+menu.help	도움말
+menu.addURL	URL 추가…
+menu.downloadLater	나중에 다운로드…
+menu.linkGrabber	링크 그래버…
+menu.batch	일괄…
+menu.find	찾기…
+menu.scheduler	스케줄러…
+menu.options	옵션…
+menu.properties	속성…
+menu.verifyChecksum	체크섬 확인…
+menu.pauseSelected	선택 항목 일시 중지
+menu.resumeSelected	선택 항목 재개
+menu.copySelectedLinks	선택한 링크 복사
+menu.deleteSelected	선택 항목 삭제…
+menu.clearSelection	선택 해제
+menu.showInspector	미리 보기 패널
+menu.showPopup	다운로드 팝업
+menu.resumeAll	모두 재개
+menu.pauseAll	모두 일시 중지
+category.all	모든 다운로드
+category.unfinished	미완료
+category.finished	완료
+category.queues	대기열
+category.general	일반
+category.compressed	압축 파일
+category.documents	문서
+category.music	음악
+category.programs	프로그램
+category.video	비디오
+category.torrents	토렌트
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	대기 중
+status.downloading	다운로드 중
+status.stopped	중지됨
+status.complete	완료
+status.error	오류
+column.fileName	파일 이름
+column.queue	대기열
+column.size	크기
+column.status	상태
+column.timeLeft	남은 시간
+column.rate	전송 속도
+column.lastTry	마지막 시도
+column.description	설명
+column.added	추가됨
+column.source	소스
+column.peers	피어
+column.shareRatio	공유 비율
+column.uploadSpeed	업로드 속도
+column.saveTo	저장 위치
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	상태
+progress.limiter	제한기
+progress.completion	완료 후
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	일반
+options.fileTypes	파일 형식
+options.saveTo	저장 위치
+options.downloads	다운로드
+options.connection	연결
+options.remote	원격
+options.proxy	프록시
+options.socks	Socks
+options.sitesLogins	사이트 로그인
+options.accounts	계정
+options.sounds	소리
+options.regional	지역
+options.archives	아카이브
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	취소
+action.close	닫기
+action.remove	목록에서 제거
+action.delete	파일 삭제 및 제거
+action.copyLink	링크 복사
+action.open	열기
+action.reveal	폴터 열기

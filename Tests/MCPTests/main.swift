@@ -43,9 +43,10 @@ check((initResp?["result"] as? [String: Any])?["protocolVersion"] != nil, "init 
 let listReq = #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#
 let listResp = rpcBody(mcp.process(httpBody(listReq)))
 let tools = (listResp?["result"] as? [String: Any])?["tools"] as? [[String: Any]]
-check(tools?.count == 5, "tools/list → 5 tools", "got \(tools?.count ?? 0)")
+check(tools?.count == 7, "tools/list → 7 tools", "got \(tools?.count ?? 0)")
 let names = Set(tools?.compactMap { $0["name"] as? String } ?? [])
-check(names == ["add_download", "list_tasks", "pause_task", "resume_task", "remove_task"],
+check(names == ["add_download", "list_tasks", "pause_task", "resume_task", "remove_task",
+                "start_queue", "stop_queue"],
       "tool names match")
 
 // tools/call

@@ -1,0 +1,100 @@
+# language=zh-Hans
+# name=简体中文
+# status=reviewed
+app.name	Siphon
+menu.tasks	任务
+menu.file	文件
+menu.downloads	下载
+menu.view	显示
+menu.help	帮助
+menu.addURL	添加 URL…
+menu.downloadLater	稍后下载…
+menu.linkGrabber	链接抓取器…
+menu.batch	批量下载…
+menu.find	查找…
+menu.scheduler	计划任务…
+menu.options	选项…
+menu.properties	属性…
+menu.verifyChecksum	校验校验和…
+menu.pauseSelected	暂停所选
+menu.resumeSelected	继续所选
+menu.copySelectedLinks	拷贝所选链接
+menu.deleteSelected	删除所选…
+menu.clearSelection	取消选择
+menu.showInspector	预览窗格
+menu.showPopup	下载弹窗
+menu.resumeAll	恢复全部
+menu.pauseAll	全部暂停
+category.all	所有下载
+category.unfinished	未完成
+category.finished	已完成
+category.queues	队列
+category.general	常规
+category.compressed	压缩文件
+category.documents	文档
+category.music	音乐
+category.programs	程序
+category.video	视频
+category.torrents	种子
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	排队中
+status.downloading	下载中
+status.stopped	已停止
+status.complete	已完成
+status.error	出错
+column.fileName	文件名
+column.queue	队列
+column.size	大小
+column.status	状态
+column.timeLeft	剩余时间
+column.rate	传输速率
+column.lastTry	上次尝试
+column.description	描述
+column.added	添加时间
+column.source	来源
+column.peers	对等端
+column.shareRatio	分享率
+column.uploadSpeed	上传速度
+column.saveTo	保存位置
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	状态
+progress.limiter	限速器
+progress.completion	完成后
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	常规
+options.fileTypes	文件类型
+options.saveTo	保存位置
+options.downloads	下载
+options.connection	连接
+options.remote	远程
+options.proxy	代理
+options.socks	Socks
+options.sitesLogins	站点登录
+options.accounts	账户
+options.sounds	声音
+options.regional	区域
+options.archives	归档
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	取消
+action.close	关闭
+action.remove	从列表移除
+action.delete	删除文件并移除
+action.copyLink	复制链接
+action.open	打开
+action.reveal	打开文件夹

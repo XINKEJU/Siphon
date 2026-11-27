@@ -1,0 +1,100 @@
+# language=tr
+# name=Türkçe
+# status=reviewed
+app.name	Siphon
+menu.tasks	Görevler
+menu.file	Dosya
+menu.downloads	İndirilenler
+menu.view	Görünüm
+menu.help	Yardım
+menu.addURL	URL ekle…
+menu.downloadLater	Sonra indir…
+menu.linkGrabber	Bağlantı yakalayıcı…
+menu.batch	Toplu…
+menu.find	Bul…
+menu.scheduler	Zamanlayıcı…
+menu.options	Seçenekler…
+menu.properties	Özellikler…
+menu.verifyChecksum	Sağlamayı doğrula…
+menu.pauseSelected	Seçilenleri duraklat
+menu.resumeSelected	Seçilenleri sürdür
+menu.copySelectedLinks	Seçilen bağlantıları kopyala
+menu.deleteSelected	Seçilenleri sil…
+menu.clearSelection	Seçimi temizle
+menu.showInspector	Önizleme bölmesi
+menu.showPopup	İndirme açılır penceresi
+menu.resumeAll	Tümünü sürdür
+menu.pauseAll	Tümünü duraklat
+category.all	Tüm indirmeler
+category.unfinished	Bitmemiş
+category.finished	Bitmiş
+category.queues	Kuyruklar
+category.general	Genel
+category.compressed	Sıkıştırılmış
+category.documents	Belgeler
+category.music	Müzik
+category.programs	Programlar
+category.video	Video
+category.torrents	Torrentler
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	Kuyrukta
+status.downloading	İndiriliyor
+status.stopped	Durduruldu
+status.complete	Tamamlandı
+status.error	Hata
+column.fileName	Dosya adı
+column.queue	Kuyruk
+column.size	Boyut
+column.status	Durum
+column.timeLeft	Kalan süre
+column.rate	Hız
+column.lastTry	Son deneme
+column.description	Açıklama
+column.added	Eklendi
+column.source	Kaynak
+column.peers	Eşler
+column.shareRatio	Paylaşım oranı
+column.uploadSpeed	Yükleme hızı
+column.saveTo	Kaydet
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	Durum
+progress.limiter	Sınırlayıcı
+progress.completion	Sonrasında
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	Genel
+options.fileTypes	Dosya türleri
+options.saveTo	Kaydet
+options.downloads	İndirilenler
+options.connection	Bağlantı
+options.remote	Uzak
+options.proxy	Proxy
+options.socks	Socks
+options.sitesLogins	Site girişleri
+options.accounts	Hesaplar
+options.sounds	Sesler
+options.regional	Bölgesel
+options.archives	Arşivler
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	İptal
+action.close	Kapat
+action.remove	Listeden kaldır
+action.delete	Dosyayı sil ve kaldır
+action.copyLink	Bağlantıyı kopyala
+action.open	Aç
+action.reveal	Klasörü aç

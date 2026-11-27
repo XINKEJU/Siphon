@@ -113,7 +113,9 @@ if command -v aria2c >/dev/null 2>&1; then
         Sources/Siphon/Engines/Shared/TorrentProbe.swift \
         Sources/Siphon/Engines/Aria2/Aria2Bootstrap.swift \
         Sources/Siphon/Engines/Aria2/Aria2RPC.swift \
-        Sources/Siphon/Engines/Aria2/Aria2Engine.swift
+        Sources/Siphon/Engines/Aria2/Aria2Engine.swift \
+        Sources/Siphon/Engines/Torrent/TorrentBackend.swift \
+        Sources/Siphon/Engines/Torrent/Aria2TorrentBackend.swift
     SIPHON_ARIA2_RPC_SECRET="verify-only-aria2-secret" "$TMP/aria2e2e"
     kill "$SERVER2_PID" 2>/dev/null || true
 else
@@ -140,6 +142,8 @@ PROTOCOL_SOURCES=(
     Sources/Siphon/Protocols/URINormalizer.swift
     Sources/Siphon/SiteAdapters/SiteAdapterRegistry.swift
     Sources/Siphon/SiteAdapters/SiteAdapters.swift
+    Sources/Siphon/Engines/Torrent/TorrentBackend.swift
+    Sources/Siphon/Engines/Torrent/Aria2TorrentBackend.swift
     Sources/Siphon/Protocols/MetalinkParser.swift
     Sources/Siphon/Protocols/WebDAVLister.swift
     Sources/Siphon/Protocols/FTPDirectoryLister.swift
@@ -592,6 +596,28 @@ grep -q 'type === "setSiteCapture"' Resources/BrowserExtension/background.js
 grep -q 'if (result.ok)' Resources/BrowserExtension/background.js
 grep -q 'chrome.downloads.cancel(item.id)' Resources/BrowserExtension/background.js
 python3 tools/i18n/extract.py >/dev/null
+# Stage 3: unified torrent backend and five-tab progress window.
+grep -q "protocol TorrentBackend" Sources/Siphon/Engines/Torrent/TorrentBackend.swift
+grep -q "struct TorrentSnapshot" Sources/Siphon/Engines/Torrent/TorrentBackend.swift
+grep -q "class Aria2TorrentBackend" Sources/Siphon/Engines/Torrent/Aria2TorrentBackend.swift
+grep -q "case files, peers, trackers, pieces, general" Sources/Siphon/Views/MDM/MDMProgressPanel.swift
+grep -q "func torrentSnapshot" Sources/Siphon/Managers/DownloadStore.swift
+# Stage 4: automation service, CLI, MCP 7 tools and server card, remote server.
+grep -q "class AutomationService" Sources/Siphon/Automation/AutomationService.swift
+grep -q "enum AutomationSchema" Sources/Siphon/Automation/AutomationSchema.swift
+grep -q "start_queue" Sources/Siphon/BrowserExtension/MCPServer.swift
+grep -q "stop_queue" Sources/Siphon/BrowserExtension/MCPServer.swift
+grep -q "processServerCard" Sources/Siphon/BrowserExtension/MCPServer.swift
+grep -q "struct SiphonCLI" Sources/SiphonCLI/main.swift
+grep -q "class RemoteControlServer" Sources/Siphon/Remote/RemoteControlServer.swift
+grep -q "SiphonCLI" Package.swift
+# Stage 5: 87 languages, RTL, locale formatter, real scaling.
+grep -q "availableLanguages" Sources/Siphon/MDM/I18n.swift
+grep -q "rtlLanguages" Sources/Siphon/MDM/I18n.swift
+grep -q "enum LocaleFormatter" Sources/Siphon/MDM/LocaleFormatter.swift
+grep -q "struct MDMMetrics" Sources/Siphon/MDM/ThemeSystem.swift
+[[ -f Resources/i18n/zh-Hans.tsv ]] || { echo "i18n catalog missing" >&2; exit 1; }
+[[ $(ls Resources/i18n/*.tsv | wc -l) -ge 87 ]] || { echo "fewer than 87 language files" >&2; exit 1; }
 
 # The suite hand-lists swiftc inputs. Report coverage and fail on stale paths:
 # a newly added source that is referenced must be added to the right list, or a

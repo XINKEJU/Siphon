@@ -1,0 +1,100 @@
+# language=he
+# name=עברית
+# status=machine
+app.name	Siphon
+menu.tasks	Tasks
+menu.file	File
+menu.downloads	Downloads
+menu.view	View
+menu.help	Help
+menu.addURL	Add URL…
+menu.downloadLater	Download Later…
+menu.linkGrabber	Link grabber…
+menu.batch	Batch…
+menu.find	Find…
+menu.scheduler	Scheduler…
+menu.options	Options…
+menu.properties	Properties…
+menu.verifyChecksum	Verify checksum…
+menu.pauseSelected	Pause selected
+menu.resumeSelected	Resume selected
+menu.copySelectedLinks	Copy selected links
+menu.deleteSelected	Delete selected…
+menu.clearSelection	Clear selection
+menu.showInspector	Preview pane
+menu.showPopup	Download popup
+menu.resumeAll	Start all
+menu.pauseAll	Pause all
+category.all	All Downloads
+category.unfinished	Unfinished
+category.finished	Finished
+category.queues	Queues
+category.general	General
+category.compressed	Compressed
+category.documents	Documents
+category.music	Music
+category.programs	Programs
+category.video	Video
+category.torrents	Torrents
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	Queued
+status.downloading	Downloading
+status.stopped	Stopped
+status.complete	Complete
+status.error	Error
+column.fileName	File Name
+column.queue	Q
+column.size	Size
+column.status	Status
+column.timeLeft	Time left
+column.rate	Transfer rate
+column.lastTry	Last Try
+column.description	Description
+column.added	Added
+column.source	Source
+column.peers	Peers
+column.shareRatio	Share ratio
+column.uploadSpeed	Upload speed
+column.saveTo	Save To
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	Status
+progress.limiter	Limiter
+progress.completion	Completion
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	General
+options.fileTypes	File types
+options.saveTo	Save to
+options.downloads	Downloads
+options.connection	Connection
+options.remote	Remote
+options.proxy	Proxy
+options.socks	Socks
+options.sitesLogins	Sites Logins
+options.accounts	Accounts
+options.sounds	Sounds
+options.regional	Regional
+options.archives	Archives
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	Cancel
+action.close	Close
+action.remove	Remove from list
+action.delete	Delete file and remove
+action.copyLink	Copy link
+action.open	Open
+action.reveal	Open folder

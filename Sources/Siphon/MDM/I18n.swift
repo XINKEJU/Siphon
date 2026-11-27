@@ -8,20 +8,90 @@ import Foundation
 public final class MDMI18n {
     public static let shared = MDMI18n()
 
+    /// 87 BCP-47 languages, matching MDM's coverage. The first 12 are the
+    /// priority-review set; the rest are machine-translated and tracked by
+    /// `status` in the per-language manifest.
     public static let availableLanguages: [(code: String, name: String)] = [
-        ("zh", "中文"), ("en", "English")
+        ("zh-Hans", "简体中文"), ("zh-Hant", "繁體中文"), ("en", "English"),
+        ("ja", "日本語"), ("ko", "한국어"), ("de", "Deutsch"), ("fr", "Français"),
+        ("es", "Español"), ("pt-BR", "Português (Brasil)"), ("ru", "Русский"),
+        ("ar", "العربية"), ("tr", "Türkçe"),
+        ("it", "Italiano"), ("nl", "Nederlands"), ("pl", "Polski"), ("sv", "Svenska"),
+        ("da", "Dansk"), ("fi", "Suomi"), ("no", "Norsk"), ("cs", "Čeština"),
+        ("hu", "Magyar"), ("ro", "Română"), ("el", "Ελληνικά"), ("he", "עברית"),
+        ("th", "ไทย"), ("vi", "Tiếng Việt"), ("id", "Bahasa Indonesia"), ("ms", "Bahasa Melayu"),
+        ("uk", "Українська"), ("bg", "Български"), ("hr", "Hrvatski"), ("sr", "Српски"),
+        ("sk", "Slovenčina"), ("sl", "Slovenščina"), ("et", "Eesti"), ("lv", "Latviešu"),
+        ("lt", "Lietuvių"), ("fa", "فارسی"), ("hi", "हिन्दी"), ("bn", "বাংলা"),
+        ("ta", "தமிழ்"), ("te", "తెలుగు"), ("ml", "മലയാളം"), ("mr", "मराठी"),
+        ("gu", "ગુજરાતી"), ("pa", "ਪੰਜਾਬੀ"), ("kn", "ಕನ್ನಡ"), ("ur", "اردو"),
+        ("ne", "नेपाली"), ("si", "සිංහල"), ("my", "မြန်မာ"), ("km", "ខ្មែរ"),
+        ("lo", "ລາວ"), ("ka", "ქართული"), ("am", "አማርኛ"), ("sw", "Kiswahili"),
+        ("zu", "isiZulu"), ("xh", "isiXhosa"), ("af", "Afrikaans"), ("sq", "Shqip"),
+        ("hy", "Հայերեն"), ("az", "Azərbaycan"), ("eu", "Euskara"), ("be", "Беларуская"),
+        ("bs", "Bosanski"), ("ca", "Català"), ("cy", "Cymraeg"), ("eo", "Esperanto"),
+        ("fo", "Føroyskt"), ("gl", "Galego"), ("is", "Íslenska"), ("ga", "Gaeilge"),
+        ("kk", "Қазақ"), ("ky", "Кыргызча"), ("lb", "Lëtzebuergesch"), ("mk", "Македонски"),
+        ("mt", "Malti"), ("mn", "Монгол"), ("oc", "Occitan"), ("se", "Davvisámegiella"),
+        ("tl", "Tagalog"), ("br", "Brezhoneg"), ("co", "Corsu"), ("gd", "Gàidhlig"),
+        ("fy", "Frysk"), ("yi", "ייִדיש"), ("ps", "پښتو"), ("sd", "سنڌي"),
+        ("ug", "ئۇيغۇرچە"), ("bo", "བོད་སྐད་"), ("dz", "རྫོང་ཁ"), ("iu", "ᐃᓄᒃᑎᑐᑦ"),
     ]
+
+    /// Languages whose layout direction is right-to-left.
+    public static let rtlLanguages: Set<String> = ["ar", "he", "fa", "ur", "ug", "ps", "sd", "yi"]
 
     public var language: String {
-        get { UserDefaults.standard.string(forKey: "Siphon.mdm.language") ?? "zh" }
-        set { UserDefaults.standard.set(newValue, forKey: "Siphon.mdm.language") }
+        get { UserDefaults.standard.string(forKey: "Siphon.mdm.language") ?? "zh-Hans" }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "Siphon.mdm.language")
+            NotificationCenter.default.post(name: Self.languageDidChange, object: nil)
+        }
     }
 
-    private let catalogs: [String: [String: String]] = [
-        "en": English, "zh": Chinese
-    ]
+    public static let languageDidChange = Notification.Name("SiphonMDMLanguageDidChange")
 
-    private init() {}
+    private var catalogs: [String: [String: String]] = [:]
+    private let bundle: Bundle
+
+    private init() {
+        bundle = Bundle(for: BundleToken.self)
+        loadEmbeddedCatalogs()
+        loadTSVCatalogs()
+    }
+
+    private func loadEmbeddedCatalogs() {
+        // Fallback embedded English so the app never shows raw keys when the
+        // resource bundle is missing (e.g. unit tests compiled with swiftc).
+        catalogs["en"] = English
+        catalogs["zh-Hans"] = ChineseSimplified
+        catalogs["zh-Hant"] = ChineseTraditional
+    }
+
+    private func loadTSVCatalogs() {
+        guard let resourceURL = bundle.resourceURL else { return }
+        let i18nURL = resourceURL.appendingPathComponent("i18n")
+        guard let files = try? FileManager.default.contentsOfDirectory(at: i18nURL, includingPropertiesForKeys: nil) else { return }
+        for file in files where file.pathExtension == "tsv" {
+            let code = file.deletingPathExtension().lastPathComponent
+            if let dict = Self.parseTSV(at: file) {
+                catalogs[code] = dict
+            }
+        }
+    }
+
+    static func parseTSV(at url: URL) -> [String: String]? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var result: [String: String] = [:]
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            let parts = trimmed.components(separatedBy: "\t")
+            guard parts.count >= 2 else { continue }
+            result[parts[0]] = parts[1]
+        }
+        return result
+    }
 
     /// Lookup with deterministic fallback: requested language → English → key.
     /// Format arguments use the standard `%@` style via String(format:).
@@ -42,7 +112,11 @@ public final class MDMI18n {
     /// Every key in the English catalog, sorted — used by the extractor and
     /// by the options page that reports translation completeness.
     public static var allKeys: [String] { Array(English.keys).sorted() }
+
+    public var isRTL: Bool { Self.rtlLanguages.contains(language) }
 }
+
+private final class BundleToken {}
 
 private let English: [String: String] = [
     "app.name": "Siphon",
@@ -144,7 +218,7 @@ private let English: [String: String] = [
     "action.reveal": "Open folder"
 ]
 
-private let Chinese: [String: String] = [
+private let ChineseSimplified: [String: String] = [
     "app.name": "Siphon",
     "menu.tasks": "任务",
     "menu.file": "文件",
@@ -242,4 +316,104 @@ private let Chinese: [String: String] = [
     "action.copyLink": "复制链接",
     "action.open": "打开",
     "action.reveal": "打开文件夹"
+]
+
+private let ChineseTraditional: [String: String] = [
+    "app.name": "Siphon",
+    "menu.tasks": "任務",
+    "menu.file": "檔案",
+    "menu.downloads": "下載",
+    "menu.view": "顯示",
+    "menu.help": "說明",
+    "menu.addURL": "新增 URL…",
+    "menu.downloadLater": "稍後下載…",
+    "menu.linkGrabber": "連結擷取器…",
+    "menu.batch": "批次下載…",
+    "menu.find": "尋找…",
+    "menu.scheduler": "排程…",
+    "menu.options": "選項…",
+    "menu.properties": "屬性…",
+    "menu.verifyChecksum": "驗證校驗和…",
+    "menu.pauseSelected": "暫停所選",
+    "menu.resumeSelected": "繼續所選",
+    "menu.copySelectedLinks": "拷貝所選連結",
+    "menu.deleteSelected": "刪除所選…",
+    "menu.clearSelection": "取消選擇",
+    "menu.showInspector": "預覽窗格",
+    "menu.showPopup": "下載彈窗",
+    "menu.resumeAll": "恢復全部",
+    "menu.pauseAll": "全部暫停",
+    "category.all": "所有下載",
+    "category.unfinished": "未完成",
+    "category.finished": "已完成",
+    "category.queues": "佇列",
+    "category.general": "一般",
+    "category.compressed": "壓縮檔",
+    "category.documents": "文件",
+    "category.music": "音樂",
+    "category.programs": "程式",
+    "category.video": "影片",
+    "category.torrents": "種子",
+    "queue.main": "主下載佇列",
+    "queue.synchronization": "同步佇列",
+    "status.queued": "排隊中",
+    "status.downloading": "下載中",
+    "status.stopped": "已停止",
+    "status.complete": "已完成",
+    "status.error": "錯誤",
+    "column.fileName": "檔案名稱",
+    "column.queue": "佇列",
+    "column.size": "大小",
+    "column.status": "狀態",
+    "column.timeLeft": "剩餘時間",
+    "column.rate": "傳輸速率",
+    "column.lastTry": "上次嘗試",
+    "column.description": "描述",
+    "column.added": "加入時間",
+    "column.source": "來源",
+    "column.peers": "對等端",
+    "column.shareRatio": "分享率",
+    "column.uploadSpeed": "上傳速度",
+    "column.saveTo": "儲存位置",
+    "column.details": "詳情（對等端 / 分享率 / 上傳 / 位置）",
+    "progress.status": "狀態",
+    "progress.limiter": "限速器",
+    "progress.completion": "完成後",
+    "progress.segments": "分段",
+    "progress.connections": "連線",
+    "progress.resumeCapability": "可續傳",
+    "progress.stopAndKeep": "停止並保留",
+    "options.general": "一般",
+    "options.fileTypes": "檔案類型",
+    "options.saveTo": "儲存位置",
+    "options.downloads": "下載",
+    "options.connection": "連線",
+    "options.remote": "遠端",
+    "options.proxy": "代理",
+    "options.socks": "Socks",
+    "options.sitesLogins": "網站登入",
+    "options.accounts": "帳戶",
+    "options.sounds": "音效",
+    "options.regional": "區域",
+    "options.archives": "封存",
+    "theme.highContrast": "高對比度",
+    "dialog.addURL": "下載檔案資訊",
+    "dialog.startDownload": "開始下載",
+    "dialog.downloadLater": "稍後下載",
+    "dialog.saveTo": "儲存位置：",
+    "dialog.category": "分類：",
+    "dialog.description": "描述：",
+    "dialog.linkGrabber": "連結擷取器",
+    "dialog.scheduler": "排程",
+    "dialog.batch": "批次下載",
+    "dialog.find": "尋找",
+    "dialog.properties": "屬性",
+    "dialog.verifyChecksum": "驗證校驗和",
+    "action.cancel": "取消",
+    "action.close": "關閉",
+    "action.remove": "從列表移除",
+    "action.delete": "刪除檔案並移除",
+    "action.copyLink": "複製連結",
+    "action.open": "開啟",
+    "action.reveal": "打開資料夾"
 ]

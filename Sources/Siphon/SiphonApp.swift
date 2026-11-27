@@ -20,6 +20,7 @@ struct SiphonApp: App {
         Window("下载", id: "main-window") {
             ContentView(showingAdd: $showingAdd, showingInspector: $showingInspector)
                 .environment(store)
+                .environment(\.layoutDirection, MDMI18n.shared.isRTL ? .rightToLeft : .leftToRight)
                 // A min-only frame makes the root view size to its ideal height
                 // (~135pt) and centre it once the window grows. The max:infinity
                 // proposal lets the three-pane layout fill the whole window.

@@ -1,0 +1,100 @@
+# language=ar
+# name=العربية
+# status=reviewed
+app.name	Siphon
+menu.tasks	المهام
+menu.file	ملف
+menu.downloads	التنزيلات
+menu.view	عرض
+menu.help	مساعدة
+menu.addURL	إضافة رابط…
+menu.downloadLater	تنزيل لاحقاً…
+menu.linkGrabber	جامع الروابط…
+menu.batch	دفعة…
+menu.find	بحث…
+menu.scheduler	المجدول…
+menu.options	خيارات…
+menu.properties	خصائص…
+menu.verifyChecksum	التحقق من المجموع الاختباري…
+menu.pauseSelected	إيقاف مؤقت للمحدد
+menu.resumeSelected	استئناف المحدد
+menu.copySelectedLinks	نسخ الروابط المحددة
+menu.deleteSelected	حذف المحدد…
+menu.clearSelection	إلغاء التحديد
+menu.showInspector	جزء المعاينة
+menu.showPopup	نافذة التنزيل
+menu.resumeAll	استئناف الكل
+menu.pauseAll	إيقاف الكل مؤقتاً
+category.all	جميع التنزيلات
+category.unfinished	غير مكتمل
+category.finished	مكتمل
+category.queues	الطوابير
+category.general	عام
+category.compressed	مضغوط
+category.documents	مستندات
+category.music	موسيقى
+category.programs	برامج
+category.video	فيديو
+category.torrents	تورنت
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	في الانتظار
+status.downloading	جارٍ التنزيل
+status.stopped	متوقف
+status.complete	مكتمل
+status.error	خطأ
+column.fileName	اسم الملف
+column.queue	الطابور
+column.size	الحجم
+column.status	الحالة
+column.timeLeft	الوقت المتبقي
+column.rate	معدل النقل
+column.lastTry	آخر محاولة
+column.description	الوصف
+column.added	أضيف
+column.source	المصدر
+column.peers	الأقران
+column.shareRatio	نسبة المشاركة
+column.uploadSpeed	سرعة الرفع
+column.saveTo	حفظ في
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	الحالة
+progress.limiter	المحدد
+progress.completion	بعد الاكتمال
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	عام
+options.fileTypes	أنواع الملفات
+options.saveTo	حفظ في
+options.downloads	التنزيلات
+options.connection	الاتصال
+options.remote	عن بعد
+options.proxy	بروكسي
+options.socks	Socks
+options.sitesLogins	تسجيلات المواقع
+options.accounts	الحسابات
+options.sounds	الأصوات
+options.regional	إقليمي
+options.archives	الأرشيف
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	إلغاء
+action.close	إغلاق
+action.remove	إزالة من القائمة
+action.delete	حذف الملف وإزالته
+action.copyLink	نسخ الرابط
+action.open	فتح
+action.reveal	فتح المجلد

@@ -1,0 +1,100 @@
+# language=de
+# name=Deutsch
+# status=reviewed
+app.name	Siphon
+menu.tasks	Aufgaben
+menu.file	Datei
+menu.downloads	Downloads
+menu.view	Ansicht
+menu.help	Hilfe
+menu.addURL	URL hinzufügen…
+menu.downloadLater	Später herunterladen…
+menu.linkGrabber	Link-Grabber…
+menu.batch	Stapel…
+menu.find	Suchen…
+menu.scheduler	Zeitplaner…
+menu.options	Optionen…
+menu.properties	Eigenschaften…
+menu.verifyChecksum	Prüfsumme überprüfen…
+menu.pauseSelected	Auswahl pausieren
+menu.resumeSelected	Auswahl fortsetzen
+menu.copySelectedLinks	Ausgewählte Links kopieren
+menu.deleteSelected	Auswahl löschen…
+menu.clearSelection	Auswahl aufheben
+menu.showInspector	Vorschaufenster
+menu.showPopup	Download-Popup
+menu.resumeAll	Alle fortsetzen
+menu.pauseAll	Alle pausieren
+category.all	Alle Downloads
+category.unfinished	Unfertig
+category.finished	Fertig
+category.queues	Warteschlangen
+category.general	Allgemein
+category.compressed	Komprimiert
+category.documents	Dokumente
+category.music	Musik
+category.programs	Programme
+category.video	Video
+category.torrents	Torrents
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	Wartend
+status.downloading	Wird heruntergeladen
+status.stopped	Gestoppt
+status.complete	Fertig
+status.error	Fehler
+column.fileName	Dateiname
+column.queue	Warteschlange
+column.size	Größe
+column.status	Status
+column.timeLeft	Verbleibende Zeit
+column.rate	Übertragungsrate
+column.lastTry	Letzter Versuch
+column.description	Beschreibung
+column.added	Hinzugefügt
+column.source	Quelle
+column.peers	Peers
+column.shareRatio	Share-Ratio
+column.uploadSpeed	Upload-Geschwindigkeit
+column.saveTo	Speichern unter
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	Status
+progress.limiter	Begrenzer
+progress.completion	Nach Abschluss
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	Allgemein
+options.fileTypes	Dateitypen
+options.saveTo	Speichern unter
+options.downloads	Downloads
+options.connection	Verbindung
+options.remote	Fernzugriff
+options.proxy	Proxy
+options.socks	Socks
+options.sitesLogins	Site-Logins
+options.accounts	Konten
+options.sounds	Sounds
+options.regional	Regional
+options.archives	Archive
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	Abbrechen
+action.close	Schließen
+action.remove	Aus Liste entfernen
+action.delete	Datei löschen und entfernen
+action.copyLink	Link kopieren
+action.open	Öffnen
+action.reveal	Ordner öffnen

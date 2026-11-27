@@ -344,14 +344,38 @@ private struct MDMRegionalPage: View {
     }
 
     @State private var selected = MDMI18n.shared.language
+    @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             Picker("界面语言", selection: $selected) {
                 ForEach(languages) { Text($0.name).tag($0.code) }
             }
             .onChange(of: selected) { _, newValue in MDMI18n.shared.language = newValue }
-            Text("MDM 的 87 语言通道以 tsv 目录驱动；Siphon 目前内置中文与英文，新增语言只需扩充目录。")
+
+            if MDMI18n.rtlLanguages.contains(selected) {
+                Label("该语言使用从右到左布局（RTL），界面将自动镜像。", systemImage: "arrow.left.arrow.right")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            Picker("主题", selection: $theme.theme) {
+                ForEach(MDMTheme.allCases) { Text($0.displayName).tag($0) }
+            }
+
+            Picker("外观", selection: $theme.appearance) {
+                Text("跟随系统").tag(MDMAppearance.system)
+                Text("浅色").tag(MDMAppearance.light)
+                Text("深色").tag(MDMAppearance.dark)
+            }
+
+            VStack(alignment: .leading) {
+                Text("界面缩放：\(Int(theme.scale * 100))%")
+                Slider(value: $theme.scale, in: 1.0...2.0, step: 0.05)
+            }
+
+            Text("共 \(MDMI18n.availableLanguages.count) 种语言，核心 12 种已人工校对，其余为机器初译并标记状态。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
         }

@@ -1,0 +1,100 @@
+# language=fr
+# name=Français
+# status=reviewed
+app.name	Siphon
+menu.tasks	Tâches
+menu.file	Fichier
+menu.downloads	Téléchargements
+menu.view	Affichage
+menu.help	Aide
+menu.addURL	Ajouter une URL…
+menu.downloadLater	Télécharger plus tard…
+menu.linkGrabber	Extracteur de liens…
+menu.batch	Lot…
+menu.find	Rechercher…
+menu.scheduler	Planificateur…
+menu.options	Options…
+menu.properties	Propriétés…
+menu.verifyChecksum	Vérifier la somme de contrôle…
+menu.pauseSelected	Mettre en pause
+menu.resumeSelected	Reprendre
+menu.copySelectedLinks	Copier les liens sélectionnés
+menu.deleteSelected	Supprimer la sélection…
+menu.clearSelection	Effacer la sélection
+menu.showInspector	Panneau d'aperçu
+menu.showPopup	Popup de téléchargement
+menu.resumeAll	Tout reprendre
+menu.pauseAll	Tout mettre en pause
+category.all	Tous les téléchargements
+category.unfinished	Non terminé
+category.finished	Terminé
+category.queues	Files d'attente
+category.general	Général
+category.compressed	Compressé
+category.documents	Documents
+category.music	Musique
+category.programs	Programmes
+category.video	Vidéo
+category.torrents	Torrents
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	En file
+status.downloading	Téléchargement
+status.stopped	Arrêté
+status.complete	Terminé
+status.error	Erreur
+column.fileName	Nom du fichier
+column.queue	File
+column.size	Taille
+column.status	Statut
+column.timeLeft	Temps restant
+column.rate	Vitesse
+column.lastTry	Dernier essai
+column.description	Description
+column.added	Ajouté
+column.source	Source
+column.peers	Pairs
+column.shareRatio	Ratio
+column.uploadSpeed	Vitesse d'upload
+column.saveTo	Enregistrer sous
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	Statut
+progress.limiter	Limiteur
+progress.completion	Après
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	Général
+options.fileTypes	Types de fichiers
+options.saveTo	Enregistrer sous
+options.downloads	Téléchargements
+options.connection	Connexion
+options.remote	Distant
+options.proxy	Proxy
+options.socks	Socks
+options.sitesLogins	Identifiants de sites
+options.accounts	Comptes
+options.sounds	Sons
+options.regional	Régional
+options.archives	Archives
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	Annuler
+action.close	Fermer
+action.remove	Retirer de la liste
+action.delete	Supprimer le fichier et retirer
+action.copyLink	Copier le lien
+action.open	Ouvrir
+action.reveal	Ouvrir le dossier

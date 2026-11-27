@@ -1,0 +1,100 @@
+# language=ru
+# name=Русский
+# status=reviewed
+app.name	Siphon
+menu.tasks	Задачи
+menu.file	Файл
+menu.downloads	Загрузки
+menu.view	Вид
+menu.help	Справка
+menu.addURL	Добавить URL…
+menu.downloadLater	Скачать позже…
+menu.linkGrabber	Сборщик ссылок…
+menu.batch	Пакетно…
+menu.find	Найти…
+menu.scheduler	Планировщик…
+menu.options	Настройки…
+menu.properties	Свойства…
+menu.verifyChecksum	Проверить контрольную сумму…
+menu.pauseSelected	Приостановить выбранное
+menu.resumeSelected	Возобновить выбранное
+menu.copySelectedLinks	Копировать выбранные ссылки
+menu.deleteSelected	Удалить выбранное…
+menu.clearSelection	Снять выделение
+menu.showInspector	Панель предпросмотра
+menu.showPopup	Всплывающее окно загрузки
+menu.resumeAll	Возобновить все
+menu.pauseAll	Приостановить все
+category.all	Все загрузки
+category.unfinished	Незавершённые
+category.finished	Завершённые
+category.queues	Очереди
+category.general	Общие
+category.compressed	Архивы
+category.documents	Документы
+category.music	Музыка
+category.programs	Программы
+category.video	Видео
+category.torrents	Торренты
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	В очереди
+status.downloading	Загрузка
+status.stopped	Остановлено
+status.complete	Завершено
+status.error	Ошибка
+column.fileName	Имя файла
+column.queue	Очередь
+column.size	Размер
+column.status	Состояние
+column.timeLeft	Осталось
+column.rate	Скорость
+column.lastTry	Последняя попытка
+column.description	Описание
+column.added	Добавлено
+column.source	Источник
+column.peers	Пиры
+column.shareRatio	Рейтинг
+column.uploadSpeed	Скорость отдачи
+column.saveTo	Сохранить в
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	Состояние
+progress.limiter	Ограничитель
+progress.completion	После завершения
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	Общие
+options.fileTypes	Типы файлов
+options.saveTo	Сохранить в
+options.downloads	Загрузки
+options.connection	Соединение
+options.remote	Удалённо
+options.proxy	Прокси
+options.socks	Socks
+options.sitesLogins	Логины сайтов
+options.accounts	Аккаунты
+options.sounds	Звуки
+options.regional	Региональные
+options.archives	Архивы
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	Отмена
+action.close	Закрыть
+action.remove	Убрать из списка
+action.delete	Удалить файл и убрать
+action.copyLink	Копировать ссылку
+action.open	Открыть
+action.reveal	Открыть папку

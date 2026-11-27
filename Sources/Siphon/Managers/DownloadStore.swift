@@ -1434,6 +1434,28 @@ public final class DownloadStore: EngineDelegate {
         await aria2?.listFiles(taskID: id) ?? []
     }
 
+    /// Unified torrent backend for the five-tab progress window.
+    public var torrentBackend: (any TorrentBackend)? { aria2?.torrentBackend }
+
+    /// Fetch a point-in-time BitTorrent snapshot. Non-BT tasks return an empty
+    /// snapshot; the progress window only shows torrent tabs for BT/magnet tasks.
+    public func torrentSnapshot(for id: UUID) async -> TorrentSnapshot {
+        guard let backend = torrentBackend else { return TorrentSnapshot() }
+        return await backend.snapshot(taskID: id)
+    }
+
+    public func setTorrentSequential(_ id: UUID, enabled: Bool) async throws {
+        try await torrentBackend?.setSequential(taskID: id, enabled: enabled)
+    }
+
+    public func recheckTorrent(_ id: UUID) async throws {
+        try await torrentBackend?.recheck(taskID: id)
+    }
+
+    public func setTorrentUploadLimit(_ id: UUID, bytesPerSec: Int64?) async throws {
+        try await torrentBackend?.setUploadLimit(taskID: id, bytesPerSec: bytesPerSec)
+    }
+
     /// Apply the checked file set via aria2's `select-file`. Returns false when
     /// the selection is empty or aria2 rejected it (metadata not loaded yet).
     public func applyBTFileSelection(_ id: UUID, indexes: [Int]) async -> Bool {
@@ -1670,10 +1692,27 @@ public final class DownloadStore: EngineDelegate {
                     return "ok: enqueued \(url)"
                 } ?? timeoutMessage
             },
-            "list_tasks": { [weak self] _ in
+            "list_tasks": { [weak self] args in
                 guard let self else { return "error: store unavailable" }
                 return runOnMainActor {
-                    let lines = self.tasks.map {
+                    var tasks = self.tasks
+                    if let state = args["state"] as? String {
+                        tasks = tasks.filter { MDMStatus($0.state).rawValue == state }
+                    }
+                    if let queue = args["queue"] as? String {
+                        tasks = tasks.filter { $0.queueName == queue }
+                    }
+                    if let category = args["category"] as? String {
+                        tasks = tasks.filter {
+                            ($0.category ?? MDMCategory.categorize(fileName: $0.name).rawValue) == category
+                        }
+                    }
+                    if let q = (args["query"] as? String)?.lowercased(), !q.isEmpty {
+                        tasks = tasks.filter {
+                            $0.name.lowercased().contains(q) || $0.source.absoluteString.lowercased().contains(q)
+                        }
+                    }
+                    let lines = tasks.map {
                         "\($0.id.uuidString) [\($0.state.rawValue)] \($0.name) " +
                         "(\($0.progress.downloadedBytes)/\($0.progress.totalBytes))"
                     }
@@ -1691,6 +1730,14 @@ public final class DownloadStore: EngineDelegate {
             "remove_task": { [weak self] args in
                 guard let self, let id = Self.taskID(from: args) else { return "error: missing id" }
                 return runOnMainActor { self.remove(id); return "ok" } ?? timeoutMessage
+            },
+            "start_queue": { [weak self] _ in
+                guard let self else { return "error: store unavailable" }
+                return runOnMainActor { self.resumeAll(); return "ok" } ?? timeoutMessage
+            },
+            "stop_queue": { [weak self] _ in
+                guard let self else { return "error: store unavailable" }
+                return runOnMainActor { self.pauseAll(); return "ok" } ?? timeoutMessage
             },
         ]
     }

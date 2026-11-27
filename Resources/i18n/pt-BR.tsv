@@ -1,0 +1,100 @@
+# language=pt-BR
+# name=Português (Brasil)
+# status=reviewed
+app.name	Siphon
+menu.tasks	Tarefas
+menu.file	Arquivo
+menu.downloads	Downloads
+menu.view	Visualizar
+menu.help	Ajuda
+menu.addURL	Adicionar URL…
+menu.downloadLater	Baixar mais tarde…
+menu.linkGrabber	Capturador de links…
+menu.batch	Lote…
+menu.find	Localizar…
+menu.scheduler	Agendador…
+menu.options	Opções…
+menu.properties	Propriedades…
+menu.verifyChecksum	Verificar checksum…
+menu.pauseSelected	Pausar selecionados
+menu.resumeSelected	Retomar selecionados
+menu.copySelectedLinks	Copiar links selecionados
+menu.deleteSelected	Excluir selecionados…
+menu.clearSelection	Limpar seleção
+menu.showInspector	Painel de visualização
+menu.showPopup	Popup de download
+menu.resumeAll	Retomar tudo
+menu.pauseAll	Pausar tudo
+category.all	Todos os downloads
+category.unfinished	Inacabado
+category.finished	Concluído
+category.queues	Filas
+category.general	Geral
+category.compressed	Compactado
+category.documents	Documentos
+category.music	Música
+category.programs	Programas
+category.video	Vídeo
+category.torrents	Torrents
+queue.main	Main download queue
+queue.synchronization	Synchronization queue
+status.queued	Na fila
+status.downloading	Baixando
+status.stopped	Parado
+status.complete	Concluído
+status.error	Erro
+column.fileName	Nome do arquivo
+column.queue	Fila
+column.size	Tamanho
+column.status	Status
+column.timeLeft	Tempo restante
+column.rate	Taxa
+column.lastTry	Última tentativa
+column.description	Descrição
+column.added	Adicionado
+column.source	Origem
+column.peers	Pares
+column.shareRatio	Ratio
+column.uploadSpeed	Velocidade de upload
+column.saveTo	Salvar em
+column.details	Details (Peers / Ratio / Upload / Save To)
+progress.status	Status
+progress.limiter	Limitador
+progress.completion	Após concluir
+progress.segments	Segments
+progress.connections	Connections
+progress.resumeCapability	Resume capability
+progress.stopAndKeep	Stop and keep
+options.general	Geral
+options.fileTypes	Tipos de arquivo
+options.saveTo	Salvar em
+options.downloads	Downloads
+options.connection	Conexão
+options.remote	Remoto
+options.proxy	Proxy
+options.socks	Socks
+options.sitesLogins	Logins de sites
+options.accounts	Contas
+options.sounds	Sons
+options.regional	Regional
+options.archives	Arquivos
+theme.highContrast	High contrast
+dialog.addURL	Download File Info
+dialog.startDownload	Start Download
+dialog.downloadLater	Download Later
+dialog.saveTo	Save to:
+dialog.category	Category:
+dialog.description	Description:
+dialog.linkGrabber	Link grabber
+dialog.scheduler	Scheduler
+dialog.batch	Batch download
+dialog.find	Find
+dialog.properties	Properties
+dialog.verifyChecksum	Verify checksum
+action.cancel	Cancelar
+action.close	Fechar
+action.remove	Remover da lista
+action.delete	Excluir arquivo e remover
+action.copyLink	Copiar link
+action.open	Abrir
+action.reveal	Abrir pasta
