@@ -52,7 +52,10 @@ public final class MDMThemeStore: ObservableObject {
         didSet { UserDefaults.standard.set(theme.rawValue, forKey: "Siphon.mdm.theme") }
     }
     @Published public var appearance: MDMAppearance {
-        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "Siphon.mdm.appearance") }
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: "Siphon.mdm.appearance")
+            applyAppearance()
+        }
     }
     @Published public var scale: Double {
         didSet { UserDefaults.standard.set(scale, forKey: "Siphon.mdm.interfaceScale") }
@@ -64,6 +67,18 @@ public final class MDMThemeStore: ObservableObject {
         appearance = MDMAppearance(rawValue: d.string(forKey: "Siphon.mdm.appearance") ?? "") ?? .system
         scale = min(2.0, max(1.0, d.double(forKey: "Siphon.mdm.interfaceScale") == 0
                              ? 1.0 : d.double(forKey: "Siphon.mdm.interfaceScale")))
+        // A theme's light/dark choice must reach every window (dialogs, popup,
+        // settings), not just the main view. Setting the application appearance
+        // makes AppKit controls and system semantic colours follow as well.
+        applyAppearance()
+    }
+
+    private func applyAppearance() {
+        switch appearance {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 
     public var isDark: Bool {
@@ -99,6 +114,24 @@ public final class MDMThemeStore: ObservableObject {
     /// `scaleEffect` that only stretches pixels.
     public func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size * CGFloat(scale), weight: weight)
+    }
+
+    /// Monospaced variant for paths, sizes and hashes.
+    public func monoFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size * CGFloat(scale), weight: weight, design: .monospaced)
+    }
+
+    /// Text styles (`.caption`, `.body`, …) follow the same interface scale, so
+    /// panes that rely on system styles grow with the list and dialogs.
+    public var dynamicTypeSize: DynamicTypeSize {
+        switch scale {
+        case ..<1.10: return .large
+        case ..<1.20: return .xLarge
+        case ..<1.35: return .xxLarge
+        case ..<1.60: return .xxxLarge
+        case ..<1.80: return .accessibility1
+        default: return .accessibility2
+        }
     }
 
     /// Scaled metrics for controls, rows and spacing.

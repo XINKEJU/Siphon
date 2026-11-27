@@ -186,9 +186,9 @@
 | J2 | Scheduler 两页窗口 | Schedule / Files in queue | 有简化对话框 | ⚠️ | P1 | Swift 原生 |
 | J3 | 一次性/每日/启动时启动 | 有 | 时段窗有；缺一次性/启动时 | ⚠️ | P1 | Swift 原生 |
 | J4 | 停止时间/重试 | 有 | 部分 | ⚠️ | P1 | Swift 原生 |
-| J5 | 定时唤醒 | 电源计划/wakealarm/pmset | 无 | ❌ | P1 | Swift 原生（IOPMAssertion/pmset） |
+| J5 | 定时唤醒 | 电源计划/wakealarm/pmset | 系统唤醒后立即评估时段窗口并恢复；不做需 root 的 RTC 唤醒（pmset schedule wake 需 sudo） | ⚠️ | P1 | Swift 原生（IOPMAssertion/pmset） |
 | J6 | 完成动作 | 打开/挂断/退出/关机/睡眠/休眠 + 倒计时 | 睡眠/关机/退 App | ⚠️ | P2 | Swift 原生 |
-| J7 | 下载限额 N MB/H | 有（`quota.rs`） | 无 | ❌ | P2 | Swift 原生 |
+| J7 | 下载限额 N MB/H | 有（`quota.rs`） | 每小时 N MB：达到后暂停活动任务，整点自动恢复（只恢复因限额暂停的）；设置 → 速度 | ✅ | — | — |
 | J8 | 分组完成通知 | 有 | 每任务 | ⚠️ | P2 | Swift 原生 |
 | J9 | “仅在我使用电脑时”限速 | 有 | 无 | ❌ | P2 | Swift 原生 |
 
@@ -232,8 +232,8 @@
 | # | 能力 | MDM 事实 | Siphon 现状 | 差距 | 优先级 | 路径 |
 |---|---|---|---|---|---|---|
 | M1 | 菜单栏/托盘状态 | 三平台托盘 + 面板 | 菜单栏状态文本 | ✅（基础） | — | — |
-| M2 | 托盘下载面板 | 每任务进度/暂停/取消 | 无 | ❌ | P1 | Swift 原生（NSPopover） |
-| M3 | 全局显示/隐藏热键 | 2–3 键组合 | 无 | ❌ | P1 | Carbon RegisterEventHotKey |
+| M2 | 托盘下载面板 | 每任务进度/暂停/取消 | 左键 NSPopover 面板：每任务进度/暂停/继续、全部暂停/恢复、主窗口/设置/退出；右键保留菜单 | ✅ | — | — |
+| M3 | 全局显示/隐藏热键 | 2–3 键组合 | Carbon ⌥⌘D 全局显示/隐藏，可在通用设置关闭 | ✅ | — | — |
 | M4 | 事件音效 | 完成/失败等 | 无 | ❌ | P2 | NSSound |
 | M5 | 通知 | 完成/组完成/更新/限额 | 通知 + 动作 | ✅ | — | — |
 | M6 | Dock 进度/菜单 | macOS Dock 进度 | 有 | ✅ | — | — |
@@ -249,10 +249,10 @@
 | # | 能力 | MDM 事实 | Siphon 现状 | 差距 | 优先级 | 路径 |
 |---|---|---|---|---|---|---|
 | N1 | 10 套主题 | Classic/Native/High contrast/Metro/Adwaita/Breeze/Luna/Aero/Aqua/Emerald | 10 套 + 22 角色已建 | ✅ | — | — |
-| N2 | 主题覆盖全界面 | 所有控件取色 | 仅 3 个视图消费 | ❌ | P1 | Swift 原生（系统改 @Environment） |
+| N2 | 主题覆盖全界面 | 所有控件取色 | 主窗口/分类树/列表/详情/全部对话框/下载弹窗/菜单栏面板/Options/设置均消费主题；外观切换作用于整个 App | ✅ | — | — |
 | N3 | 自定义主题文件 | TOML/JSON + inherits | 无 | ❌ | P2 | Swift 原生 |
 | N4 | Base16/pywal 实时 | 有 | 无 | ❌ | P2 | 可选 |
-| N5 | 界面缩放 100–200% 生效 | 全界面 | 菜单与 scale 值存在，未见统一应用 | ⚠️ | P1 | Swift 原生 |
+| N5 | 界面缩放 100–200% 生效 | 全界面 | 表格、对话框、弹窗按 scale 缩放字号/行高；系统文本样式经 dynamicTypeSize 同步 | ✅ | — | — |
 | N6 | 87 语言 | 88 个 TSV（87 语言） | 中英 2 语言（97 key） | ❌ | P1 | 分批 + 机器翻译 |
 | N7 | RTL | ar/he/fa/ur/ug | 无 | ❌ | P1 | SwiftUI 天然支持 + 布局检查 |
 | N8 | CLDR 数字/日期 | 有 | 系统默认 | ⚠️ | P2 | Foundation Locale |
@@ -266,7 +266,7 @@
 | O1 | 崩溃监视器 + minidump | 有（`mdm-crash`） | 无 | ❌ | P2 | Swift signal handler（受限） |
 | O2 | 符号化堆栈 | rust-minidump | 无 | ❌ | P2 | atos |
 | O3 | 冻结看门狗 | 8 秒 | 无 | ❌ | P2 | 自研心跳 |
-| O4 | 日志 | logs/ 2MB 轮转 | 无统一日志 | ❌ | P1 | Swift 原生 |
+| O4 | 日志 | logs/ 2MB 轮转 | `~/Library/Logs/Siphon/siphon.log`，2 MB 轮转保留 1 份；记录提交与终态，设置页可打开 | ✅ | — | — |
 | O5 | 更新器 | 签名校验 + 替换 + 重启 | 有（feed 默认空） | ⚠️ | P0 | 填默认 feed + 发版 |
 | O6 | 便携模式 | portable.zip | 无 | ❌ | 不做（macOS 弱需求） | — |
 | O7 | 单实例 | token socket | flock | ✅ | — | — |

@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 /// confirmation and streaming preview in one place.
 struct TaskListView: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
     let filter: TaskFilter
     let searchText: String
     var category: MDMCategory? = .all
@@ -153,7 +154,7 @@ struct TaskListView: View {
         let totalBytes = selected.reduce(Int64(0)) { $0 + $1.progress.totalBytes }
         return HStack(spacing: 12) {
             Label("已选 \(selected.count) 项", systemImage: "checkmark.circle.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .font(theme.font(size: 12, weight: .semibold))
                 .labelStyle(.titleAndIcon)
 
             if totalBytes > 0 {

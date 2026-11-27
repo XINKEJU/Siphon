@@ -42,6 +42,22 @@ struct GeneralSettingsView: View {
                 Text("菜单栏图标始终可用：显示主窗口、全部暂停/恢复、打开下载目录、偏好设置与退出。")
                     .font(.caption).foregroundStyle(.tertiary)
 
+                Toggle("全局热键 \(GlobalHotKeyManager.displayText) 显示/隐藏窗口", isOn: Binding(
+                    get: { GlobalHotKeyManager.isEnabled },
+                    set: { GlobalHotKeyManager.shared.setEnabled($0) }))
+                Text("在其他应用前台时也能用；再次按下收起主窗口。")
+                    .font(.caption).foregroundStyle(.tertiary)
+
+                HStack {
+                    Text("诊断日志：\(DiagnosticLog.shared.fileURL.path)")
+                        .lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Button("打开") { DiagnosticLog.shared.revealInFinder() }
+                        .controlSize(.small)
+                }
+                .font(.caption)
+
                 Toggle("开机自动启动", isOn: Binding(
                     get: { launchAtLogin },
                     set: { on in

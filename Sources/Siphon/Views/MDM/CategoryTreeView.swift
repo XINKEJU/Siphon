@@ -62,7 +62,7 @@ struct MDMCategoryTreeView: View {
                     ForEach(store.queues.queues) { queue in
                         HStack(spacing: 6) {
                             Image(systemName: "line.3.horizontal")
-                                .font(.system(size: 10))
+                                .font(theme.font(size: 10))
                             Text(queue.name).lineLimit(1)
                             Spacer(minLength: 2)
                             Text("\(store.tasks.filter { $0.queueName == queue.name }.count)")
@@ -80,8 +80,8 @@ struct MDMCategoryTreeView: View {
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(theme.color(.listBackground))
-        .frame(width: 143)
-        .font(.system(size: 12))
+        .frame(width: theme.scaled(143))
+        .font(theme.font(size: 12))
     }
 
     private var fileTypes: [MDMCategory] {
@@ -92,7 +92,7 @@ struct MDMCategoryTreeView: View {
     private func row(_ category: MDMCategory, count: Int) -> some View {
         HStack(spacing: 6) {
             Image(systemName: category.symbolName)
-                .font(.system(size: 12))
+                .font(theme.font(size: 12))
                 .foregroundStyle(category == .finished ? .green : .accentColor)
             Text(category.displayName).lineLimit(1)
             Spacer(minLength: 2)
@@ -110,7 +110,7 @@ struct MDMCategoryTreeView: View {
         let selected = store.selectedCategoryKey == cat.key
         HStack(spacing: 6) {
             Image(systemName: cat.symbolName)
-                .font(.system(size: 12))
+                .font(theme.font(size: 12))
                 .foregroundStyle(selected ? Color.white : .accentColor)
             Text(cat.name).lineLimit(1)
                 .foregroundStyle(selected ? Color.white : .primary)

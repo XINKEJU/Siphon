@@ -66,7 +66,7 @@ struct MDMOptionsView: View {
                     page = item
                 } label: {
                     Text(item.title)
-                        .font(.system(size: 11))
+                        .font(theme.font(size: 11))
                         .frame(maxWidth: .infinity, minHeight: 26)
                         .foregroundStyle(page == item ? .primary : .secondary)
                         .background(page == item ? theme.color(.selection) : theme.color(.surfaceRaised),
@@ -290,6 +290,7 @@ private struct MDMRemotePage: View {
 }
 
 private struct MDMAccountsPage: View {
+    @ObservedObject private var theme = MDMThemeStore.shared
     @State private var debrid = DebridService.shared
     @State private var cnl = CnLService.shared
     @State private var tokens: [String: String] = [:]
@@ -324,7 +325,7 @@ private struct MDMAccountsPage: View {
                 ))
                 .disabled(!cnl.enabled)
                 if let error = cnl.lastError {
-                    Text(error).font(.caption).foregroundStyle(.red)
+                    Text(error).font(.caption).foregroundStyle(theme.color(.error))
                 }
                 if !cnl.pending.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
@@ -340,7 +341,7 @@ private struct MDMAccountsPage: View {
                                     Text(comment).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Text(request.sources.map(\.absoluteString).joined(separator: "\n"))
-                                    .font(.system(size: 11, design: .monospaced))
+                                    .font(theme.monoFont(size: 11))
                                     .lineLimit(4)
                                     .textSelection(.enabled)
                                 HStack {

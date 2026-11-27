@@ -49,7 +49,7 @@
 | Options 12 页两行标签 | `Views/MDM/MDMOptionsView.swift`，内容复用真实设置面板 |
 | 统一 Command / ListAnswer / RecentAnswer 契约 | `MDM/ProductContract.swift` + `MDM/StoreMDMBridge.swift` |
 | 远程/popup 答案不含本地路径 | `GET /recent`（Bearer）+ `MDMRecentAnswer` 结构化保证 |
-| 角色化色板 + 主题 + 100–200% 界面缩放 + i18n 通道 | `MDM/ThemeSystem.swift`、`MDM/I18n.swift`、`tools/i18n/extract.py` |
+| 角色化色板 + 10 套主题（覆盖全部界面与对话框）+ 100–200% 界面缩放 + i18n 通道 | `MDM/ThemeSystem.swift`、`MDM/I18n.swift`、`tools/i18n/extract.py` |
 | 扩展 popup 三页 Downloads / This page / Settings | `Resources/BrowserExtension/popup.*`（v0.5.0）；只有 App 接受任务后才取消浏览器下载 |
 
 **边界**：MDM 的 87 种语言目录结构与 RTL 已迁入；仍未移植的是 gallery-dl 图库对话框、Safari 扩展包装（需 Apple 开发者账号）、签名/公证凭据与官网/基准营销站。这些属于 MDM 生态层，不影响本机的下载核心。
@@ -132,7 +132,7 @@ HLS / DASH 共用 `SegmentAssembler`：有界并发、严格有序落盘、按�
 | 下载弹窗（NDM 式） | 检测到新任务时右下角浮出紧凑面板：实时速度曲线 + 峰值/均值、全部活动任务的总进度/剩余时间、当前任务的分段进度与最近任务切换；默认浮在当前应用之上**不抢焦点**，也可在设置里改为切前台；全部完成后约 4 秒自动收起；⇧⌘D 或菜单栏随时唤起 | NetTransport / NDM 浮窗 |
 | 列表批量操作 | ⌘ 点选 / ⇧ 区间 / ⌘A 全选后，选中 2 项以上会浮出批量操作条：暂停、继续、拷贝多条链接、在访达中显示、删除；右键菜单作用于**整组选择**；删除前统一确认（删文件 / 仅移出列表）；侧边详情列切换为多选汇总（总大小、已下载、状态分布）；「任务」菜单另有 ⌥⌘P / ⌥⌘R / ⇧⌘C 快捷键 | Motrix / NDM / aria2 GUI |
 | PAC 代理判定 | 读系统 PAC/代理设置，用 JavaScriptCore 执行 `FindProxyForURL`，按主机选代理（回环直连） | FluxDown `pac_js` |
-| macOS 系统集成 | Dock 真实进度条与右键菜单、菜单栏速度/百分比、通知动作、空格 Quick Look、拖出文件、废纸篓删除、Finder「来自何处」、服务菜单、断网自动暂停（详见 §7.5） | 原生 AppKit + Motrix/gopeed 的桌面经验 |
+| macOS 系统集成 | Dock 真实进度条与右键菜单、菜单栏左键下载面板（每任务进度/暂停）+ 右键菜单、⌥⌘D 全局显示/隐藏、通知动作、空格 Quick Look、拖出文件、废纸篓删除、Finder「来自何处」、服务菜单、断网自动暂停、2 MB 轮转诊断日志（详见 §7.5） | 原生 AppKit + Motrix/gopeed 的桌面经验 |
 
 ---
 
@@ -361,7 +361,7 @@ vtool -show-build build/Siphon.app/Contents/MacOS/Siphon | grep -E 'minos|sdk'
 |---|---|---|
 | Dock 进度条 | `Managers/DockPresence.swift` + `MacIntegrationModel.DockProgressModel` | 按字节加权重画图标底部进度条；只剩暂停任务时用中性色；总大小未知（chunked / HLS live）画“不确定态”而不是假装 0%。关闭后回退为角标百分比 |
 | Dock 右键菜单 | `AppDelegate.applicationDockMenu` | 新建下载 / 显示弹窗 / 全部暂停 / 恢复全部 / 打开下载目录，且按当前任务状态决定可用性 |
-| 菜单栏实时状态 | `Managers/SystemPresence.swift` | 图标随活动状态变实心；标题可显示下载速度（默认）、百分比或仅图标；点开菜单第一行是「N 个进行中 · 1.4 MB/s」 |
+| 菜单栏实时状态 | `Managers/SystemPresence.swift` | 图标随活动状态变实心；标题可显示下载速度（默认）、百分比或仅图标；**左键**弹出下载面板（最近任务的进度、暂停/继续、全部暂停/恢复、主窗口/设置/退出），**右键**显示传统菜单，第一行是「N 个进行中 · 1.4 MB/s」 |
 | 通知动作 | 同上（`UNNotificationCategory`） | 完成：[在访达中显示][打开文件]；失败：[在访达中显示][重试]。点横幅直接定位文件，文件不在了才回主窗口 |
 | Quick Look | `Managers/QuickLookController.swift` + 本地键盘监视 | 列表里按空格预览选中文件（⌘Y 亦可），支持多选翻页、视频播放；与访达同一套共享面板 |
 | 拖出文件 | `TaskListView` 行级 `onDrag` | 已落盘的任务可直接拖到访达 / 邮件 / 剪辑软件，不必先开文件夹 |

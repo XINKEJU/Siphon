@@ -5,6 +5,7 @@ import SwiftUI
 /// in its own file; this struct only assembles the TabView.
 struct SettingsView: View {
     @State private var selectedTab = 0
+    @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -16,6 +17,9 @@ struct SettingsView: View {
             AboutSettingsView().tabItem { Label("关于", systemImage: "info.circle") }.tag(5)
         }
         .frame(width: 560, height: 440)
+        .dynamicTypeSize(theme.dynamicTypeSize)
         .padding()
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
     }
 }

@@ -28,7 +28,7 @@ struct AddTaskView: View {
             // so the glass has a meaningful job instead of being decorative.
             HStack(spacing: 12) {
                 Image(systemName: "arrow.down.circle.fill")
-                    .font(.system(size: 34))
+                    .font(theme.font(size: 34))
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("新建下载").font(.title3.weight(.semibold))

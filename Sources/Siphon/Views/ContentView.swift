@@ -124,7 +124,7 @@ struct ContentView: View {
     private var mainLayout: some View {
         HStack(spacing: 0) {
             MDMCategoryTreeView(selection: $category, selectedQueue: $selectedQueue)
-                .frame(width: 143)
+                .frame(width: theme.scaled(143))
 
             Divider()
 
@@ -145,6 +145,7 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .environmentObject(theme)
+        .dynamicTypeSize(theme.dynamicTypeSize)
         .environment(\.layoutDirection, MDMI18n.shared.isRTL ? .rightToLeft : .leftToRight)
     }
 
@@ -187,7 +188,7 @@ struct ContentView: View {
         } else {
             VStack(spacing: 10) {
                 Image(systemName: "sidebar.right")
-                    .font(.system(size: 34))
+                    .font(theme.font(size: 34))
                     .foregroundStyle(.tertiary)
                 Text("未选择任务")
                     .font(.headline)
@@ -211,28 +212,28 @@ struct ContentView: View {
 
             Label {
                 Text("\(active.count) \(MDMI18n.t("status.downloading"))")
-                    .font(.system(size: 11))
+                    .font(theme.font(size: 11))
             } icon: {
                 Image(systemName: "arrow.down.circle.fill")
                     .foregroundStyle(theme.color(.success))
-                    .font(.system(size: 10))
+                    .font(theme.font(size: 10))
             }
 
             if queued > 0 {
                 Label {
                     Text("\(queued) \(MDMI18n.t("status.queued"))")
-                        .font(.system(size: 11))
+                        .font(theme.font(size: 11))
                 } icon: {
-                    Image(systemName: "clock").foregroundStyle(.orange).font(.system(size: 10))
+                    Image(systemName: "clock").foregroundStyle(.orange).font(theme.font(size: 10))
                 }
             }
 
             if let note = network.status.displayText {
                 Label {
-                    Text(note).font(.system(size: 11, weight: .semibold))
+                    Text(note).font(theme.font(size: 11, weight: .semibold))
                 } icon: {
                     Image(systemName: network.status.symbolName)
-                        .foregroundStyle(.orange).font(.system(size: 10))
+                        .foregroundStyle(.orange).font(theme.font(size: 10))
                 }
                 .help(store.networkPauseReason?.displayText ?? "当前网络状态")
             }
@@ -240,21 +241,21 @@ struct ContentView: View {
             if store.selectedTaskIDs.count > 1 {
                 Label {
                     Text("已选 \(store.selectedTaskIDs.count) 项")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(theme.font(size: 11, weight: .semibold))
                 } icon: {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.accentColor).font(.system(size: 10))
+                        .foregroundStyle(Color.accentColor).font(theme.font(size: 10))
                 }
                 Button("取消") { store.clearSelection() }
-                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .buttonStyle(.plain).font(theme.font(size: 11)).foregroundStyle(.secondary)
             }
 
             if totalSpeed > 0 {
                 Label {
                     Text("\(formatBytes(totalSpeed))/s")
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(theme.monoFont(size: 11))
                 } icon: {
-                    Image(systemName: "speedometer").foregroundStyle(.blue).font(.system(size: 10))
+                    Image(systemName: "speedometer").foregroundStyle(.blue).font(theme.font(size: 10))
                 }
             }
 
@@ -265,9 +266,9 @@ struct ContentView: View {
             } label: {
                 Label {
                     Text(store.downloadDirectory.lastPathComponent)
-                        .font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                        .font(theme.font(size: 11)).lineLimit(1).truncationMode(.middle)
                 } icon: {
-                    Image(systemName: "folder").font(.system(size: 10))
+                    Image(systemName: "folder").font(theme.font(size: 10))
                 }
                 .foregroundStyle(.secondary)
             }
@@ -425,6 +426,7 @@ enum TaskFilter: String, CaseIterable, Identifiable {
 /// bar and the Tasks menu, so all three paths share one store implementation.
 private struct BatchSelectionPanel: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some View {
         let selected = store.selectedTasks
@@ -471,10 +473,8 @@ private struct BatchSelectionPanel: View {
                     Text("包含任务").font(.caption).foregroundStyle(.secondary)
                     ForEach(selected.prefix(12)) { task in
                         HStack(spacing: 6) {
-                            Image(systemName: task.state == .completed ? "checkmark.circle.fill"
-                                  : task.state == .error ? "exclamationmark.circle.fill"
-                                  : task.state == .paused ? "pause.circle.fill" : "arrow.down.circle.fill")
-                                .font(.system(size: 10))
+                            Image(systemName: stateIcon(task.state))
+                                .font(theme.font(size: 10))
                             Text(task.name).font(.caption).lineLimit(1).truncationMode(.middle)
                             Spacer(minLength: 4)
                             Text(Formatting.percent(task.progress.percent))
@@ -489,6 +489,15 @@ private struct BatchSelectionPanel: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func stateIcon(_ state: DownloadState) -> String {
+        switch state {
+        case .completed: return "checkmark.circle.fill"
+        case .error: return "exclamationmark.circle.fill"
+        case .paused: return "pause.circle.fill"
+        default: return "arrow.down.circle.fill"
         }
     }
 

@@ -134,6 +134,7 @@ public final class DownloadStore: EngineDelegate {
         static let ytdlp = "Siphon.ytdlp"
         static let turtle = "Siphon.turtleConfig"
         static let autoResumeInterrupted = "Siphon.autoResumeInterrupted"
+        static let hourlyQuotaMB = "Siphon.hourlyQuotaMB"
         static let downloadDirectory = "Siphon.downloadDirectory"
     }
     /// Tasks already handed to an engine. Resuming these must call `resume(id)`,
@@ -294,7 +295,22 @@ public final class DownloadStore: EngineDelegate {
     /// 当前生效的网络暂停原因，状态栏据此显示提示。
     public private(set) var networkPauseReason: NetworkPauseReason?
     private var schedulerTimer: AnyCancellable?
+    private var wakeObserver: NSObjectProtocol?
     private let keepAwake = KeepAwakeToken()
+
+    /// 每小时下载限额（MB，0 = 不限）。达到后暂停所有活动任务，整点自动恢复
+    /// 这一批（不会恢复用户手动暂停的任务）。
+    public var hourlyQuotaMB: Int = UserDefaults.standard.integer(forKey: "Siphon.hourlyQuotaMB") {
+        didSet {
+            UserDefaults.standard.set(hourlyQuotaMB, forKey: PrefKey.hourlyQuotaMB)
+            quotaHourBucket = Self.currentHourBucket()
+            hourlyQuotaUsedBytes = 0
+            resumeQuotaPaused()
+        }
+    }
+    public private(set) var hourlyQuotaUsedBytes: Int64 = 0
+    private var quotaHourBucket = Int64(Date().timeIntervalSince1970 / 3600)
+    private var quotaPaused: Set<UUID> = []
 
     /// 15-second tick (HyperDM): enforce the download window and completion actions.
     private func startSchedulerTick() {
@@ -305,9 +321,21 @@ public final class DownloadStore: EngineDelegate {
         schedulerTimer = Timer.publish(every: 15, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in self?.tick() }
+        // 睡眠期间 Timer 不走：一醒来就立刻评估时段窗口/限额，而不是等下一个
+        // tick。真正的 RTC 唤醒需要 root（pmset schedule wake），此处不做。
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.rolloverQuotaIfNeeded()
+                self.tick()
+            }
+        }
     }
 
     private func tick() {
+        rolloverQuotaIfNeeded()
         let window = scheduleWindow
         if window.isValid {
             if window.contains() {
@@ -352,6 +380,47 @@ public final class DownloadStore: EngineDelegate {
             Task { await schedule() }
         }
         enforceBoost()
+    }
+
+    // MARK: - 每小时下载限额（J7）
+
+    private static func currentHourBucket() -> Int64 {
+        Int64(Date().timeIntervalSince1970 / 3600)
+    }
+
+    private var hourlyQuotaBytes: Int64 { Int64(hourlyQuotaMB) * 1_048_576 }
+
+    /// Called from the progress path with the bytes added by this tick. Only the
+    /// tasks paused *by the quota* are recorded, so the hourly rollover cannot
+    /// undo a pause the user asked for.
+    private func noteQuota(bytes: Int64) {
+        guard hourlyQuotaMB > 0, bytes > 0 else { return }
+        rolloverQuotaIfNeeded()
+        hourlyQuotaUsedBytes += bytes
+        guard hourlyQuotaUsedBytes >= hourlyQuotaBytes else { return }
+        let active = tasks.filter { $0.state == .active }
+        guard !active.isEmpty else { return }
+        for task in active {
+            quotaPaused.insert(task.id)
+            pause(task.id)
+        }
+        DiagnosticLog.shared.log("hourly quota reached (\(hourlyQuotaMB) MB), paused \(active.count) task(s)")
+    }
+
+    private func rolloverQuotaIfNeeded() {
+        let bucket = Self.currentHourBucket()
+        guard bucket != quotaHourBucket else { return }
+        quotaHourBucket = bucket
+        hourlyQuotaUsedBytes = 0
+        resumeQuotaPaused()
+    }
+
+    private func resumeQuotaPaused() {
+        let ids = quotaPaused
+        quotaPaused.removeAll()
+        for id in ids where tasks.first(where: { $0.id == id })?.state == .paused {
+            resume(id)
+        }
     }
 
     /// Boost 独占：被标记的任务处于活动/待启动时，其余活动任务让位暂停；
@@ -518,6 +587,7 @@ public final class DownloadStore: EngineDelegate {
                     options: [String: String] = [:], checksum: String? = nil,
                     mirrors: [String] = [], priority: Int = 0,
                     ytdlpQuality: YtDlpResolver.Quality = .auto) {
+        DiagnosticLog.shared.log("submit \(urlString)")
         Task {
             await addNormalized(urlString: urlString, name: name,
                                 queueName: queueName, options: options, checksum: checksum,
@@ -1292,7 +1362,9 @@ public final class DownloadStore: EngineDelegate {
         // 持久化传输统计：只累计本次会话新增的字节（首次见到该任务时以当前值为基线）。
         let previous = statsLastBytes[taskID] ?? progress.downloadedBytes
         if progress.downloadedBytes > previous {
-            TransferStats.shared.addDownloaded(progress.downloadedBytes - previous)
+            let delta = progress.downloadedBytes - previous
+            TransferStats.shared.addDownloaded(delta)
+            noteQuota(bytes: delta)
         }
         statsLastBytes[taskID] = progress.downloadedBytes
         tasks[i].progress = progress
@@ -1413,6 +1485,9 @@ public final class DownloadStore: EngineDelegate {
         // Task-event webhook: fire on every terminal transition (FluxDown model).
         if state == .completed || state == .error || state == .removed {
             let t = tasks[i]
+            DiagnosticLog.shared.log("\(state.rawValue) \(t.name) "
+                + "\(t.progress.downloadedBytes)/\(t.progress.totalBytes)"
+                + (t.errorDescription.map { " error=\($0)" } ?? ""))
             WebhookManager.shared.deliver(task: .init(
                 id: t.id, name: t.name, url: t.source.absoluteString,
                 state: state.rawValue,

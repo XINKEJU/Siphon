@@ -51,6 +51,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.store?.handleNetworkChange(status)
         }
         NetworkMonitor.shared.start()
+        // ⌥⌘D works while another app is frontmost, which is the point of a
+        // global shortcut: start a download, switch to the browser, get back.
+        GlobalHotKeyManager.shared.install { [weak self] in
+            self?.toggleMainWindowVisibility()
+        }
+        DiagnosticLog.shared.log("launch pid=\(getpid())")
     }
 
     /// Dock 图标右键菜单：macOS 用户不会为了暂停全部而先把窗口翻出来。
@@ -197,6 +203,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main?.makeKeyAndOrderFront(nil)
     }
 
+    /// Global hotkey target: one chord both reveals and dismisses the window,
+    /// so it does not need a second "hide" shortcut.
+    func toggleMainWindowVisibility() {
+        let main = NSApp.windows.first { $0.identifier?.rawValue.contains("main-window") == true }
+        if let main, main.isVisible, NSApp.isActive {
+            main.orderOut(nil)
+        } else {
+            showMainWindow()
+        }
+    }
+
     private var keyMonitor: Any?
 
     /// 空格 = Quick Look，与访达一致。只在主窗口是 key window、没有文本输入、
@@ -221,6 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        GlobalHotKeyManager.shared.uninstall()
         store?.stop()
         TransferStats.shared.flush()
         if instanceLockFD >= 0 {

@@ -158,6 +158,7 @@ public final class DownloadPopupController: NSObject, NSWindowDelegate {
                                      onClose: { [weak self] in self?.hide() },
                                      onOpenMain: { [weak self] in self?.openMainWindow() })
             .environment(store)
+            .environmentObject(MDMThemeStore.shared)
         let host = NSHostingView(rootView: root)
         host.frame = rect
         panel.contentView = host

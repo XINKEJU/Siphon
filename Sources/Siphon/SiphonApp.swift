@@ -20,6 +20,7 @@ struct SiphonApp: App {
         Window("下载", id: "main-window") {
             ContentView(showingAdd: $showingAdd, showingInspector: $showingInspector)
                 .environment(store)
+                .environmentObject(MDMThemeStore.shared)
                 .environment(\.layoutDirection, MDMI18n.shared.isRTL ? .rightToLeft : .leftToRight)
                 // A min-only frame makes the root view size to its ideal height
                 // (~135pt) and centre it once the window grows. The max:infinity
@@ -47,6 +48,7 @@ struct SiphonApp: App {
         Settings {
             SettingsView()
                 .environment(store)
+                .environmentObject(MDMThemeStore.shared)
         }
     }
 }

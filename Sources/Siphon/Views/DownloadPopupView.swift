@@ -16,6 +16,7 @@ final class DownloadPopupFocus {
 /// 侧边栏 / 筛选 / 设置等界面。
 struct DownloadPopupView: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
     let focus: DownloadPopupFocus
     let onClose: () -> Void
     let onOpenMain: () -> Void
@@ -46,6 +47,8 @@ struct DownloadPopupView: View {
         }
         .frame(width: Self.width, height: Self.height)
         .background { PopupSurface() }
+        .foregroundStyle(theme.color(.text))
+        .dynamicTypeSize(theme.dynamicTypeSize)
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(.separator.opacity(0.55), lineWidth: 0.5)
@@ -58,19 +61,19 @@ struct DownloadPopupView: View {
     private var header: some View {
         HStack(spacing: 9) {
             Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 16))
+                .font(theme.font(size: 16))
                 .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Siphon 下载").font(.system(size: 12, weight: .semibold))
+                Text("Siphon 下载").font(theme.font(size: 12, weight: .semibold))
                 Text(headerSubtitle)
-                    .font(.system(size: 10))
+                    .font(theme.font(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
             Button { onOpenMain() } label: {
                 Image(systemName: "macwindow")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(theme.font(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
@@ -80,7 +83,7 @@ struct DownloadPopupView: View {
 
             Button { onClose() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(theme.font(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
@@ -114,7 +117,7 @@ struct DownloadPopupView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("实时速度").font(.caption).foregroundStyle(.secondary)
                     Text(Formatting.speed(store.aggregateSpeed))
-                        .font(.system(size: 28, weight: .semibold, design: .rounded))
+                        .font(.system(size: theme.scaled(28), weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.65)
@@ -148,7 +151,7 @@ struct DownloadPopupView: View {
                 Text("总进度").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text(total > 0 ? Formatting.percent(fraction) : "大小未知")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .font(.system(size: theme.scaled(14), weight: .semibold, design: .rounded))
                     .monospacedDigit()
             }
             PopupProgressTrack(fraction: total > 0 ? fraction : nil)
@@ -173,10 +176,10 @@ struct DownloadPopupView: View {
             VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 7) {
                     Image(systemName: icon(for: task))
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(tint(for: task))
                     Text(task.name)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(theme.font(size: 12, weight: .medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
@@ -190,7 +193,7 @@ struct DownloadPopupView: View {
 
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(Formatting.speed(task.progress.speedBytesPerSec))
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .font(.system(size: theme.scaled(15), weight: .semibold, design: .rounded))
                         .monospacedDigit()
                     Text(Formatting.percent(task.progress.percent))
                         .font(.caption.monospacedDigit())
@@ -238,7 +241,7 @@ struct DownloadPopupView: View {
     private var emptyState: some View {
         VStack(spacing: 10) {
             Image(systemName: "tray.and.arrow.down")
-                .font(.system(size: 34))
+                .font(theme.font(size: 34))
                 .foregroundStyle(.tertiary)
             Text("还没有下载任务")
                 .font(.headline)
@@ -335,8 +338,10 @@ struct DownloadPopupView: View {
 /// 只用系统语义色，浅色与深色模式自动跟随；顶部的轻微渐变叠在不透明底色之上，
 /// 最终合成结果仍然 100% 不透明，只用来给标题栏一点层次。
 private struct PopupSurface: View {
+    @ObservedObject private var theme = MDMThemeStore.shared
+
     var body: some View {
-        Color(nsColor: .windowBackgroundColor)
+        theme.color(.surface)
             .overlay(alignment: .top) {
                 LinearGradient(colors: [Color.primary.opacity(0.05), .clear],
                                startPoint: .top, endPoint: .bottom)
@@ -474,13 +479,14 @@ private struct PopupTaskRow: View {
     let task: DownloadTask
     let isFocused: Bool
     let onSelect: () -> Void
+    @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 8) {
                 Image(systemName: task.state == .active ? "arrow.down.circle.fill"
                       : task.state == .completed ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 11))
+                    .font(theme.font(size: 11))
                     .foregroundStyle(isFocused ? Color.accentColor : .secondary)
                 Text(task.name)
                     .font(.caption)

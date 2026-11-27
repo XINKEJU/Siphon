@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import UserNotifications
 
 /// macOS-level presence for downloads: a menu-bar item with live progress,
@@ -11,6 +12,8 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate, N
     public static let shared = SystemPresence()
 
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
+    private var panelPopover: NSPopover?
     private weak var store: DownloadStore?
     private var notificationsAuthorized = false
     private var lastNotification: Date = .distantPast
@@ -61,11 +64,59 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate, N
             // 等宽数字：速度从 999 KB/s 跳到 1.0 MB/s 时标题宽度不抖动。
             button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize,
                                                            weight: .regular)
+            // Left-click opens the download panel (the useful default), right-
+            // click keeps the menu. Assigning `item.menu` would swallow both
+            // clicks into the menu, so the menu is retained and popped up by hand.
+            button.target = self
+            button.action = #selector(statusButtonClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         let menu = makeMenu()
         menu.delegate = self
-        item.menu = menu
+        statusMenu = menu
         statusItem = item
+    }
+
+    @objc private func statusButtonClicked(_ sender: NSStatusBarButton) {
+        let isRightClick = NSApp.currentEvent?.type == .rightMouseUp
+            || NSApp.currentEvent?.modifierFlags.contains(.control) == true
+        if isRightClick {
+            panelPopover?.performClose(nil)
+            guard let menu = statusMenu else { return }
+            refreshMenu()
+            menu.popUp(positioning: nil,
+                       at: NSPoint(x: 0, y: sender.bounds.height + 4),
+                       in: sender)
+        } else {
+            togglePanel(sender)
+        }
+    }
+
+    private func togglePanel(_ sender: NSStatusBarButton) {
+        if let popover = panelPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let store else { return }
+        let content = MDMMenuBarPanelView(
+            onOpenMain: { [weak self] in
+                self?.panelPopover?.performClose(nil)
+                self?.showMainWindow()
+            },
+            onOpenSettings: { [weak self] in
+                self?.panelPopover?.performClose(nil)
+                self?.openSettings()
+            },
+            onQuit: { NSApp.terminate(nil) })
+            .environment(store)
+            .environmentObject(MDMThemeStore.shared)
+        let controller = NSHostingController(rootView: content)
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        popover.animates = true
+        panelPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
 
     private func makeMenu() -> NSMenu {
@@ -105,21 +156,24 @@ public final class SystemPresence: NSObject, UNUserNotificationCenterDelegate, N
     /// 菜单每次打开都重新计算可用态与实际速度 —— 静态 enabled 的托盘菜单
     /// 会让人点了「全部暂停」却什么都没发生（当时根本没有进行中的任务）。
     nonisolated public func menuNeedsUpdate(_ menu: NSMenu) {
-        MainActor.assumeIsolated {
-            guard let store else { return }
-            let active = store.tasks.filter { $0.state == .active }
-            let speed = active.reduce(Int64(0)) { $0 + $1.progress.speedBytesPerSec }
-            if active.isEmpty {
-                let paused = store.tasks.filter { $0.state == .paused }.count
-                statusHeaderItem?.title = paused > 0 ? "已暂停 \(paused) 个任务" : "空闲"
-            } else {
-                statusHeaderItem?.title =
-                    "\(active.count) 个进行中 · \(MenuBarTitle.compactSpeed(speed))"
-            }
-            pauseItem?.isEnabled = !active.isEmpty
-            resumeItem?.isEnabled = store.tasks.contains {
-                $0.state == .paused || $0.state == .error
-            }
+        MainActor.assumeIsolated { refreshMenu() }
+    }
+
+    /// Shared by the right-click menu and its delegate hook.
+    private func refreshMenu() {
+        guard let store else { return }
+        let active = store.tasks.filter { $0.state == .active }
+        let speed = active.reduce(Int64(0)) { $0 + $1.progress.speedBytesPerSec }
+        if active.isEmpty {
+            let paused = store.tasks.filter { $0.state == .paused }.count
+            statusHeaderItem?.title = paused > 0 ? "已暂停 \(paused) 个任务" : "空闲"
+        } else {
+            statusHeaderItem?.title =
+                "\(active.count) 个进行中 · \(MenuBarTitle.compactSpeed(speed))"
+        }
+        pauseItem?.isEnabled = !active.isEmpty
+        resumeItem?.isEnabled = store.tasks.contains {
+            $0.state == .paused || $0.state == .error
         }
     }
 

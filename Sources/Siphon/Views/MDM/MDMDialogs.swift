@@ -6,6 +6,7 @@ import AppKit
 /// not the download pipeline. All user-visible labels go through MDMI18n.
 struct MDMAddURLDialog: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
     @Binding var isPresented: Bool
     @State private var url = ""
     @State private var name = ""
@@ -56,9 +57,9 @@ struct MDMAddURLDialog: View {
                     .labelsHidden()
                     if resolving { ProgressView().controlSize(.small) }
                 }
-                .font(.system(size: 12))
+                .font(theme.font(size: 12))
                 if let resolveError {
-                    Text(resolveError).font(.caption).foregroundStyle(.red)
+                    Text(resolveError).font(.caption).foregroundStyle(theme.color(.error))
                 }
             }
 
@@ -79,6 +80,9 @@ struct MDMAddURLDialog: View {
         }
         .padding(18)
         .frame(width: 540)
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
+        .dynamicTypeSize(theme.dynamicTypeSize)
         .onAppear { saveTo = store.downloadDirectory.path }
     }
 
@@ -87,7 +91,7 @@ struct MDMAddURLDialog: View {
             Text(title).frame(width: 82, alignment: .leading)
             TextField(placeholder, text: text).textFieldStyle(.roundedBorder)
         }
-        .font(.system(size: 12))
+        .font(theme.font(size: 12))
     }
 
     private func submit(later: Bool) {
@@ -127,6 +131,7 @@ struct MDMAddURLDialog: View {
 ///    their relative folders preserved under the download directory.
 struct MDMLinkGrabberDialog: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
     @Binding var isPresented: Bool
     @State private var text = ""
 
@@ -194,6 +199,9 @@ struct MDMLinkGrabberDialog: View {
         }
         .padding(18)
         .frame(width: 600, height: 420)
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
+        .dynamicTypeSize(theme.dynamicTypeSize)
         .onDisappear { scanTask?.cancel() }
     }
 
@@ -204,7 +212,7 @@ struct MDMLinkGrabberDialog: View {
             Text("每行一个链接；支持播放列表、专用链与花括号展开。")
                 .font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $text)
-                .font(.system(size: 12, design: .monospaced))
+                .font(theme.monoFont(size: 12))
                 .frame(minHeight: 260)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
             Text("\(lines.count) 个链接").font(.caption).foregroundStyle(.secondary)
@@ -326,6 +334,7 @@ private struct PackageRow: View {
     let depth: Int
     let toggle: (String) -> Void
     @State private var expanded = true
+    @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -335,7 +344,7 @@ private struct PackageRow: View {
                         expanded.toggle()
                     } label: {
                         Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(theme.font(size: 9, weight: .semibold))
                             .frame(width: 12)
                     }
                     .buttonStyle(.plain)
@@ -351,14 +360,14 @@ private struct PackageRow: View {
                 .controlSize(.mini)
 
                 Image(systemName: node.isFolder ? "folder" : "doc")
-                    .font(.system(size: 11))
-                    .foregroundStyle(node.isFolder ? Color.accentColor : .secondary)
-                Text(node.name).font(.system(size: 12)).lineLimit(1)
+                    .font(theme.font(size: 11))
+                    .foregroundStyle(node.isFolder ? Color.accentColor : theme.color(.secondaryText))
+                Text(node.name).font(theme.font(size: 12)).lineLimit(1)
                 Spacer()
                 if let size = node.size, !node.isFolder {
                     Text(Formatting.bytes(size))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(theme.monoFont(size: 11))
+                        .foregroundStyle(theme.color(.secondaryText))
                 }
             }
             .padding(.leading, CGFloat(depth) * 14)
@@ -376,6 +385,7 @@ struct MDMFindDialog: View {
     @Binding var isPresented: Bool
     @Binding var query: String
     var onFind: () -> Void
+    @ObservedObject private var theme = MDMThemeStore.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -393,11 +403,15 @@ struct MDMFindDialog: View {
         }
         .padding(18)
         .frame(width: 400)
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
+        .dynamicTypeSize(theme.dynamicTypeSize)
     }
 }
 
 struct MDMSchedulerDialog: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
     @Binding var isPresented: Bool
 
     var body: some View {
@@ -421,7 +435,7 @@ struct MDMSchedulerDialog: View {
             }
             if !store.scheduleWindow.isValid && store.scheduleWindow.enabled {
                 Text("时段无效：请输入 HH:mm，且起止时间不同。")
-                    .font(.caption).foregroundStyle(.red)
+                    .font(.caption).foregroundStyle(theme.color(.error))
             }
             Picker("全部完成后", selection: Binding(
                 get: { store.completionAction },
@@ -437,11 +451,15 @@ struct MDMSchedulerDialog: View {
         }
         .padding(18)
         .frame(width: 420)
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
+        .dynamicTypeSize(theme.dynamicTypeSize)
     }
 }
 
 struct MDMPropertiesDialog: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
     let task: DownloadTask
     @Binding var isPresented: Bool
     @State private var name = ""
@@ -488,6 +506,9 @@ struct MDMPropertiesDialog: View {
         }
         .padding(18)
         .frame(width: 520)
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
+        .dynamicTypeSize(theme.dynamicTypeSize)
         .onAppear {
             name = task.name
             queue = task.queueName
@@ -498,8 +519,8 @@ struct MDMPropertiesDialog: View {
 
     private func detail(_ title: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(title).frame(width: 78, alignment: .leading).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 11, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+            Text(title).frame(width: 78, alignment: .leading).foregroundStyle(theme.color(.secondaryText))
+            Text(value).font(theme.monoFont(size: 11)).lineLimit(1).truncationMode(.middle)
         }
         .font(.caption)
     }
@@ -507,6 +528,7 @@ struct MDMPropertiesDialog: View {
 
 struct MDMVerifyChecksumDialog: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
     @Binding var isPresented: Bool
     @State private var selectedID: UUID?
     @State private var spec = ""
@@ -523,7 +545,8 @@ struct MDMVerifyChecksumDialog: View {
             }
             TextField("sha256:hex / md5:hex", text: $spec).textFieldStyle(.roundedBorder)
             if !result.isEmpty {
-                Text(result).font(.caption).foregroundStyle(result.hasPrefix("✓") ? .green : .red)
+                Text(result).font(.caption)
+                    .foregroundStyle(result.hasPrefix("✓") ? theme.color(.success) : theme.color(.error))
             }
             HStack {
                 Spacer()
@@ -535,6 +558,9 @@ struct MDMVerifyChecksumDialog: View {
         }
         .padding(18)
         .frame(width: 460)
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
+        .dynamicTypeSize(theme.dynamicTypeSize)
         .onAppear { selectedID = store.selectedTaskID }
 
     }

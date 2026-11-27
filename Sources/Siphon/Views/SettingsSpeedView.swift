@@ -58,6 +58,25 @@ struct SpeedSettingsView: View {
                 Text("同时作用于 aria2（--max-overall-download-limit）与原生 HLS/DASH 引擎（令牌桶）。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("下载限额") {
+                HStack {
+                    Text("每小时最多下载")
+                    TextField("0 = 不限", value: Binding(
+                        get: { store.hourlyQuotaMB },
+                        set: { store.hourlyQuotaMB = max(0, $0) }),
+                        format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                    Text("MB").foregroundStyle(.secondary)
+                }
+                if store.hourlyQuotaMB > 0 {
+                    Text("本小时已用 \(Formatting.bytes(store.hourlyQuotaUsedBytes)) / \(store.hourlyQuotaMB) MB；达到后暂停全部活动任务，下一个小时自动恢复仅因限额暂停的任务。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("0 表示不限额。达到限额时暂停而非删除，任务保留在列表中。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("低速熔断") {
                 HStack {
                     TextField("字节/秒", text: $lowSpeedText, prompt: Text("0 = 关闭"))

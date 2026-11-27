@@ -6,6 +6,7 @@ import AppKit
 /// double-composite; header, rows and numbers stay plain and crisp.
 struct TaskDetailView: View {
     @Environment(DownloadStore.self) private var store
+    @ObservedObject private var theme = MDMThemeStore.shared
     let task: DownloadTask
     @State private var previewTask: DownloadTask?
 
@@ -132,6 +133,9 @@ struct TaskDetailView: View {
             .formStyle(.grouped)
         }
         .frame(minWidth: 280)
+        .background(theme.color(.surface))
+        .foregroundStyle(theme.color(.text))
+        .dynamicTypeSize(theme.dynamicTypeSize)
         .sheet(item: $previewTask) { task in
             StreamingPreviewView(task: task)
         }
@@ -143,7 +147,7 @@ struct TaskDetailView: View {
     private var identityCard: some View {        VStack(spacing: 10) {
             HStack(spacing: 12) {
                 Image(systemName: "doc.fill")
-                    .font(.system(size: 30))
+                    .font(.system(size: theme.scaled(30)))
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(task.name)
