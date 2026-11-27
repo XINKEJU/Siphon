@@ -290,13 +290,126 @@ private struct MDMRemotePage: View {
 }
 
 private struct MDMAccountsPage: View {
+    @State private var debrid = DebridService.shared
+    @State private var cnl = CnLService.shared
+    @State private var tokens: [String: String] = [:]
+    @State private var messages: [String: String] = [:]
+    @State private var testing: String?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("凭据只存系统钥匙串或 0600 文件；列表、API 与日志都不会回显令牌。")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Sites Logins 页管理站点登录；本页保留给后续 debrid / 账户服务。")
-                .font(.caption).foregroundStyle(.tertiary)
-            Spacer()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("凭据只存系统钥匙串；列表、API 与日志都不会回显令牌。")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                Toggle("启用网盘加速解析", isOn: Binding(
+                    get: { debrid.enabled },
+                    set: { debrid.enabled = $0 }
+                ))
+
+                ForEach(debrid.providers, id: \.id) { provider in
+                    providerRow(provider)
+                }
+
+                Divider()
+
+                Text("Click'n'Load 2").font(.headline)
+                Toggle("启用本地接收（127.0.0.1:\(String(cnl.port)))", isOn: Binding(
+                    get: { cnl.enabled },
+                    set: { cnl.enabled = $0 }
+                ))
+                Toggle("收到链接后自动加入队列", isOn: Binding(
+                    get: { cnl.autoAdd },
+                    set: { cnl.autoAdd = $0 }
+                ))
+                .disabled(!cnl.enabled)
+                if let error = cnl.lastError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+                if !cnl.pending.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("待确认的链接（\(cnl.pending.count)）").font(.subheadline)
+                            Spacer()
+                            Button("全部加入") { cnl.confirmAll() }.controlSize(.small)
+                            Button("全部忽略") { cnl.rejectAll() }.controlSize(.small)
+                        }
+                        ForEach(cnl.pending) { request in
+                            VStack(alignment: .leading, spacing: 2) {
+                                if let comment = request.comment {
+                                    Text(comment).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Text(request.sources.map(\.absoluteString).joined(separator: "\n"))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .lineLimit(4)
+                                    .textSelection(.enabled)
+                                HStack {
+                                    Button("加入") { cnl.confirm(request.id) }.controlSize(.mini)
+                                    Button("忽略") { cnl.reject(request.id) }.controlSize(.mini)
+                                }
+                            }
+                            .padding(6)
+                            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 5))
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .onAppear(perform: loadTokens)
+    }
+
+    private func providerRow(_ provider: any DebridProvider) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(provider.displayName).font(.subheadline.weight(.semibold))
+                Link("注册", destination: provider.signupURL)
+                    .font(.caption)
+                Spacer()
+                if testing == provider.id {
+                    ProgressView().controlSize(.small)
+                }
+                Button("测试") { test(provider) }
+                    .controlSize(.small)
+                    .disabled(tokens[provider.id, default: ""].isEmpty)
+            }
+            HStack {
+                SecureField("API Token", text: Binding(
+                    get: { tokens[provider.id] ?? "" },
+                    set: { tokens[provider.id] = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                Button("保存") {
+                    let ok = debrid.setToken(tokens[provider.id] ?? "", for: provider.id)
+                    messages[provider.id] = ok ? "已保存到钥匙串" : "保存失败"
+                }
+                .controlSize(.small)
+            }
+            if let message = messages[provider.id] {
+                Text(message).font(.caption)
+                    .foregroundStyle(message.contains("失败") ? .red : .secondary)
+            }
+        }
+    }
+
+    private func loadTokens() {
+        for provider in debrid.providers {
+            tokens[provider.id] = debrid.token(for: provider.id)
+        }
+    }
+
+    private func test(_ provider: any DebridProvider) {
+        testing = provider.id
+        messages[provider.id] = nil
+        Task {
+            defer { testing = nil }
+            do {
+                let account = try await debrid.testAccount(providerID: provider.id)
+                messages[provider.id] = "\(account.username) · \(account.isPremium ? "高级" : "免费")"
+            } catch {
+                messages[provider.id] = "失败：\(error.localizedDescription)"
+            }
         }
     }
 }

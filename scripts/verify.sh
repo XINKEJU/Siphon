@@ -608,7 +608,7 @@ grep -q "enum AutomationSchema" Sources/Siphon/Automation/AutomationSchema.swift
 grep -q "start_queue" Sources/Siphon/BrowserExtension/MCPServer.swift
 grep -q "stop_queue" Sources/Siphon/BrowserExtension/MCPServer.swift
 grep -q "processServerCard" Sources/Siphon/BrowserExtension/MCPServer.swift
-grep -q "struct SiphonCLI" Sources/SiphonCLI/main.swift
+grep -q "struct SiphonCLI" Sources/SiphonCLI/SiphonCLI.swift
 grep -q "class RemoteControlServer" Sources/Siphon/Remote/RemoteControlServer.swift
 grep -q "SiphonCLI" Package.swift
 # Stage 5: 87 languages, RTL, locale formatter, real scaling.
@@ -618,6 +618,16 @@ grep -q "enum LocaleFormatter" Sources/Siphon/MDM/LocaleFormatter.swift
 grep -q "struct MDMMetrics" Sources/Siphon/MDM/ThemeSystem.swift
 [[ -f Resources/i18n/zh-Hans.tsv ]] || { echo "i18n catalog missing" >&2; exit 1; }
 [[ $(ls Resources/i18n/*.tsv | wc -l) -ge 87 ]] || { echo "fewer than 87 language files" >&2; exit 1; }
+# Stage 2 remainder: package grabber, remote ZIP, archive repair, CnL2, debrid.
+grep -q "struct PackageNode" Sources/Siphon/Package/PackageNode.swift
+grep -q "enum PackageResolver" Sources/Siphon/Package/PackageResolver.swift
+grep -q "struct RemoteZIPReader" Sources/Siphon/Protocols/RemoteZIPReader.swift
+grep -q "enum ArchiveTestRepairService" Sources/Siphon/Managers/ArchiveTestRepairService.swift
+grep -q "class CnLService" Sources/Siphon/Protocols/CnLService.swift
+grep -q "enum CnLCrypto" Sources/Siphon/Protocols/CnLPayload.swift
+grep -q "protocol DebridProvider" Sources/Siphon/Managers/DebridService.swift
+grep -q "PackageRow" Sources/Siphon/Views/MDM/MDMDialogs.swift
+grep -q "MDMAccountsPage" Sources/Siphon/Views/MDM/MDMOptionsView.swift
 
 # The suite hand-lists swiftc inputs. Report coverage and fail on stale paths:
 # a newly added source that is referenced must be added to the right list, or a
@@ -644,6 +654,20 @@ swiftc -o "$TMP/sites" Tests/SiteAdapterTests/main.swift \
     Sources/Siphon/SiteAdapters/SiteAdapterRegistry.swift \
     Sources/Siphon/SiteAdapters/SiteAdapters.swift
 "$TMP/sites"
+
+echo "== stage 2 tests: package tree, remote zip, archive repair, CnL, debrid =="
+python3 Tests/fixtures/make_stage2_fixtures.py >/dev/null
+swiftc -o "$TMP/stage2" Tests/Stage2Tests/main.swift \
+    Sources/Siphon/Package/PackageNode.swift \
+    Sources/Siphon/Package/PackageResolver.swift \
+    Sources/Siphon/Protocols/RemoteZIPReader.swift \
+    Sources/Siphon/Managers/ArchiveTestRepairService.swift \
+    Sources/Siphon/Protocols/CnLPayload.swift \
+    Sources/Siphon/Managers/DebridService.swift \
+    Sources/Siphon/Managers/Keychain.swift \
+    Sources/Siphon/SiteAdapters/SiteAdapterRegistry.swift \
+    Sources/Siphon/SiteAdapters/SiteAdapters.swift
+"$TMP/stage2"
 
 echo
 echo "ALL CHECKS PASSED"

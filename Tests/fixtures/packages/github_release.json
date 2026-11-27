@@ -1,0 +1,16 @@
+{
+  "tag_name": "v1.4.0",
+  "name": "Release 1.4.0",
+  "assets": [
+    {
+      "name": "Siphon-1.4.0.dmg",
+      "size": 12345678,
+      "browser_download_url": "https://github.com/acme/siphon/releases/download/v1.4.0/Siphon-1.4.0.dmg"
+    },
+    {
+      "name": "Siphon-1.4.0.zip",
+      "size": 9876543,
+      "browser_download_url": "https://github.com/acme/siphon/releases/download/v1.4.0/Siphon-1.4.0.zip"
+    }
+  ]
+}

@@ -65,6 +65,10 @@ echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BIN" "$CONTENTS/MacOS/Siphon"
+# Terminal client ships alongside the app binary.
+if [[ -f "$BIN_DIR/SiphonCLI" ]]; then
+    cp "$BIN_DIR/SiphonCLI" "$CONTENTS/MacOS/SiphonCLI"
+fi
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 # 87-language catalog: TSV files are loaded at runtime by MDMI18n.
 if [[ -d "$ROOT/Resources/i18n" ]]; then

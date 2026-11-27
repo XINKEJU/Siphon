@@ -28,6 +28,8 @@ struct SiphonApp: App {
                 .onAppear {
                     appDelegate.store = store
                     SystemPresence.shared.configure(store: store)
+                    CnLService.shared.configure(store: store)
+                    PackageFTPBridge.install()
                     appDelegate.flushPendingServiceText()
                     store.handleNetworkChange(NetworkMonitor.shared.status)
                 }

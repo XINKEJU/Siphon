@@ -1,0 +1,26 @@
+[
+  {
+    "type": "directory",
+    "path": "configs",
+    "size": 0
+  },
+  {
+    "type": "file",
+    "path": "configs/config.json",
+    "size": 512
+  },
+  {
+    "type": "file",
+    "path": "model.safetensors",
+    "size": 4096,
+    "lfs": {
+      "oid": "abc123",
+      "size": 4096
+    }
+  },
+  {
+    "type": "file",
+    "path": "README.md",
+    "size": 128
+  }
+]
