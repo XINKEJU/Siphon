@@ -87,99 +87,32 @@ private struct TaskTableLayout: Codable {
     var sortAscending = false
 }
 
-/// The second header strip contains one live search field per visible column.
-/// Header rectangles stay in the upper strip; the fields scroll and reorder with
-/// their columns because they live in the actual NSTableHeaderView.
+/// The header is a single compact strip: clicking a column title sorts by it,
+/// with the native sort indicator. Right-click opens the column visibility menu.
 @MainActor
-private final class TaskTableHeaderView: NSTableHeaderView, NSTextFieldDelegate, NSSearchFieldDelegate {
-    var filterChanged: (@MainActor (String, String) -> Void)?
+private final class TaskTableHeaderView: NSTableHeaderView {
     var visibilityMenu: (@MainActor () -> NSMenu)?
 
-    private var fields: [String: NSSearchField] = [:]
-    private var fieldOrder: [String] = []
-    private var columnTitleHeight: CGFloat = 22
-    private var filterHeight: CGFloat = 18
-    private let filterSpacing: CGFloat = 4
+    private var titleHeight: CGFloat = 22
 
     override var isFlipped: Bool { true }
 
     override func headerRect(ofColumn column: Int) -> NSRect {
         var rect = super.headerRect(ofColumn: column)
         rect.origin.y = 0
-        rect.size.height = columnTitleHeight
+        rect.size.height = titleHeight
         return rect
     }
 
-    func sync(columns: [NSTableColumn], filters: [String: String], theme: MDMThemeStore) {
-        columnTitleHeight = theme.scaled(22)
-        filterHeight = theme.scaled(18)
-        let totalHeight = columnTitleHeight + filterHeight + theme.scaled(filterSpacing)
-        if frame.height != totalHeight {
-            frame.size.height = totalHeight
+    func sync(columns: [NSTableColumn], theme: MDMThemeStore) {
+        titleHeight = theme.scaled(22)
+        if frame.height != titleHeight {
+            frame.size.height = titleHeight
             invalidateIntrinsicContentSize()
         }
-
-        let visible = columns.filter { !$0.isHidden }
-        let identifiers = visible.map { $0.identifier.rawValue }
-        if identifiers != fieldOrder {
-            if let editor = window?.firstResponder as? NSTextView,
-               fields.values.contains(where: { $0.currentEditor() === editor }) {
-                window?.makeFirstResponder(nil)
-            }
-            fields.values.forEach { $0.removeFromSuperview() }
-            fields.removeAll()
-            fieldOrder = identifiers
-            for column in visible {
-                let id = column.identifier.rawValue
-                let field = NSSearchField(frame: NSRect(x: 0, y: 0, width: 80, height: filterHeight))
-                field.identifier = NSUserInterfaceItemIdentifier(id)
-                field.placeholderString = "过滤"
-                field.controlSize = .small
-                field.font = .systemFont(ofSize: theme.scaled(10))
-                field.cell?.controlSize = .small
-                field.sendsSearchStringImmediately = true
-                field.sendsWholeSearchString = false
-                field.delegate = self
-                addSubview(field)
-                fields[id] = field
-            }
-        }
-
         for column in columns {
             column.headerCell.font = .systemFont(ofSize: theme.scaled(11), weight: .medium)
         }
-        for (id, field) in fields {
-            field.font = .systemFont(ofSize: theme.scaled(10))
-            let value = filters[id] ?? ""
-            if field.stringValue != value { field.stringValue = value }
-        }
-        positionFields()
-    }
-
-    override func layout() {
-        super.layout()
-        positionFields()
-    }
-
-    private func positionFields() {
-        guard let tableView else { return }
-        for column in tableView.tableColumns where !column.isHidden {
-            let id = column.identifier.rawValue
-            guard let field = fields[id] else { continue }
-            let index = tableView.column(withIdentifier: column.identifier)
-            guard index >= 0 else { continue }
-            let rect = headerRect(ofColumn: index)
-            field.frame = NSRect(x: rect.minX + 3,
-                                 y: columnTitleHeight + 1,
-                                 width: max(20, rect.width - 6),
-                                 height: filterHeight)
-        }
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        guard let field = notification.object as? NSSearchField,
-              let id = field.identifier?.rawValue else { return }
-        filterChanged?(id, field.stringValue)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -305,7 +238,6 @@ extension TaskTableRepresentable {
         private var onOpen: ((DownloadTask) -> Void)?
         private let theme = MDMThemeStore.shared
 
-        private var filters: [String: String] = [:]
         private var layoutState = Coordinator.loadLayout()
         private var sortColumn: TaskTableColumn = .added
         private var sortAscending = false
@@ -345,7 +277,7 @@ extension TaskTableRepresentable {
             table.intercellSpacing = NSSize(width: 6, height: 2)
             table.rowSizeStyle = .custom
 
-            let header = TaskTableHeaderView(frame: NSRect(x: 0, y: 0, width: 0, height: 44))
+            let header = TaskTableHeaderView(frame: NSRect(x: 0, y: 0, width: 0, height: 22))
             table.headerView = header
             self.tableView = table
             self.headerView = header
@@ -375,11 +307,6 @@ extension TaskTableRepresentable {
             scroll.drawsBackground = true
             self.scrollView = scroll
 
-            header.filterChanged = { [weak self] id, text in
-                guard let self else { return }
-                self.filters[id] = text
-                self.refreshRows()
-            }
             header.visibilityMenu = { [weak self] in
                 self?.makeVisibilityMenu() ?? NSMenu()
             }
@@ -434,7 +361,7 @@ extension TaskTableRepresentable {
             tableView.rowHeight = theme.scaled(22)
             tableView.intercellSpacing = NSSize(width: theme.scaled(6), height: theme.scaled(2))
             scrollView?.backgroundColor = color(.listBackground)
-            headerView.sync(columns: tableView.tableColumns, filters: filters, theme: theme)
+            headerView.sync(columns: tableView.tableColumns, theme: theme)
             scrollView?.tile()
         }
 
@@ -481,7 +408,7 @@ extension TaskTableRepresentable {
             guard !isConfiguring else { return }
             saveLayout()
             if let tableView {
-                headerView?.sync(columns: tableView.tableColumns, filters: filters, theme: theme)
+                headerView?.sync(columns: tableView.tableColumns, theme: theme)
             }
         }
 
@@ -492,9 +419,6 @@ extension TaskTableRepresentable {
                 let item = TaskActionMenuItem(title: column.title) { [weak self, weak column] in
                     guard let self, let column else { return }
                     column.isHidden.toggle()
-                    if column.isHidden {
-                        self.filters.removeValue(forKey: column.identifier.rawValue)
-                    }
                     self.saveLayout()
                     self.applyTheme()
                     self.refreshRows()
@@ -508,15 +432,7 @@ extension TaskTableRepresentable {
         private func refreshRows() {
             guard let tableView else { return }
             let previousIDs = rows.map(\.id)
-            rows = tasks.filter { task in
-                filters.allSatisfy { id, rawQuery in
-                    let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !query.isEmpty, let column = TaskTableColumn(rawValue: id) else { return true }
-                    return text(for: task, column: column).range(
-                        of: query, options: [.caseInsensitive, .diacriticInsensitive]
-                    ) != nil
-                }
-            }
+            rows = tasks
             rows.sort { lhs, rhs in
                 let result = compare(lhs, rhs, column: sortColumn)
                 if result == .orderedSame {
@@ -531,7 +447,7 @@ extension TaskTableRepresentable {
                                      columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns))
             }
             restoreSelection()
-            headerView?.sync(columns: tableView.tableColumns, filters: filters, theme: theme)
+            headerView?.sync(columns: tableView.tableColumns, theme: theme)
         }
 
         private func restoreSelection() {
@@ -890,7 +806,6 @@ extension TaskTableRepresentable {
             tableView?.dropProviders = { _ in false }
             tableView?.dropTargeted = { _ in }
             tableView?.cancelSelection = {}
-            headerView?.filterChanged = nil
             headerView?.visibilityMenu = nil
             store = nil
             onOpen = nil
