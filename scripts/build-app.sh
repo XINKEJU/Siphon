@@ -35,25 +35,29 @@ if ! swift build -c release >"$ROOT/build-swift.log" 2>&1; then
     if [[ -n "$SDK_PATH" ]]; then EXTRA+=(-sdk "$SDK_PATH"); fi
 
     MODULE_DIR="$ROOT/.build/local-module"
-    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -parse-as-library \
+    # Pin the deployment target: some toolchains default to the SDK's newest
+    # version, which makes the bundle refuse to launch on older macOS.
+    TARGET="$(uname -m)-apple-macosx14.0"
+    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -target "$TARGET" -parse-as-library \
       -emit-library -emit-module -module-name SiphonBridge \
       -emit-module-path "$MODULE_DIR/SiphonBridge.swiftmodule" \
       -o "$MODULE_DIR/libSiphonBridge.dylib" Sources/SiphonBridge/*.swift
 
     APP_SOURCES=()
     while IFS= read -r src; do APP_SOURCES+=("$src"); done < <(find Sources/Siphon Sources/SiphonBridge -name '*.swift' | sort)
-    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -parse-as-library \
+    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -target "$TARGET" -parse-as-library \
       -framework AppKit -framework SwiftUI -framework Network \
       -framework SystemConfiguration -framework JavaScriptCore \
       -framework Security -framework AVFoundation \
       -framework UniformTypeIdentifiers -framework CryptoKit \
       -o "$BIN" "${APP_SOURCES[@]}"
 
-    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -I "$MODULE_DIR" \
+    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -target "$TARGET" -I "$MODULE_DIR" \
       -L "$MODULE_DIR" -lSiphonBridge -o "$BIN_DIR/SiphonNM" Sources/SiphonNM/*.swift
 
     # Terminal client for the loopback Automation API.
-    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -parse-as-library -o "$BIN_DIR/SiphonCLI" Sources/SiphonCLI/*.swift
+    swiftc -O ${EXTRA[@]+"${EXTRA[@]}"} -target "$TARGET" -parse-as-library \
+      -o "$BIN_DIR/SiphonCLI" Sources/SiphonCLI/*.swift
     # NM lives in Resources/, so resolve the bridge dylib relative to it.
     install_name_tool -change "$MODULE_DIR/libSiphonBridge.dylib" \
       "@executable_path/../Frameworks/libSiphonBridge.dylib" \
@@ -81,7 +85,10 @@ fi
 # 26+ falls back to the opaque pre-Tahoe title bar when this field says 14.0.
 APP_BIN="$CONTENTS/MacOS/Siphon"
 SDK_VERSION="$(xcrun --show-sdk-version)"
-MIN_VERSION="$(vtool -show-build "$APP_BIN" | awk '/minos/{print $2; exit}')"
+# Always honour the declared minimum from Info.plist. Reading minos back from the
+# binary is circular and would preserve a too-new value from a bad toolchain
+# default, which makes the app refuse to launch on older macOS.
+MIN_VERSION="$(plutil -extract LSMinimumSystemVersion raw "$ROOT/Resources/Info.plist" 2>/dev/null || echo 14.0)"
 LD_VERSION="$(vtool -show-build "$APP_BIN" | awk '/version/{print $2; exit}')"
 VTOOL_TMP="$(mktemp)"
 if vtool -set-build-version macos "${MIN_VERSION:-14.0}" "$SDK_VERSION" \
