@@ -100,8 +100,12 @@ public enum YtDlpResolver {
     /// Locate yt-dlp: env override first, then the usual Homebrew / system spots,
     /// then PATH via `which`.
     public static func binaryPath() -> String? {
-        if let p = ProcessInfo.processInfo.environment["SIPHON_YTDLP_PATH"],
-           FileManager.default.isExecutableFile(atPath: p) { return p }
+        if let p = ProcessInfo.processInfo.environment["SIPHON_YTDLP_PATH"] {
+            // An empty override is an explicit opt-out, so a machine with a
+            // Homebrew yt-dlp can still turn video-site resolution off.
+            if p.isEmpty { return nil }
+            if FileManager.default.isExecutableFile(atPath: p) { return p }
+        }
         for candidate in ["/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp",
                           "/usr/bin/yt-dlp", "/opt/local/bin/yt-dlp"] {
             if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }

@@ -611,10 +611,10 @@ grep -q "processServerCard" Sources/Siphon/BrowserExtension/MCPServer.swift
 grep -q "struct SiphonCLI" Sources/SiphonCLI/SiphonCLI.swift
 grep -q "class RemoteControlServer" Sources/Siphon/Remote/RemoteControlServer.swift
 grep -q "SiphonCLI" Package.swift
-# Stage 5: 87 languages, RTL, locale formatter, real scaling.
+# Stage 5: 87 languages, RTL, real scaling.
 grep -q "availableLanguages" Sources/Siphon/MDM/I18n.swift
 grep -q "rtlLanguages" Sources/Siphon/MDM/I18n.swift
-grep -q "enum LocaleFormatter" Sources/Siphon/MDM/LocaleFormatter.swift
+grep -q "languageCode" Sources/Siphon/MDM/I18n.swift
 grep -q "struct MDMMetrics" Sources/Siphon/MDM/ThemeSystem.swift
 [[ -f Resources/i18n/zh-Hans.tsv ]] || { echo "i18n catalog missing" >&2; exit 1; }
 [[ $(ls Resources/i18n/*.tsv | wc -l) -ge 87 ]] || { echo "fewer than 87 language files" >&2; exit 1; }

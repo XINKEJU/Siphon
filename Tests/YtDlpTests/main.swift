@@ -108,8 +108,9 @@ do {
 // MARK: - missing binary → unavailable
 
 do {
-    unsetenv("SIPHON_YTDLP_PATH")
-    // Point PATH away so `which yt-dlp` finds nothing even if brew is installed.
+    // An empty override is an explicit opt-out; PATH poisoning alone cannot
+    // hide a Homebrew install because the resolver also probes fixed paths.
+    setenv("SIPHON_YTDLP_PATH", "", 1)
     setenv("PATH", "/usr/bin:/bin", 1)
     check(!YtDlpResolver.available(), "unavailable when no binary found")
     do {

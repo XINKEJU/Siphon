@@ -308,6 +308,16 @@ struct MDMProgressView: View {
         .padding(14)
     }
 
+    /// Clicking a file row really changes which files the backend downloads.
+    private func toggleFile(_ task: DownloadTask, index: Int) {
+        guard let backend = store.torrentBackend else { return }
+        var indexes = Set(torrentSnapshot.files.filter(\.selected).map(\.index))
+        if !indexes.insert(index).inserted { indexes.remove(index) }
+        Task {
+            try? await backend.selectFiles(taskID: task.id, indexes: Array(indexes).sorted())
+        }
+    }
+
     private func stat(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
@@ -332,18 +342,24 @@ struct MDMProgressView: View {
                 Text(MDMI18n.t("torrent.metadataPending")).font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(torrentSnapshot.files) { file in
-                    HStack {
-                        Image(systemName: file.selected ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(file.selected ? .green : .secondary)
-                        VStack(alignment: .leading) {
-                            Text(file.displayName).font(.caption).lineLimit(1)
-                            Text(file.path).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Button {
+                        toggleFile(task, index: file.index)
+                    } label: {
+                        HStack {
+                            Image(systemName: file.selected ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(file.selected ? .green : .secondary)
+                            VStack(alignment: .leading) {
+                                Text(file.displayName).font(.caption).lineLimit(1)
+                                Text(file.path).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            Text(Formatting.bytes(file.length)).font(.caption.monospacedDigit())
+                            Text("\(Int(file.progress * 100))%").font(.caption.monospacedDigit())
+                                .frame(width: 44, alignment: .trailing)
                         }
-                        Spacer()
-                        Text(Formatting.bytes(file.length)).font(.caption.monospacedDigit())
-                        Text("\(Int(file.progress * 100))%").font(.caption.monospacedDigit())
-                            .frame(width: 44, alignment: .trailing)
                     }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                 }
             }
         }

@@ -1,12 +1,19 @@
 import Foundation
+import Observation
 
 /// MDM routes every user-visible string through `crate::i18n`. Siphon's
 /// existing views still contain literal Chinese strings; all newly written
 /// MDM-aligned views use this catalog instead. The catalog is intentionally a
 /// plain key→text map so `tools/i18n/extract.py` can regenerate `en.tsv` and
 /// translators can work without Swift tooling.
+@Observable
 public final class MDMI18n {
     public static let shared = MDMI18n()
+
+    /// Mirrors `Siphon.mdm.language`. Stored so views that read `language` or
+    /// `isRTL` re-render the moment the picker changes (UserDefaults alone is
+    /// not observable).
+    public private(set) var languageCode: String
 
     /// 87 BCP-47 languages, matching MDM's coverage. The first 12 are the
     /// priority-review set; the rest are machine-translated and tracked by
@@ -42,8 +49,10 @@ public final class MDMI18n {
     public static let rtlLanguages: Set<String> = ["ar", "he", "fa", "ur", "ug", "ps", "sd", "yi"]
 
     public var language: String {
-        get { UserDefaults.standard.string(forKey: "Siphon.mdm.language") ?? "zh-Hans" }
+        get { languageCode }
         set {
+            guard newValue != languageCode else { return }
+            languageCode = newValue
             UserDefaults.standard.set(newValue, forKey: "Siphon.mdm.language")
             NotificationCenter.default.post(name: Self.languageDidChange, object: nil)
         }
@@ -55,6 +64,7 @@ public final class MDMI18n {
     private let bundle: Bundle
 
     private init() {
+        languageCode = UserDefaults.standard.string(forKey: "Siphon.mdm.language") ?? "zh-Hans"
         bundle = Bundle(for: BundleToken.self)
         loadEmbeddedCatalogs()
         loadTSVCatalogs()
