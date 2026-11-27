@@ -81,6 +81,7 @@ progress.resumeCapability	Resume capability
 progress.segments	Segments
 progress.status	Status
 progress.stopAndKeep	Stop and keep
+progress.window	Download progress
 queue.main	Main download queue
 queue.synchronization	Synchronization queue
 status.complete	Complete
@@ -89,3 +90,28 @@ status.error	Error
 status.queued	Queued
 status.stopped	Stopped
 theme.highContrast	High contrast
+torrent.connected	%@ connected
+torrent.downSpeed	Down speed
+torrent.downloaded	Downloaded
+torrent.files	Files
+torrent.general	General
+torrent.infoHash	Info hash
+torrent.metadataPending	Metadata not resolved yet.
+torrent.name	Name
+torrent.noPeers	No peers connected.
+torrent.noPieces	No piece data.
+torrent.noTrackers	No trackers.
+torrent.options	Options
+torrent.peers	Peers
+torrent.perTaskUploadNote	Per-task upload limit requires the librqbit helper.
+torrent.pieces	Pieces
+torrent.recheck	Recheck
+torrent.seeders	Seeders / Leechers
+torrent.selectedCount	%1$@/%2$@ selected
+torrent.sequential	Sequential download
+torrent.shareRatio	Share ratio
+torrent.size	Size
+torrent.trackers	Trackers
+torrent.transfer	Transfer
+torrent.upSpeed	Up speed
+torrent.uploaded	Uploaded

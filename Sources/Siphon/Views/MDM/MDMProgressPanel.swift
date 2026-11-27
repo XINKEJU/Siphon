@@ -25,9 +25,9 @@ public final class MDMProgressPanelController: NSObject, NSWindowDelegate {
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
         if let taskName = store.tasks.first(where: { $0.id == taskID })?.name, !taskName.isEmpty {
-            panel.title = "\(taskName) — Download progress"
+            panel.title = "\(taskName) — " + MDMI18n.t("progress.window")
         } else {
-            panel.title = "Download progress"
+            panel.title = MDMI18n.t("progress.window")
         }
         panel.center()
         panel.isReleasedWhenClosed = false
@@ -91,11 +91,11 @@ struct MDMProgressView: View {
             case .status: return MDMI18n.t("progress.status")
             case .limiter: return MDMI18n.t("progress.limiter")
             case .completion: return MDMI18n.t("progress.completion")
-            case .files: return "Files"
-            case .peers: return "Peers"
-            case .trackers: return "Trackers"
-            case .pieces: return "Pieces"
-            case .general: return "General"
+            case .files: return MDMI18n.t("torrent.files")
+            case .peers: return MDMI18n.t("torrent.peers")
+            case .trackers: return MDMI18n.t("torrent.trackers")
+            case .pieces: return MDMI18n.t("torrent.pieces")
+            case .general: return MDMI18n.t("torrent.general")
             }
         }
 
@@ -321,13 +321,15 @@ struct MDMProgressView: View {
     private func torrentFilesTab(_ task: DownloadTask) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Files").font(.headline)
+                Text(MDMI18n.t("torrent.files")).font(.headline)
                 Spacer()
-                Text("\(torrentSnapshot.files.filter(\.selected).count)/\(torrentSnapshot.files.count) selected")
+                Text(MDMI18n.t("torrent.selectedCount",
+                               "\(torrentSnapshot.files.filter(\.selected).count)",
+                               "\(torrentSnapshot.files.count)"))
                     .font(.caption).foregroundStyle(.secondary)
             }
             if torrentSnapshot.files.isEmpty {
-                Text("Metadata not resolved yet.").font(.caption).foregroundStyle(.secondary)
+                Text(MDMI18n.t("torrent.metadataPending")).font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(torrentSnapshot.files) { file in
                     HStack {
@@ -352,12 +354,13 @@ struct MDMProgressView: View {
     private func torrentPeersTab(_ task: DownloadTask) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Peers").font(.headline)
+                Text(MDMI18n.t("torrent.peers")).font(.headline)
                 Spacer()
-                Text("\(torrentSnapshot.peers.count) connected").font(.caption).foregroundStyle(.secondary)
+                Text(MDMI18n.t("torrent.connected", "\(torrentSnapshot.peers.count)"))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if torrentSnapshot.peers.isEmpty {
-                Text("No peers connected.").font(.caption).foregroundStyle(.secondary)
+                Text(MDMI18n.t("torrent.noPeers")).font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(torrentSnapshot.peers) { peer in
                     HStack {
@@ -377,9 +380,9 @@ struct MDMProgressView: View {
     @ViewBuilder
     private func torrentTrackersTab(_ task: DownloadTask) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Trackers").font(.headline)
+            Text(MDMI18n.t("torrent.trackers")).font(.headline)
             if torrentSnapshot.trackers.isEmpty {
-                Text("No trackers.").font(.caption).foregroundStyle(.secondary)
+                Text(MDMI18n.t("torrent.noTrackers")).font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(torrentSnapshot.trackers) { tracker in
                     HStack {
@@ -399,13 +402,13 @@ struct MDMProgressView: View {
     private func torrentPiecesTab(_ task: DownloadTask) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Pieces").font(.headline)
+                Text(MDMI18n.t("torrent.pieces")).font(.headline)
                 Spacer()
                 Text("\(torrentSnapshot.pieces.filter { $0.state == .complete }.count)/\(torrentSnapshot.numPieces)")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             if torrentSnapshot.pieces.isEmpty {
-                Text("No piece data.").font(.caption).foregroundStyle(.secondary)
+                Text(MDMI18n.t("torrent.noPieces")).font(.caption).foregroundStyle(.secondary)
             } else {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 32), spacing: 1) {
                     ForEach(torrentSnapshot.pieces) { piece in
@@ -422,35 +425,35 @@ struct MDMProgressView: View {
     @ViewBuilder
     private func torrentGeneralTab(_ task: DownloadTask) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            GroupBox("Transfer") {
+            GroupBox(MDMI18n.t("torrent.transfer")) {
                 VStack(alignment: .leading, spacing: 8) {
-                    statRow("Name", torrentSnapshot.name.isEmpty ? task.name : torrentSnapshot.name)
-                    statRow("Info hash", torrentSnapshot.infoHash ?? "—")
-                    statRow("Size", Formatting.bytes(torrentSnapshot.totalSize))
-                    statRow("Downloaded", Formatting.bytes(torrentSnapshot.downloaded))
-                    statRow("Uploaded", Formatting.bytes(torrentSnapshot.uploaded))
-                    statRow("Share ratio", String(format: "%.2f", torrentSnapshot.shareRatio))
-                    statRow("Down speed", Formatting.speed(torrentSnapshot.downloadSpeed))
-                    statRow("Up speed", Formatting.speed(torrentSnapshot.uploadSpeed))
-                    statRow("Seeders / Leechers", "\(torrentSnapshot.seeders) / \(torrentSnapshot.leechers)")
+                    statRow(MDMI18n.t("torrent.name"), torrentSnapshot.name.isEmpty ? task.name : torrentSnapshot.name)
+                    statRow(MDMI18n.t("torrent.infoHash"), torrentSnapshot.infoHash ?? "—")
+                    statRow(MDMI18n.t("torrent.size"), Formatting.bytes(torrentSnapshot.totalSize))
+                    statRow(MDMI18n.t("torrent.downloaded"), Formatting.bytes(torrentSnapshot.downloaded))
+                    statRow(MDMI18n.t("torrent.uploaded"), Formatting.bytes(torrentSnapshot.uploaded))
+                    statRow(MDMI18n.t("torrent.shareRatio"), String(format: "%.2f", torrentSnapshot.shareRatio))
+                    statRow(MDMI18n.t("torrent.downSpeed"), Formatting.speed(torrentSnapshot.downloadSpeed))
+                    statRow(MDMI18n.t("torrent.upSpeed"), Formatting.speed(torrentSnapshot.uploadSpeed))
+                    statRow(MDMI18n.t("torrent.seeders"), "\(torrentSnapshot.seeders) / \(torrentSnapshot.leechers)")
                 }
             }
 
-            GroupBox("Options") {
+            GroupBox(MDMI18n.t("torrent.options")) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Sequential download", isOn: Binding(
+                    Toggle(MDMI18n.t("torrent.sequential"), isOn: Binding(
                         get: { torrentSnapshot.isSequential },
                         set: { newValue in
                             Task { try? await store.setTorrentSequential(taskID, enabled: newValue) }
                         }
                     ))
                     HStack {
-                        Button("Recheck") {
+                        Button(MDMI18n.t("torrent.recheck")) {
                             Task { try? await store.recheckTorrent(taskID) }
                         }
                         Spacer()
                         if !(store.torrentBackend?.supportsPerTaskUploadLimit ?? false) {
-                            Text("Per-task upload limit requires librqbit helper")
+                            Text(MDMI18n.t("torrent.perTaskUploadNote"))
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }

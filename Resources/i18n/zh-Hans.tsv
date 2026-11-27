@@ -36,8 +36,8 @@ category.music	音乐
 category.programs	程序
 category.video	视频
 category.torrents	种子
-queue.main	Main download queue
-queue.synchronization	Synchronization queue
+queue.main	主下载队列
+queue.synchronization	同步队列
 status.queued	排队中
 status.downloading	下载中
 status.stopped	已停止
@@ -57,14 +57,14 @@ column.peers	对等端
 column.shareRatio	分享率
 column.uploadSpeed	上传速度
 column.saveTo	保存位置
-column.details	Details (Peers / Ratio / Upload / Save To)
+column.details	详情（对等端 / 分享率 / 上传 / 位置）
 progress.status	状态
 progress.limiter	限速器
 progress.completion	完成后
-progress.segments	Segments
-progress.connections	Connections
-progress.resumeCapability	Resume capability
-progress.stopAndKeep	Stop and keep
+progress.segments	分段
+progress.connections	连接
+progress.resumeCapability	可续传
+progress.stopAndKeep	停止并保留
 options.general	常规
 options.fileTypes	文件类型
 options.saveTo	保存位置
@@ -78,19 +78,19 @@ options.accounts	账户
 options.sounds	声音
 options.regional	区域
 options.archives	归档
-theme.highContrast	High contrast
-dialog.addURL	Download File Info
-dialog.startDownload	Start Download
-dialog.downloadLater	Download Later
-dialog.saveTo	Save to:
-dialog.category	Category:
-dialog.description	Description:
-dialog.linkGrabber	Link grabber
-dialog.scheduler	Scheduler
-dialog.batch	Batch download
-dialog.find	Find
-dialog.properties	Properties
-dialog.verifyChecksum	Verify checksum
+theme.highContrast	高对比度
+dialog.addURL	下载文件信息
+dialog.startDownload	开始下载
+dialog.downloadLater	稍后下载
+dialog.saveTo	保存位置：
+dialog.category	分类：
+dialog.description	描述：
+dialog.linkGrabber	链接抓取器
+dialog.scheduler	计划任务
+dialog.batch	批量下载
+dialog.find	查找
+dialog.properties	属性
+dialog.verifyChecksum	校验校验和
 action.cancel	取消
 action.close	关闭
 action.remove	从列表移除
@@ -98,3 +98,29 @@ action.delete	删除文件并移除
 action.copyLink	复制链接
 action.open	打开
 action.reveal	打开文件夹
+progress.window	下载进度
+torrent.files	文件
+torrent.peers	对等端
+torrent.trackers	追踪器
+torrent.pieces	区块
+torrent.general	常规
+torrent.transfer	传输
+torrent.name	名称
+torrent.infoHash	信息哈希
+torrent.size	大小
+torrent.downloaded	已下载
+torrent.uploaded	已上传
+torrent.shareRatio	分享率
+torrent.downSpeed	下载速度
+torrent.upSpeed	上传速度
+torrent.seeders	种子 / 下载者
+torrent.options	选项
+torrent.sequential	顺序下载
+torrent.recheck	重新校验
+torrent.metadataPending	元数据尚未解析。
+torrent.noPeers	暂无连接的对等端。
+torrent.noTrackers	暂无追踪器。
+torrent.noPieces	暂无区块数据。
+torrent.connected	已连接 %@
+torrent.selectedCount	已选 %1$@/%2$@
+torrent.perTaskUploadNote	单任务上传限速需要 librqbit 辅助进程。

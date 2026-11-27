@@ -36,8 +36,8 @@ category.music	音樂
 category.programs	程式
 category.video	影片
 category.torrents	種子
-queue.main	Main download queue
-queue.synchronization	Synchronization queue
+queue.main	主下載佇列
+queue.synchronization	同步佇列
 status.queued	排隊中
 status.downloading	下載中
 status.stopped	已停止
@@ -57,14 +57,14 @@ column.peers	對等端
 column.shareRatio	分享率
 column.uploadSpeed	上傳速度
 column.saveTo	儲存位置
-column.details	Details (Peers / Ratio / Upload / Save To)
+column.details	詳情（對等端 / 分享率 / 上傳 / 位置）
 progress.status	狀態
 progress.limiter	限速器
 progress.completion	完成後
-progress.segments	Segments
-progress.connections	Connections
-progress.resumeCapability	Resume capability
-progress.stopAndKeep	Stop and keep
+progress.segments	分段
+progress.connections	連線
+progress.resumeCapability	可續傳
+progress.stopAndKeep	停止並保留
 options.general	一般
 options.fileTypes	檔案類型
 options.saveTo	儲存位置
@@ -78,19 +78,19 @@ options.accounts	帳戶
 options.sounds	音效
 options.regional	區域
 options.archives	封存
-theme.highContrast	High contrast
-dialog.addURL	Download File Info
-dialog.startDownload	Start Download
-dialog.downloadLater	Download Later
-dialog.saveTo	Save to:
-dialog.category	Category:
-dialog.description	Description:
-dialog.linkGrabber	Link grabber
-dialog.scheduler	Scheduler
-dialog.batch	Batch download
-dialog.find	Find
-dialog.properties	Properties
-dialog.verifyChecksum	Verify checksum
+theme.highContrast	高對比度
+dialog.addURL	下載檔案資訊
+dialog.startDownload	開始下載
+dialog.downloadLater	稍後下載
+dialog.saveTo	儲存位置：
+dialog.category	分類：
+dialog.description	描述：
+dialog.linkGrabber	連結擷取器
+dialog.scheduler	排程
+dialog.batch	批次下載
+dialog.find	尋找
+dialog.properties	屬性
+dialog.verifyChecksum	驗證校驗和
 action.cancel	取消
 action.close	關閉
 action.remove	從列表移除
@@ -98,3 +98,29 @@ action.delete	刪除檔案並移除
 action.copyLink	複製連結
 action.open	開啟
 action.reveal	打開資料夾
+progress.window	下載進度
+torrent.files	檔案
+torrent.peers	對等端
+torrent.trackers	追蹤器
+torrent.pieces	區塊
+torrent.general	一般
+torrent.transfer	傳輸
+torrent.name	名稱
+torrent.infoHash	資訊雜湊
+torrent.size	大小
+torrent.downloaded	已下載
+torrent.uploaded	已上傳
+torrent.shareRatio	分享率
+torrent.downSpeed	下載速度
+torrent.upSpeed	上傳速度
+torrent.seeders	種子 / 下載者
+torrent.options	選項
+torrent.sequential	順序下載
+torrent.recheck	重新校驗
+torrent.metadataPending	中繼資料尚未解析。
+torrent.noPeers	尚無連線的對等端。
+torrent.noTrackers	尚無追蹤器。
+torrent.noPieces	尚無區塊資料。
+torrent.connected	已連線 %@
+torrent.selectedCount	已選 %1$@/%2$@
+torrent.perTaskUploadNote	單一任務上傳限速需要 librqbit 輔助程序。

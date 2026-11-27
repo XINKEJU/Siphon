@@ -388,19 +388,30 @@ TRANSLATIONS = {
 }
 
 
-def extract_english():
+def extract_dict(name):
+    """Read one embedded catalog straight from I18n.swift.
+
+    The two Chinese catalogs are the hand-written source of truth, so the
+    generator reuses them instead of duplicating translations in Python (which
+    previously drifted and shipped English strings into zh-Hans.tsv).
+    """
     text = open(SWIFT, encoding="utf-8").read()
-    m = re.search(r'private let English: \[String: String\] = \[(.*?)\n\]', text, re.S)
+    m = re.search(r'private let %s: \[String: String\] = \[(.*?)\n\]' % name, text, re.S)
     if not m:
-        raise SystemExit("English catalog not found")
-    body = m.group(1)
-    pairs = re.findall(r'"([^"]+)":\s*"([^"]*)"', body)
-    return pairs
+        raise SystemExit("catalog %s not found" % name)
+    return dict(re.findall(r'"([^"]+)":\s*"([^"]*)"', m.group(1)))
+
+
+def extract_english():
+    return list(extract_dict("English").items())
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
     pairs = extract_english()
+    # Hand-written catalogs win for the Chinese locales.
+    TRANSLATIONS["zh-Hans"] = extract_dict("ChineseSimplified")
+    TRANSLATIONS["zh-Hant"] = extract_dict("ChineseTraditional")
     manifest = []
     for code, name in LANGUAGES:
         trans = TRANSLATIONS.get(code, {})

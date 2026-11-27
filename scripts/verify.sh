@@ -618,6 +618,27 @@ grep -q "enum LocaleFormatter" Sources/Siphon/MDM/LocaleFormatter.swift
 grep -q "struct MDMMetrics" Sources/Siphon/MDM/ThemeSystem.swift
 [[ -f Resources/i18n/zh-Hans.tsv ]] || { echo "i18n catalog missing" >&2; exit 1; }
 [[ $(ls Resources/i18n/*.tsv | wc -l) -ge 87 ]] || { echo "fewer than 87 language files" >&2; exit 1; }
+# Simplified Chinese must be fully translated: no value may fall back to the
+# English source. Technical tokens that are identical by design are allowlisted.
+python3 - <<'PY'
+import sys
+allow = {"app.name", "options.socks", "options.proxy"}
+def load(path):
+    out = {}
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("\t")
+        out[key] = value
+    return out
+en = load("Resources/i18n/en.tsv")
+zh = load("Resources/i18n/zh-Hans.tsv")
+bad = [k for k in en if k in zh and zh[k] == en[k] and k not in allow]
+if bad:
+    print("zh-Hans still English: " + ", ".join(sorted(bad)[:12]), file=sys.stderr)
+    sys.exit(1)
+PY
 # Stage 2 remainder: package grabber, remote ZIP, archive repair, CnL2, debrid.
 grep -q "struct PackageNode" Sources/Siphon/Package/PackageNode.swift
 grep -q "enum PackageResolver" Sources/Siphon/Package/PackageResolver.swift

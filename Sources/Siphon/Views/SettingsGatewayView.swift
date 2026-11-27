@@ -32,9 +32,9 @@ struct GatewaySettingsView: View {
                           prompt: Text("s3.amazonaws.com / localhost:9000"))
                     .textFieldStyle(.roundedBorder)
                 HStack {
-                    TextField("Region", text: $s3Region, prompt: Text("us-east-1"))
+                    TextField("区域", text: $s3Region, prompt: Text("us-east-1"))
                         .textFieldStyle(.roundedBorder)
-                    TextField("Access Key", text: $s3AccessKey)
+                    TextField("访问密钥", text: $s3AccessKey)
                         .textFieldStyle(.roundedBorder)
                 }
                 SecureField("Secret Key（存入钥匙串）", text: $s3SecretKey)

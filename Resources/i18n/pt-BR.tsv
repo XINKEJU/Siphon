@@ -98,3 +98,29 @@ action.delete	Excluir arquivo e remover
 action.copyLink	Copiar link
 action.open	Abrir
 action.reveal	Abrir pasta
+progress.window	Download progress
+torrent.files	Files
+torrent.peers	Peers
+torrent.trackers	Trackers
+torrent.pieces	Pieces
+torrent.general	General
+torrent.transfer	Transfer
+torrent.name	Name
+torrent.infoHash	Info hash
+torrent.size	Size
+torrent.downloaded	Downloaded
+torrent.uploaded	Uploaded
+torrent.shareRatio	Share ratio
+torrent.downSpeed	Down speed
+torrent.upSpeed	Up speed
+torrent.seeders	Seeders / Leechers
+torrent.options	Options
+torrent.sequential	Sequential download
+torrent.recheck	Recheck
+torrent.metadataPending	Metadata not resolved yet.
+torrent.noPeers	No peers connected.
+torrent.noTrackers	No trackers.
+torrent.noPieces	No piece data.
+torrent.connected	%@ connected
+torrent.selectedCount	%1$@/%2$@ selected
+torrent.perTaskUploadNote	Per-task upload limit requires the librqbit helper.

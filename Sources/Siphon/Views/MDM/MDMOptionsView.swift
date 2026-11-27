@@ -375,7 +375,7 @@ private struct MDMAccountsPage: View {
                     .disabled(tokens[provider.id, default: ""].isEmpty)
             }
             HStack {
-                SecureField("API Token", text: Binding(
+                SecureField("API 令牌", text: Binding(
                     get: { tokens[provider.id] ?? "" },
                     set: { tokens[provider.id] = $0 }
                 ))
